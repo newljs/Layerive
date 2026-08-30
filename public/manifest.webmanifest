@@ -1,0 +1,14 @@
+{
+  "name": "Layerive · 本地 AI 图片工作台",
+  "short_name": "Layerive",
+  "description": "以项目管理对话、图片版本和 AI 创作流程的本地工作台。",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f5f7",
+  "theme_color": "#6d55f7",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
