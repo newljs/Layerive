@@ -130,7 +130,7 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
 
           {form.type === 'image' ? <>
             <fieldset className="capability-field"><legend>支持能力</legend><div className="capability-options">
-              {[['text_to_image', '文生图'], ['image_to_image', '图生图'], ['edit_prompt', '提示词改图'], ['edit_text', '文字编辑']].map(([value, label]) => (
+              {[['text_to_image', '文生图'], ['image_to_image', '图生图'], ['edit_prompt', '提示词改图'], ['edit_text', '文字编辑'], ['remove_watermark', '去水印']].map(([value, label]) => (
                 <label key={value} className={form.capabilities.includes(value) ? 'checked' : ''}><input type="checkbox" checked={form.capabilities.includes(value)} onChange={() => toggleCapability(value)} /><span>{label}</span></label>
               ))}
             </div></fieldset>

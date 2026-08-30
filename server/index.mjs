@@ -425,6 +425,23 @@ async function outpaintImage(projectId, input) {
   return startGeneration(projectId, { prompt, operation: 'outpaint', modelId: input.modelId, inputImageId: image.id, parentVersionId: input.parentVersionId || image.version_id || null, params: { ...(input.params || {}), size } });
 }
 
+async function removeImageWatermark(projectId, input) {
+  projectOrThrow(projectId);
+  const config = readModels();
+  const visionModel = visionModelOrThrow(config);
+  const image = imageOrThrow(projectId, input.imageId);
+  const analysis = await callVision(visionModel, image, `分析图片中是否存在覆盖在画面上的水印、平台标识、半透明文字或重复 logo。不要把画面本身的招牌、产品 logo、海报正文或自然出现的文字当成水印。若存在水印，描述每个水印的精确位置、范围、形状、透明度、颜色、文字和它遮挡的背景内容，并生成一条供图片编辑模型使用的中文修复提示词。修复时只移除水印并自然补全其遮挡区域，必须完整保留人物、主体、产品、原有设计文字、构图、风格、光影、颜色和尺寸。返回严格 JSON：{"has_watermark":true,"watermarks":[{"location":"...","appearance":"...","coverage":"..."}],"edit_prompt":"..."}。不要返回 Markdown。`);
+  const planned = parseVisionJson(analysis);
+  const watermarks = Array.isArray(planned.watermarks) ? planned.watermarks : [];
+  if (planned.has_watermark === false || !watermarks.length) {
+    throw Object.assign(new Error('视觉识别模型未发现可移除的水印；请确认当前图片是否包含覆盖式水印。'), { status: 400 });
+  }
+  const locations = watermarks.map((item) => String(item.location || item.coverage || item.appearance || '').trim()).filter(Boolean).join('；');
+  const fallback = `移除图片中覆盖在画面上的水印${locations ? `（位置：${locations}）` : ''}，仅修复水印所遮挡的区域并自然补全背景纹理、边缘和细节。严格保留人物、主体、产品、原有设计文字、构图、风格、光影、颜色和图片尺寸；不要删除画面本身的招牌、产品 logo、海报正文或其他非水印文字。`;
+  const prompt = `${String(planned.edit_prompt || planned.prompt || fallback).trim()}\n严格约束：只移除经视觉识别确认的覆盖式水印并修复其遮挡区域；其余画面不得改动。`;
+  return startGeneration(projectId, { prompt, operation: 'remove_watermark', modelId: input.modelId, inputImageId: image.id, parentVersionId: input.parentVersionId || image.version_id || null, params: input.params || {} });
+}
+
 function startGeneration(projectId, input) {
   projectOrThrow(projectId);
   const config = readModels();
@@ -439,7 +456,7 @@ function startGeneration(projectId, input) {
   // initial version so the original image is kept in the version history.
   if (inputImage) inputImage = ensureUploadVersion(projectId, inputImage);
   const operation = input.operation === 'auto' ? (inputImage ? 'edit_prompt' : 'text_to_image') : input.operation || (inputImage ? 'edit_prompt' : 'text_to_image');
-  if (!model.capabilities.includes(operation) && !(['image_to_image', 'edit_text', 'local_edit', 'outpaint'].includes(operation) && model.capabilities.includes('edit_prompt'))) {
+  if (!model.capabilities.includes(operation) && !(['image_to_image', 'edit_text', 'local_edit', 'outpaint', 'remove_watermark'].includes(operation) && model.capabilities.includes('edit_prompt'))) {
     throw Object.assign(new Error('当前模型不支持这个操作'), { status: 400 });
   }
   const params = { ...model.defaultParams, ...(input.params || {}) };
@@ -961,6 +978,8 @@ const server = http.createServer(async (req, res) => {
     if (localEditMatch && req.method === 'POST') return json(res, 202, await editImageRegion(localEditMatch[1], await body(req)));
     const outpaintMatch = pathname.match(/^\/api\/projects\/([^/]+)\/outpaint$/);
     if (outpaintMatch && req.method === 'POST') return json(res, 202, await outpaintImage(outpaintMatch[1], await body(req)));
+    const removeWatermarkMatch = pathname.match(/^\/api\/projects\/([^/]+)\/remove-watermark$/);
+    if (removeWatermarkMatch && req.method === 'POST') return json(res, 202, await removeImageWatermark(removeWatermarkMatch[1], await body(req)));
 
     const tasksMatch = pathname.match(/^\/api\/projects\/([^/]+)\/tasks$/);
     if (tasksMatch && req.method === 'GET') return json(res, 200, { tasks: listGeneratingTasks(tasksMatch[1]) });

@@ -58,6 +58,8 @@ export const api = {
     request<GenerateResult>(`/api/projects/${id}/local-edit`, { method: 'POST', body: JSON.stringify(input) }),
   outpaint: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; size: string; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/outpaint`, { method: 'POST', body: JSON.stringify(input) }),
+  removeWatermark: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; params?: Record<string, unknown> }) =>
+    request<GenerateResult>(`/api/projects/${id}/remove-watermark`, { method: 'POST', body: JSON.stringify(input) }),
   uploadImage: (id: string, input: { data: string; mimeType: string; name: string }) =>
     request<ProjectBundle>(`/api/projects/${id}/images`, { method: 'POST', body: JSON.stringify(input) }),
   models: () => request<ModelsPayload>('/api/models'),

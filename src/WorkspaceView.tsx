@@ -15,9 +15,9 @@ type Props = {
   onProjectChanged: () => void;
   notify: (message: string, kind?: 'success' | 'error') => void;
 };
-type TaskKind = 'generate' | 'text-edit' | 'local-edit' | 'outpaint';
+type TaskKind = 'generate' | 'text-edit' | 'local-edit' | 'outpaint' | 'remove-watermark';
 
-const operationLabels: Record<string, string> = { auto: '自动识别', upload: '上传原图', text_to_image: '文生图', image_to_image: '图生图', edit_prompt: '提示词改图', edit_text: '文字编辑', local_edit: '局部修改', outpaint: '扩图' };
+const operationLabels: Record<string, string> = { auto: '自动识别', upload: '上传原图', text_to_image: '文生图', image_to_image: '图生图', edit_prompt: '提示词改图', edit_text: '文字编辑', local_edit: '局部修改', outpaint: '扩图', remove_watermark: '去水印' };
 const formatTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 
 function VersionItem({ version, active, onSelect, onEdit, onDelete }: { version: Version; active: boolean; onSelect: () => void; onEdit: () => void; onDelete: () => void }) {
@@ -198,6 +198,7 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
   const [outpaintMode, setOutpaintMode] = useState(false);
   const [outpaintSize, setOutpaintSize] = useState('');
   const [outpaintSubmitting, setOutpaintSubmitting] = useState(false);
+  const [removingWatermark, setRemovingWatermark] = useState(false);
   const [zoom, setZoom] = useState(1);
   const fileRef = useRef<HTMLInputElement>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
@@ -254,6 +255,8 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
             notify(`文字已修改并保存为 V${data.versions[0]?.number}`, 'success');
           } else if (kind === 'local-edit') {
             notify(`局部修改已保存为 V${data.versions[0]?.number}`, 'success');
+          } else if (kind === 'remove-watermark') {
+            notify(`去水印结果已保存为 V${data.versions[0]?.number}`, 'success');
           } else {
             notify(`扩图已保存为 V${data.versions[0]?.number}`, 'success');
           }
@@ -286,7 +289,7 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
       setInputImageId(String(draft.inputImageId || '') || null);
       initialized.current = true;
       const task = taskData.tasks[0];
-      if (task) startPolling(task.id, task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'outpaint' ? 'outpaint' : 'generate');
+      if (task) startPolling(task.id, task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'outpaint' ? 'outpaint' : task.operationType === 'remove_watermark' ? 'remove-watermark' : 'generate');
     }).catch((error) => notify(error.message, 'error')).finally(() => setLoading(false));
   }, [projectId, activeModel, startPolling, notify]);
 
@@ -519,6 +522,21 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
     finally { setOutpaintSubmitting(false); }
   }
 
+  async function removeWatermark() {
+    if (!currentImage || removingWatermark || generating) return;
+    setRemovingWatermark(true);
+    try {
+      const result = await api.removeWatermark(projectId, {
+        imageId: currentImage.id,
+        modelId,
+        parentVersionId: currentVersion?.id || null,
+        params: { size, count: 1, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: transparentBg },
+      });
+      startPolling(result.taskId, 'remove-watermark');
+    } catch (error) { notify((error as Error).message, 'error'); }
+    finally { setRemovingWatermark(false); }
+  }
+
   async function submitTextEdit() {
     if (!textImage || textEditSubmitting || generating) return;
     const changed = textSegments.some((segment) => segment.text.trim() && segment.text.trim() !== segment.originalText.trim());
@@ -636,8 +654,8 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
 
         <section className="canvas-panel">
           <div className="canvas-toolbar">
-            <div className="canvas-context">{currentVersion ? <><strong>V{currentVersion.number}</strong><span>{operationLabels[currentVersion.operation]}</span></> : <span>项目画布</span>}</div>
-            <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label="缩小"><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label="放大"><Icon name="plus" size={14} /></button><button className={`local-edit-launch ${localEditMode ? 'active' : ''}`} disabled={!currentImage || generating} title={localEditMode || localEditRect ? '退出局部修改' : '框选图片区域并局部修改'} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit}>{localEditMode || localEditRect ? <><Icon name="close" size={14} /> 退出局部</> : <><Icon name="box" size={14} /> 局部修改</>}</button><button className={`outpaint-launch ${outpaintMode ? 'active' : ''}`} disabled={!currentImage || generating} title={outpaintMode ? '退出扩图' : '扩展当前图片画布'} onClick={outpaintMode ? closeOutpaint : startOutpaint}>{outpaintMode ? <><Icon name="close" size={14} /> 退出扩图</> : <><Icon name="image" size={14} /> 扩图</>}</button><button disabled={!currentImage || generating} onClick={() => void openTextEditor()}>编辑文字</button><button disabled={!currentImage} onClick={openCompare}>对比</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>下载</a></div>
+              <div className="canvas-context">{currentVersion ? <><strong>V{currentVersion.number}</strong><span>{operationLabels[currentVersion.operation]}</span></> : <span>项目画布</span>}</div>
+            <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label="缩小"><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label="放大"><Icon name="plus" size={14} /></button><button className={`local-edit-launch ${localEditMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark} title={localEditMode || localEditRect ? '退出局部修改' : '框选图片区域并局部修改'} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit}>{localEditMode || localEditRect ? <><Icon name="close" size={14} /> 退出局部</> : <><Icon name="box" size={14} /> 局部修改</>}</button><button className={`outpaint-launch ${outpaintMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark} title={outpaintMode ? '退出扩图' : '扩展当前图片画布'} onClick={outpaintMode ? closeOutpaint : startOutpaint}>{outpaintMode ? <><Icon name="close" size={14} /> 退出扩图</> : <><Icon name="image" size={14} /> 扩图</>}</button><button className="watermark-remove-launch" disabled={!currentImage || generating || removingWatermark} title="先识别覆盖式水印，再调用改图模型修复" onClick={() => void removeWatermark()}>{removingWatermark ? '识别中…' : <><Icon name="sparkle" size={14} /> 去水印</>}</button><button disabled={!currentImage || generating || removingWatermark} onClick={() => void openTextEditor()}>编辑文字</button><button disabled={!currentImage} onClick={openCompare}>对比</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>下载</a></div>
           </div>
           <div className="canvas-stage">
             {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined}>{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={`扩图预览${currentVersion ? `版本 V${currentVersion.number}` : ''}`} /><span>新增画布区域</span></div> : <img src={currentImage.url} alt={`项目图片${currentVersion ? `版本 V${currentVersion.number}` : ''}`} />}{(localEditMode || localEditRect) && <div className={`local-edit-surface ${localEditMode ? 'active' : ''}`} onMouseDown={onLocalBoxStart} onMouseMove={onLocalBoxMove} onMouseUp={onLocalBoxEnd} onMouseLeave={onLocalBoxEnd}>{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>修改区域</em></span>}</div>}<span className="image-chip">{outpaintMode ? `目标 ${outpaintSize}` : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
