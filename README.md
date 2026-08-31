@@ -1,3 +1,5 @@
+> 🇨🇳 中文版：[README_ZH.md](README_ZH.md)
+
 <div align="center">
 
 <img src="public/favicon.svg" width="96" height="96" alt="Layerive Logo" />

@@ -1,3 +1,5 @@
+> 🇬🇧 English: [README.md](README.md)
+
 <div align="center">
 
 <img src="public/favicon.svg" width="96" height="96" alt="Layerive Logo" />
