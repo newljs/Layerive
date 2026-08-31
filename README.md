@@ -92,13 +92,24 @@ npm run build  # Type-check and build into dist/
 npm start      # Serve the frontend and local API
 ```
 
-## 🧭 Suggested workflow
+## 🧭 Suggested workflow (interface screenshots)
 
-1. Create a project from the home page and select its default image model.
-2. Enter a prompt to generate an image, or upload a PNG, JPEG, or WebP image to start image-to-image creation.
-3. Select a canvas image, then choose prompt editing, regional editing, outpainting, or text editing.
-4. Reuse prompts from the conversation or pick templates from the prompt gallery. Set a project style prompt when you need a consistent visual language.
-5. Open **View version relationships** to review branches; compare results and continue from any version you prefer.
+> Screenshots live in `doc/界面操作截图/`, in operation order — one glance covers the core flow.
+
+| Step | Screenshot | Highlight |
+| --- | --- | --- |
+| 1 | ![1 首页-项目管理](doc/界面操作截图/1首页-项目管理.png) | **Project home** — card-based library; import / export / favorite / copy / delete, one-click new |
+| 2 | ![2 创建项目](doc/界面操作截图/2创建项目.png) | **Create project** — name + description gets you into the workbench; auto-saved locally |
+| 3 | ![3 项目初始面板](doc/界面操作截图/3项目初始面板.png) | **Workbench initial state** — three columns: versions · canvas · conversation; upload or type |
+| 4 | ![4 提示词画廊](doc/界面操作截图/4提示词画廊.png) | **Prompt gallery** — 161 quality templates across 16+ categories, pick and reuse |
+| 5 | ![5 提示词画廊2](doc/界面操作截图/5提示词画廊2.png) | **Apply a template** — one click to use as conversation prompt or project style |
+| 6 | ![6 生图操作](doc/界面操作截图/6生图操作.png) | **Text-to-image** — result lands in version history; reuse the prompt from the conversation |
+| 7 | ![7 编辑图片文字](doc/界面操作截图/7编辑图片文字.png) | **Edit image text** — vision model segments text; edits only change text, preserving layout |
+| 8 | ![8 局部修改](doc/界面操作截图/8局部修改.png) | **Regional edit** — box a region + natural-language instruction; only the box changes |
+| 9 | ![9 局部修改效果](doc/界面操作截图/9局部修改效果.png) | **Regional edit result** — auto-saved as a new version; the rest of the image stays untouched |
+| 10 | ![10 版本关系](doc/界面操作截图/10版本关系.png) | **Version tree** — full relationship graph with parent/child links, branch and backtrack anytime |
+| 11 | ![11 修改对比](doc/界面操作截图/11修改对比.png) | **Compare** — side-by-side or slider before/after; one click to continue from either side |
+| 12 | ![12 扩图](doc/界面操作截图/12扩图.png) | **Outpaint** — pick a target ratio; original image stays centered, new areas extend naturally |
 
 ## 🔧 Configure real models
 
