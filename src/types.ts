@@ -33,7 +33,7 @@ export type ProjectImage = {
   projectId: string;
   versionId: string | null;
   taskId: string | null;
-  sourceType: 'upload' | 'generated' | 'edited' | 'mask';
+  sourceType: 'upload' | 'generated' | 'edited' | 'mask' | 'extract';
   url: string;
   mimeType: string;
   width: number | null;

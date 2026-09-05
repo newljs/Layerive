@@ -4,7 +4,7 @@ import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { APP_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, imageDto, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
-import { makeDemoPng, makeThumbnailPng } from './png.mjs';
+import { makeDemoPng, makeThumbnailPng, readImageDimensions } from './png.mjs';
 import { normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, writeModels } from './models.mjs';
 import { createZip, readZip } from './zip.mjs';
 
@@ -425,6 +425,13 @@ async function outpaintImage(projectId, input) {
   return startGeneration(projectId, { prompt, operation: 'outpaint', modelId: input.modelId, inputImageId: image.id, parentVersionId: input.parentVersionId || image.version_id || null, params: { ...(input.params || {}), size } });
 }
 
+async function enhanceImage(projectId, input) {
+  projectOrThrow(projectId);
+  const image = imageOrThrow(projectId, input.imageId);
+  const prompt = '将输入图片增强为更清晰、更精细的高清版本。提升主体边缘、纹理、细节、对焦感与整体清晰度，同时自然抑制压缩噪点、模糊和锯齿。严格保持原图的主体、人物特征、文字内容、构图、比例、颜色、光影、风格和所有已有元素不变；不要裁切、添加、删除、替换或重绘画面内容。';
+  return startGeneration(projectId, { prompt, operation: 'enhance', modelId: input.modelId, inputImageId: image.id, parentVersionId: input.parentVersionId || image.version_id || null, params: input.params || {} });
+}
+
 async function removeImageWatermark(projectId, input) {
   projectOrThrow(projectId);
   const config = readModels();
@@ -442,6 +449,53 @@ async function removeImageWatermark(projectId, input) {
   return startGeneration(projectId, { prompt, operation: 'remove_watermark', modelId: input.modelId, inputImageId: image.id, parentVersionId: input.parentVersionId || image.version_id || null, params: input.params || {} });
 }
 
+// Asset extraction: the workspace screenshots the user's selection and sends
+// it here. The vision model identifies the intended subject (the box may have
+// sloppily included neighbouring clutter), then the image model renders that
+// subject alone as a standalone asset that stays faithful to the original.
+async function extractImageAsset(projectId, input) {
+  projectOrThrow(projectId);
+  const sourceImage = imageOrThrow(projectId, input.imageId);
+  const rawRect = input.rect;
+  if (!rawRect || !['x', 'y', 'width', 'height'].every((key) => Number.isFinite(Number(rawRect[key])))) {
+    throw Object.assign(new Error('请先在图片上框选要提取的内容'), { status: 400 });
+  }
+  const rect = Object.fromEntries(['x', 'y', 'width', 'height'].map((key) => [key, Math.min(100, Math.max(0, Number(rawRect[key])))]));
+  if (rect.width < 2 || rect.height < 2) throw Object.assign(new Error('框选区域太小，请重新框选'), { status: 400 });
+  const cropMime = String(input.crop?.mimeType || 'image/png');
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(cropMime)) throw Object.assign(new Error('截图格式仅支持 PNG、JPG 和 WebP'), { status: 400 });
+  const encoded = String(input.crop?.data || '').replace(/^data:[^;]+;base64,/, '');
+  const bytes = Buffer.from(encoded, 'base64');
+  if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw Object.assign(new Error('截图不能为空且不能超过 10MB'), { status: 400 });
+  const dimensions = readImageDimensions(bytes, cropMime);
+  if (!dimensions) throw Object.assign(new Error('无法读取截图内容，请重新框选'), { status: 400 });
+
+  const cropImageId = uid();
+  const extension = cropMime === 'image/jpeg' ? 'jpg' : cropMime === 'image/webp' ? 'webp' : 'png';
+  const relative = path.join('extracts', `${cropImageId}.${extension}`);
+  const absolute = path.join(PROJECTS_ROOT, projectId, relative);
+  mkdirSync(path.dirname(absolute), { recursive: true });
+  await writeFile(absolute, bytes);
+  db.prepare(`INSERT INTO images (id, project_id, source_type, file_path, mime_type, width, height, file_size, created_at)
+    VALUES (?, ?, 'extract', ?, ?, ?, ?, ?, ?)`)
+    .run(cropImageId, projectId, relative, cropMime, dimensions.width, dimensions.height, bytes.length, now());
+  const cropImage = db.prepare('SELECT * FROM images WHERE id = ?').get(cropImageId);
+
+  const config = readModels();
+  const visionModel = visionModelOrThrow(config);
+  const hint = String(input.hint || '').trim();
+  const edgeNote = input.padded ? '截图上下或左右边缘可能存在为满足平台比例要求而拉伸出的窄边，属于截图产生的填充痕迹，不是主体的一部分，规划时请忽略。' : '';
+  const intent = hint
+    ? `用户还补充了说明：“${hint}”，请优先按补充说明确定要提取的主体。`
+    : '截取框可能不够精确：边缘处只出现一部分、被裁断的物体（例如旁边座椅的局部）通常是误入的干扰，不属于主体；主体应是画面中最完整、最主要、最接近截取中心的对象。';
+  const planning = await callVision(visionModel, cropImage, `你是素材提取规划助手。用户从一张更大的图片中截取了当前图片，想把它里面最核心的主体提取成一张独立素材图。${intent}${edgeNote}\n请先判断用户想提取的主体，再为图片编辑模型生成一条中文提示词。提示词必须满足：1) 详细描述主体的内容、形状、文字、颜色、材质、光影等可辨识细节，要求输出图中的主体与当前图片中的主体完全一致，不得增删、变形或改变任何细节；2) 明确去除主体之外的所有背景、环境和边缘干扰元素（含截图补边痕迹）；3) 让主体完整、清晰、居中地占满整个画面。返回严格 JSON：{"subject":"主体简短名称","edit_prompt":"给图片编辑模型的完整中文提示词"}。不要返回 Markdown。`);
+  const planned = parseVisionJson(planning);
+  const subject = String(planned.subject || '').trim();
+  const fallback = `提取图片中的主要主体${subject ? `（${subject}）` : ''}，生成一张只包含该主体的独立素材图。主体的内容、文字、颜色、材质、光影必须与输入图片中的主体完全一致；去除主体之外的所有背景、环境和边缘干扰元素，让主体完整、清晰、居中占满整个画面。`;
+  const prompt = String(planned.edit_prompt || planned.prompt || fallback).trim();
+  return startGeneration(projectId, { prompt, operation: 'extract_asset', modelId: input.modelId, inputImageId: cropImage.id, parentVersionId: input.parentVersionId || sourceImage.version_id || null, params: input.params || {} });
+}
+
 function startGeneration(projectId, input) {
   projectOrThrow(projectId);
   const config = readModels();
@@ -456,7 +510,7 @@ function startGeneration(projectId, input) {
   // initial version so the original image is kept in the version history.
   if (inputImage) inputImage = ensureUploadVersion(projectId, inputImage);
   const operation = input.operation === 'auto' ? (inputImage ? 'edit_prompt' : 'text_to_image') : input.operation || (inputImage ? 'edit_prompt' : 'text_to_image');
-  if (!model.capabilities.includes(operation) && !(['image_to_image', 'edit_text', 'local_edit', 'outpaint', 'remove_watermark'].includes(operation) && model.capabilities.includes('edit_prompt'))) {
+  if (!model.capabilities.includes(operation) && !(['image_to_image', 'edit_text', 'local_edit', 'outpaint', 'enhance', 'remove_watermark', 'extract_asset'].includes(operation) && model.capabilities.includes('edit_prompt'))) {
     throw Object.assign(new Error('当前模型不支持这个操作'), { status: 400 });
   }
   const params = { ...model.defaultParams, ...(input.params || {}) };
@@ -957,13 +1011,15 @@ const server = http.createServer(async (req, res) => {
       const encoded = String(input.data || '').replace(/^data:[^;]+;base64,/, '');
       const bytes = Buffer.from(encoded, 'base64');
       if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw Object.assign(new Error('图片不能为空且不能超过 10MB'), { status: 400 });
+      const dimensions = readImageDimensions(bytes, mime);
+      if (!dimensions) throw Object.assign(new Error('无法读取图片尺寸，请重新选择有效的 PNG、JPG 或 WebP 图片'), { status: 400 });
       const imageId = uid();
       const extension = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
       const relative = path.join('uploads', `${imageId}.${extension}`);
       await writeFile(path.join(PROJECTS_ROOT, projectId, relative), bytes);
-      db.prepare(`INSERT INTO images (id, project_id, source_type, file_path, mime_type, file_size, created_at)
-        VALUES (?, ?, 'upload', ?, ?, ?, ?)`)
-        .run(imageId, projectId, relative, mime, bytes.length, now());
+      db.prepare(`INSERT INTO images (id, project_id, source_type, file_path, mime_type, width, height, file_size, created_at)
+        VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, ?)`)
+        .run(imageId, projectId, relative, mime, dimensions.width, dimensions.height, bytes.length, now());
       db.prepare('UPDATE projects SET current_image_id = ?, updated_at = ? WHERE id = ?').run(imageId, now(), projectId);
       return json(res, 201, bundle(projectId));
     }
@@ -978,8 +1034,12 @@ const server = http.createServer(async (req, res) => {
     if (localEditMatch && req.method === 'POST') return json(res, 202, await editImageRegion(localEditMatch[1], await body(req)));
     const outpaintMatch = pathname.match(/^\/api\/projects\/([^/]+)\/outpaint$/);
     if (outpaintMatch && req.method === 'POST') return json(res, 202, await outpaintImage(outpaintMatch[1], await body(req)));
+    const enhanceMatch = pathname.match(/^\/api\/projects\/([^/]+)\/enhance$/);
+    if (enhanceMatch && req.method === 'POST') return json(res, 202, await enhanceImage(enhanceMatch[1], await body(req)));
     const removeWatermarkMatch = pathname.match(/^\/api\/projects\/([^/]+)\/remove-watermark$/);
     if (removeWatermarkMatch && req.method === 'POST') return json(res, 202, await removeImageWatermark(removeWatermarkMatch[1], await body(req)));
+    const extractMatch = pathname.match(/^\/api\/projects\/([^/]+)\/extract-asset$/);
+    if (extractMatch && req.method === 'POST') return json(res, 202, await extractImageAsset(extractMatch[1], await body(req)));
 
     const tasksMatch = pathname.match(/^\/api\/projects\/([^/]+)\/tasks$/);
     if (tasksMatch && req.method === 'GET') return json(res, 200, { tasks: listGeneratingTasks(tasksMatch[1]) });

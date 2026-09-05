@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, readFileAsDataUrl, thumbUrl } from './api';
 import { Icon } from './Icon';
 import { PromptGalleryModal } from './PromptGalleryModal';
-import { sizesForProvider, defaultSizeForProvider, isValidSizeForProvider, OUTPUT_FORMATS, type OutputFormat } from './sizes';
+import { sizesForProvider, defaultSizeForProvider, closestSizeForDimensions, isValidSizeForProvider, OUTPUT_FORMATS, type OutputFormat } from './sizes';
 import type { GalleryEntry } from './gallery';
 import type { ModelConfig, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
 
@@ -15,10 +15,63 @@ type Props = {
   onProjectChanged: () => void;
   notify: (message: string, kind?: 'success' | 'error') => void;
 };
-type TaskKind = 'generate' | 'text-edit' | 'local-edit' | 'outpaint' | 'remove-watermark';
+type TaskKind = 'generate' | 'text-edit' | 'local-edit' | 'outpaint' | 'enhance' | 'remove-watermark' | 'extract-asset';
 
-const operationLabels: Record<string, string> = { auto: '自动识别', upload: '上传原图', text_to_image: '文生图', image_to_image: '图生图', edit_prompt: '提示词改图', edit_text: '文字编辑', local_edit: '局部修改', outpaint: '扩图', remove_watermark: '去水印' };
+const operationLabels: Record<string, string> = { auto: '自动识别', upload: '上传原图', text_to_image: '文生图', image_to_image: '图生图', edit_prompt: '提示词改图', edit_text: '文字编辑', local_edit: '局部修改', outpaint: '扩图', enhance: '变清晰', remove_watermark: '去水印', extract_asset: '提取素材' };
 const formatTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+
+// 素材提取截图：把圈选区域按百分比换算为原图像素后用 canvas 截取。
+// 模型平台要求输入图宽高在 256–4096px 且宽高比不超过 2:1，因此截图上限
+// 2048px、过小时放大、比例超限时用边缘像素补齐短边，超大再自动转 JPEG。
+function sameRect(a: NonNullable<TextSegment['rect']>, b: NonNullable<TextSegment['rect']>) {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+async function cropImageRegion(image: ProjectImage, rect: NonNullable<TextSegment['rect']>): Promise<{ dataUrl: string; mimeType: 'image/png' | 'image/jpeg'; width: number; height: number; padded: boolean } | null> {
+  const source = new Image();
+  source.src = image.url;
+  await new Promise<void>((resolve, reject) => { source.onload = () => resolve(); source.onerror = () => reject(new Error('读取原图失败，请重试')); });
+  const naturalWidth = source.naturalWidth || image.width || 0;
+  const naturalHeight = source.naturalHeight || image.height || 0;
+  if (!naturalWidth || !naturalHeight) throw new Error('无法读取原图尺寸');
+  const left = Math.min(naturalWidth - 1, Math.max(0, Math.round((rect.x / 100) * naturalWidth)));
+  const top = Math.min(naturalHeight - 1, Math.max(0, Math.round((rect.y / 100) * naturalHeight)));
+  const width = Math.max(1, Math.min(naturalWidth - left, Math.round((rect.width / 100) * naturalWidth)));
+  const height = Math.max(1, Math.min(naturalHeight - top, Math.round((rect.height / 100) * naturalHeight)));
+
+  // 宽高比超过 2:1 时用首行/末行、首列/末列像素拉伸补齐短边，保证截图能通过
+  // 模型平台的输入校验；补边区域会被视觉和编辑模型当作画面的一部分。
+  let paddedWidth = width;
+  let paddedHeight = height;
+  if (width / height > 2) paddedHeight = Math.ceil(width / 2);
+  else if (height / width > 2) paddedWidth = Math.ceil(height / 2);
+  const padLeft = Math.floor((paddedWidth - width) / 2);
+  const padTop = Math.floor((paddedHeight - height) / 2);
+  const padded = paddedWidth !== width || paddedHeight !== height;
+
+  let scale = Math.min(1, 2048 / Math.max(paddedWidth, paddedHeight));
+  if (Math.min(paddedWidth, paddedHeight) * scale < 256) scale = 256 / Math.min(paddedWidth, paddedHeight);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(256, Math.round(paddedWidth * scale));
+  canvas.height = Math.max(256, Math.round(paddedHeight * scale));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('无法生成截图，请重试');
+  const unit = canvas.width / paddedWidth;
+  context.drawImage(source, left, top, width, height, padLeft * unit, padTop * unit, width * unit, height * unit);
+  if (padded) {
+    if (padTop > 0) context.drawImage(source, left, top, width, 1, padLeft * unit, 0, width * unit, padTop * unit);
+    if (paddedHeight - padTop - height > 0) context.drawImage(source, left, top + height - 1, width, 1, padLeft * unit, (padTop + height) * unit, width * unit, (paddedHeight - padTop - height) * unit);
+    if (padLeft > 0) context.drawImage(source, left, top, 1, height, 0, padTop * unit, padLeft * unit, height * unit);
+    if (paddedWidth - padLeft - width > 0) context.drawImage(source, left + width - 1, top, 1, height, (padLeft + width) * unit, padTop * unit, (paddedWidth - padLeft - width) * unit, height * unit);
+  }
+  let mimeType: 'image/png' | 'image/jpeg' = 'image/png';
+  let dataUrl = canvas.toDataURL(mimeType);
+  if (dataUrl.length * 0.75 > 9 * 1024 * 1024) {
+    mimeType = 'image/jpeg';
+    dataUrl = canvas.toDataURL(mimeType, 0.92);
+  }
+  return { dataUrl, mimeType, width: canvas.width, height: canvas.height, padded };
+}
 
 function VersionItem({ version, active, onSelect, onEdit, onDelete }: { version: Version; active: boolean; onSelect: () => void; onEdit: () => void; onDelete: () => void }) {
   const image = version.outputs.find((item) => item.id === version.selectedImageId) || version.outputs[0];
@@ -198,14 +251,25 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
   const [outpaintMode, setOutpaintMode] = useState(false);
   const [outpaintSize, setOutpaintSize] = useState('');
   const [outpaintSubmitting, setOutpaintSubmitting] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
   const [removingWatermark, setRemovingWatermark] = useState(false);
+  const [extractMode, setExtractMode] = useState(false);
+  const [extractRect, setExtractRect] = useState<TextSegment['rect'] | null>(null);
+  const [extractHint, setExtractHint] = useState('');
+  const [extractPreview, setExtractPreview] = useState<{ rect: NonNullable<TextSegment['rect']>; dataUrl: string; mimeType: 'image/png' | 'image/jpeg'; width: number; height: number; padded: boolean } | null>(null);
+  const [extractSubmitting, setExtractSubmitting] = useState(false);
+  // 面板只在鼠标松开（框选结束）后出现，否则圈选靠下时弹窗会挡住拖拽。
+  const [localDragging, setLocalDragging] = useState(false);
+  const [extractDragging, setExtractDragging] = useState(false);
   const [zoom, setZoom] = useState(1);
   const fileRef = useRef<HTMLInputElement>(null);
+  const uploadingRef = useRef(false);
   const messagesEnd = useRef<HTMLDivElement>(null);
   const initialized = useRef(false);
   const pollTimer = useRef<number | null>(null);
   const boxStart = useRef<{ x: number; y: number } | null>(null);
   const localBoxStart = useRef<{ x: number; y: number } | null>(null);
+  const extractBoxStart = useRef<{ x: number; y: number } | null>(null);
 
   const generating = activeTask !== null;
   const imageMap = useMemo(() => new Map((bundle?.images || []).map((image) => [image.id, image])), [bundle?.images]);
@@ -255,8 +319,12 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
             notify(`文字已修改并保存为 V${data.versions[0]?.number}`, 'success');
           } else if (kind === 'local-edit') {
             notify(`局部修改已保存为 V${data.versions[0]?.number}`, 'success');
+          } else if (kind === 'enhance') {
+            notify(`高清增强已保存为 V${data.versions[0]?.number}`, 'success');
           } else if (kind === 'remove-watermark') {
             notify(`去水印结果已保存为 V${data.versions[0]?.number}`, 'success');
+          } else if (kind === 'extract-asset') {
+            notify(`素材已提取并保存为 V${data.versions[0]?.number}`, 'success');
           } else {
             notify(`扩图已保存为 V${data.versions[0]?.number}`, 'success');
           }
@@ -289,7 +357,7 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
       setInputImageId(String(draft.inputImageId || '') || null);
       initialized.current = true;
       const task = taskData.tasks[0];
-      if (task) startPolling(task.id, task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'outpaint' ? 'outpaint' : task.operationType === 'remove_watermark' ? 'remove-watermark' : 'generate');
+      if (task) startPolling(task.id, task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'outpaint' ? 'outpaint' : task.operationType === 'enhance' ? 'enhance' : task.operationType === 'remove_watermark' ? 'remove-watermark' : task.operationType === 'extract_asset' ? 'extract-asset' : 'generate');
     }).catch((error) => notify(error.message, 'error')).finally(() => setLoading(false));
   }, [projectId, activeModel, startPolling, notify]);
 
@@ -328,9 +396,7 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
   function editVersion(version: Version) {
     const image = version.outputs.find((item) => item.id === version.selectedImageId) || version.outputs[0];
     if (!image) return;
-    setCurrentImageId(image.id);
-    setInputImageId(image.id);
-    if (operation === 'text_to_image') setOperation('auto');
+    useImage(image);
   }
 
   function openCompare() {
@@ -345,6 +411,8 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
   function useImage(image: ProjectImage) {
     setCurrentImageId(image.id);
     setInputImageId(image.id);
+    if (image.sourceType === 'upload') setSize(closestSizeForDimensions(provider, image.width, image.height));
+    if (operation === 'text_to_image') setOperation('auto');
   }
 
   // Drop a gallery prompt into the composer, or lift its distilled style into
@@ -437,6 +505,7 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
     if (!localEditMode || event.button !== 0) return;
     const point = localPointerRatio(event);
     localBoxStart.current = point;
+    setLocalDragging(true);
     setLocalEditRect({ x: point.x, y: point.y, width: 0, height: 0 });
   }
 
@@ -452,14 +521,16 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
   }
 
   function onLocalBoxEnd() {
-    if (!localEditMode || !localEditRect) return;
+    if (!localEditMode) return;
     localBoxStart.current = null;
-    if (localEditRect.width <= 2 || localEditRect.height <= 2) setLocalEditRect(null);
+    setLocalDragging(false);
+    if (!localEditRect || localEditRect.width <= 2 || localEditRect.height <= 2) setLocalEditRect(null);
   }
 
   function startLocalEdit() {
     if (!currentImage || generating) return;
     closeOutpaint();
+    closeExtract();
     setLocalEditMode(true);
     setLocalEditRect(null);
     setLocalEditInstruction('');
@@ -470,6 +541,7 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
     setLocalEditMode(false);
     setLocalEditRect(null);
     setLocalEditInstruction('');
+    setLocalDragging(false);
   }
 
   async function submitLocalEdit() {
@@ -493,6 +565,7 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
   function startOutpaint() {
     if (!currentImage || generating) return;
     closeLocalEdit();
+    closeExtract();
     const availableSizes = sizesForProvider(provider);
     const sourceRatio = (currentImage.width || 1) / (currentImage.height || 1);
     const preferred = availableSizes.find((option) => Math.abs(Number(option.value.split('x')[0]) / Number(option.value.split('x')[1]) - sourceRatio) > 0.08) || availableSizes[0];
@@ -520,6 +593,100 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
       startPolling(result.taskId, 'outpaint');
     } catch (error) { notify((error as Error).message, 'error'); }
     finally { setOutpaintSubmitting(false); }
+  }
+
+  // 提取素材：与局部修改相同的圈选交互，但不需要文字说明——圈选完成后
+  // 直接截图送视觉模型识别主体（忽略圈入的边缘干扰），再由改图模型生成
+  // 只包含该主体的独立素材图。
+  function startExtract() {
+    if (!currentImage || generating) return;
+    closeLocalEdit();
+    closeOutpaint();
+    setExtractMode(true);
+    setExtractRect(null);
+    setExtractHint('');
+    setExtractPreview(null);
+  }
+
+  function closeExtract() {
+    extractBoxStart.current = null;
+    setExtractMode(false);
+    setExtractRect(null);
+    setExtractHint('');
+    setExtractPreview(null);
+    setExtractDragging(false);
+  }
+
+  function onExtractBoxStart(event: React.MouseEvent<HTMLDivElement>) {
+    if (!extractMode || event.button !== 0) return;
+    const point = localPointerRatio(event);
+    extractBoxStart.current = point;
+    setExtractDragging(true);
+    setExtractRect({ x: point.x, y: point.y, width: 0, height: 0 });
+  }
+
+  function onExtractBoxMove(event: React.MouseEvent<HTMLDivElement>) {
+    if (!extractMode || !extractBoxStart.current) return;
+    const point = localPointerRatio(event);
+    setExtractRect({
+      x: Math.min(point.x, extractBoxStart.current.x),
+      y: Math.min(point.y, extractBoxStart.current.y),
+      width: Math.abs(point.x - extractBoxStart.current.x),
+      height: Math.abs(point.y - extractBoxStart.current.y),
+    });
+  }
+
+  function onExtractBoxEnd() {
+    if (!extractMode) return;
+    extractBoxStart.current = null;
+    setExtractDragging(false);
+    if (!extractRect || extractRect.width <= 2 || extractRect.height <= 2) {
+      setExtractRect(null);
+      return;
+    }
+    // 圈选完成后（鼠标松开）才生成截图预览并显示面板。
+    const rect = extractRect;
+    setExtractPreview(null);
+    void cropImageRegion(currentImage!, rect)
+      .then((crop) => setExtractPreview(crop ? { rect, ...crop } : null))
+      .catch((error) => { setExtractPreview(null); notify((error as Error).message, 'error'); });
+  }
+
+  async function submitExtract() {
+    if (!currentImage || !extractRect || extractSubmitting || generating) return;
+    setExtractSubmitting(true);
+    try {
+      const cached = extractPreview && sameRect(extractPreview.rect, extractRect) ? extractPreview : null;
+      const crop = cached || await cropImageRegion(currentImage, extractRect);
+      if (!crop) throw new Error('生成截图失败，请重新框选');
+      const result = await api.extractAsset(projectId, {
+        imageId: currentImage.id,
+        modelId,
+        parentVersionId: currentVersion?.id || null,
+        rect: extractRect,
+        crop: { data: crop.dataUrl, mimeType: crop.mimeType, padded: crop.padded },
+        hint: extractHint.trim() || undefined,
+        params: { size: closestSizeForDimensions(provider, crop.width, crop.height), count: 1, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false },
+      });
+      closeExtract();
+      startPolling(result.taskId, 'extract-asset');
+    } catch (error) { notify((error as Error).message, 'error'); }
+    finally { setExtractSubmitting(false); }
+  }
+
+  async function enhanceImage() {
+    if (!currentImage || enhancing || generating) return;
+    setEnhancing(true);
+    try {
+      const result = await api.enhance(projectId, {
+        imageId: currentImage.id,
+        modelId,
+        parentVersionId: currentVersion?.id || null,
+        params: { size, count: 1, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false },
+      });
+      startPolling(result.taskId, 'enhance');
+    } catch (error) { notify((error as Error).message, 'error'); }
+    finally { setEnhancing(false); }
   }
 
   async function removeWatermark() {
@@ -566,15 +733,49 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return notify('仅支持 PNG、JPG 和 WebP 图片', 'error');
     if (file.size > 10 * 1024 * 1024) return notify('图片不能超过 10MB', 'error');
     setUploading(true);
+    uploadingRef.current = true;
     try {
       const data = await api.uploadImage(projectId, { data: await readFileAsDataUrl(file), mimeType: file.type, name: file.name });
       setBundle(data);
-      const image = data.images.at(-1);
-      if (image) { setCurrentImageId(image.id); setInputImageId(image.id); }
-      notify('图片已保存到项目素材', 'success');
+      const image = data.images.find((item) => item.id === data.project.currentImageId) || data.images.at(-1);
+      if (image) {
+        useImage(image);
+        notify(`图片已保存到项目素材，已匹配 ${closestSizeForDimensions(provider, image.width, image.height)} 输出比例`, 'success');
+      } else {
+        notify('图片已保存到项目素材', 'success');
+      }
     } catch (error) { notify((error as Error).message, 'error'); }
-    finally { setUploading(false); if (fileRef.current) fileRef.current.value = ''; }
+    finally { setUploading(false); uploadingRef.current = false; if (fileRef.current) fileRef.current.value = ''; }
   }
+
+  // Paste an image from the clipboard (screenshot tools, "copy image") onto
+  // the workspace anywhere — including the canvas — and it uploads and becomes
+  // the next edit's input, exactly like the upload button. Paste behavior by
+  // target: text fields stay text-only (rich text that also carries an image
+  // still pastes as text), and an upload already in flight swallows duplicates
+  // so one screenshot cannot queue several uploads.
+  function pickPasteFile(event: ClipboardEvent): File | null {
+    if (event.defaultPrevented || uploadingRef.current) return null;
+    const files = Array.from(event.clipboardData?.files || []).filter((file) => file.type.startsWith('image/'));
+    if (!files.length) return null;
+    const target = event.target as Element | null;
+    const inTextField = Boolean(target?.closest('textarea, input, [contenteditable="true"]'));
+    const text = event.clipboardData?.getData('text/plain').trim();
+    if (text && (inTextField || files.length !== 1)) return null;
+    return files[0];
+  }
+
+  function handlePaste(event: ClipboardEvent) {
+    const file = pickPasteFile(event);
+    if (!file) return;
+    event.preventDefault();
+    void upload(file);
+  }
+
+  useEffect(() => {
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  });
 
   async function send() {
     if ((!prompt.trim() && !inputImageId) || generating) return;
@@ -655,14 +856,15 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
         <section className="canvas-panel">
           <div className="canvas-toolbar">
               <div className="canvas-context">{currentVersion ? <><strong>V{currentVersion.number}</strong><span>{operationLabels[currentVersion.operation]}</span></> : <span>项目画布</span>}</div>
-            <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label="缩小"><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label="放大"><Icon name="plus" size={14} /></button><button className={`local-edit-launch ${localEditMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark} title={localEditMode || localEditRect ? '退出局部修改' : '框选图片区域并局部修改'} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit}>{localEditMode || localEditRect ? <><Icon name="close" size={14} /> 退出局部</> : <><Icon name="box" size={14} /> 局部修改</>}</button><button className={`outpaint-launch ${outpaintMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark} title={outpaintMode ? '退出扩图' : '扩展当前图片画布'} onClick={outpaintMode ? closeOutpaint : startOutpaint}>{outpaintMode ? <><Icon name="close" size={14} /> 退出扩图</> : <><Icon name="image" size={14} /> 扩图</>}</button><button className="watermark-remove-launch" disabled={!currentImage || generating || removingWatermark} title="先识别覆盖式水印，再调用改图模型修复" onClick={() => void removeWatermark()}>{removingWatermark ? '识别中…' : <><Icon name="sparkle" size={14} /> 去水印</>}</button><button disabled={!currentImage || generating || removingWatermark} onClick={() => void openTextEditor()}>编辑文字</button><button disabled={!currentImage} onClick={openCompare}>对比</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>下载</a></div>
+            <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label="缩小"><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label="放大"><Icon name="plus" size={14} /></button><button className="upload-image-launch" disabled={uploading} title="向当前项目添加一张图片，并将它作为下一次编辑的输入" onClick={() => fileRef.current?.click()}>{uploading ? '上传中…' : <><Icon name="plus" size={14} /> 上传图片</>}</button><button className={`local-edit-launch ${localEditMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={localEditMode || localEditRect ? '退出局部修改' : '框选图片区域并局部修改'} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit}>{localEditMode || localEditRect ? <><Icon name="close" size={14} /> 退出局部</> : <><Icon name="box" size={14} /> 局部修改</>}</button><button className={`extract-launch ${(extractMode || extractRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={(extractMode || extractRect) ? '退出提取素材' : '框选图片中的主体，提取为一张独立素材图'} onClick={(extractMode || extractRect) ? closeExtract : startExtract}>{(extractMode || extractRect) ? <><Icon name="close" size={14} /> 退出提取</> : <><Icon name="extract" size={14} /> 提取素材</>}</button><button className={`outpaint-launch ${outpaintMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={outpaintMode ? '退出扩图' : '扩展当前图片画布'} onClick={outpaintMode ? closeOutpaint : startOutpaint}>{outpaintMode ? <><Icon name="close" size={14} /> 退出扩图</> : <><Icon name="image" size={14} /> 扩图</>}</button><button className="enhance-launch" disabled={!currentImage || generating || removingWatermark || enhancing} title="调用改图模型提升当前图片的清晰度与细节" onClick={() => void enhanceImage()}>{enhancing ? '处理中…' : <><Icon name="sparkle" size={14} /> 变清晰</>}</button><button className="watermark-remove-launch" disabled={!currentImage || generating || removingWatermark || enhancing} title="先识别覆盖式水印，再调用改图模型修复" onClick={() => void removeWatermark()}>{removingWatermark ? '识别中…' : <><Icon name="sparkle" size={14} /> 去水印</>}</button><button disabled={!currentImage || generating || removingWatermark || enhancing} onClick={() => void openTextEditor()}>编辑文字</button><button disabled={!currentImage} onClick={openCompare}>对比</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>下载</a></div>
           </div>
           <div className="canvas-stage">
-            {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined}>{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={`扩图预览${currentVersion ? `版本 V${currentVersion.number}` : ''}`} /><span>新增画布区域</span></div> : <img src={currentImage.url} alt={`项目图片${currentVersion ? `版本 V${currentVersion.number}` : ''}`} />}{(localEditMode || localEditRect) && <div className={`local-edit-surface ${localEditMode ? 'active' : ''}`} onMouseDown={onLocalBoxStart} onMouseMove={onLocalBoxMove} onMouseUp={onLocalBoxEnd} onMouseLeave={onLocalBoxEnd}>{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>修改区域</em></span>}</div>}<span className="image-chip">{outpaintMode ? `目标 ${outpaintSize}` : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
-              <div className="canvas-empty"><div className="empty-visual"><span /><span /><span /></div><h2>开始你的第一张作品</h2><p>在右侧输入创作描述，或者上传一张图片进行修改。</p><button className="button secondary" onClick={() => fileRef.current?.click()}>上传初始图片</button></div>
+            {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined}>{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={`扩图预览${currentVersion ? `版本 V${currentVersion.number}` : ''}`} /><span>新增画布区域</span></div> : <img src={currentImage.url} alt={`项目图片${currentVersion ? `版本 V${currentVersion.number}` : ''}`} />}{(localEditMode || localEditRect) && <div className={`local-edit-surface ${localEditMode ? 'active' : ''}`} onMouseDown={onLocalBoxStart} onMouseMove={onLocalBoxMove} onMouseUp={onLocalBoxEnd} onMouseLeave={onLocalBoxEnd}>{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>修改区域</em></span>}</div>}{(extractMode || extractRect) && <div className={`extract-surface ${extractMode ? 'active' : ''}`} onMouseDown={onExtractBoxStart} onMouseMove={onExtractBoxMove} onMouseUp={onExtractBoxEnd} onMouseLeave={onExtractBoxEnd}>{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>提取区域</em></span>}</div>}<span className="image-chip">{outpaintMode ? `目标 ${outpaintSize}` : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
+              <div className="canvas-empty"><div className="empty-visual"><span /><span /><span /></div><h2>开始你的第一张作品</h2><p>在右侧输入创作描述，或者上传 / 直接 Ctrl+V 粘贴一张图片进行修改。</p><button className="button secondary" onClick={() => fileRef.current?.click()}>上传初始图片</button></div>
             )}
-            {(localEditMode || localEditRect) && currentImage && <section className="local-edit-panel"><div className="local-edit-panel-head"><div><strong>局部修改</strong><span>{localEditRect ? '描述改动，系统将只修改框选区域' : '在图片上拖拽框选需要修改的位置'}</span></div><button className="local-edit-exit" onClick={closeLocalEdit}><Icon name="close" size={13} /> 退出</button></div>{localEditRect && <><textarea value={localEditInstruction} onChange={(event) => setLocalEditInstruction(event.target.value)} placeholder="例如：将桌上的咖啡杯替换成透明玻璃花瓶，保留光影和画面风格" rows={2} /><div className="local-edit-panel-actions"><button className="button secondary" onClick={() => setLocalEditRect(null)}>重新框选</button><button className="button primary" disabled={!localEditInstruction.trim() || localEditSubmitting || generating} onClick={() => void submitLocalEdit()}>{localEditSubmitting ? '正在组装提示词…' : '应用局部修改'}</button></div></>}</section>}
+            {(localEditMode || localEditRect) && !localDragging && currentImage && <section className="local-edit-panel"><div className="local-edit-panel-head"><div><strong>局部修改</strong><span>{localEditRect ? '描述改动，系统将只修改框选区域' : '在图片上拖拽框选需要修改的位置'}</span></div><button className="local-edit-exit" onClick={closeLocalEdit}><Icon name="close" size={13} /> 退出</button></div>{localEditRect && <><textarea value={localEditInstruction} onChange={(event) => setLocalEditInstruction(event.target.value)} placeholder="例如：将桌上的咖啡杯替换成透明玻璃花瓶，保留光影和画面风格" rows={2} /><div className="local-edit-panel-actions"><button className="button secondary" onClick={() => setLocalEditRect(null)}>重新框选</button><button className="button primary" disabled={!localEditInstruction.trim() || localEditSubmitting || generating} onClick={() => void submitLocalEdit()}>{localEditSubmitting ? '正在组装提示词…' : '应用局部修改'}</button></div></>}</section>}
             {outpaintMode && currentImage && <section className="outpaint-panel"><div className="outpaint-panel-head"><div><strong>扩图</strong><span>选择当前模型支持的目标画布比例</span></div><button className="outpaint-exit" onClick={closeOutpaint}><Icon name="close" size={13} /> 退出</button></div><div className="outpaint-size-list">{sizesForProvider(provider).map((option) => <button key={option.value} className={option.value === outpaintSize ? 'active' : ''} onClick={() => setOutpaintSize(option.value)}><strong>{option.ratio}</strong><span>{option.value}</span></button>)}</div><p className="outpaint-summary">原图将居中保留，绿色虚线框内的新增区域会由模型自然延展补全。</p><div className="outpaint-panel-actions"><button className="button secondary" onClick={closeOutpaint}>取消</button><button className="button primary" disabled={!outpaintSize || outpaintSubmitting || generating} onClick={() => void submitOutpaint()}>{outpaintSubmitting ? '正在创建扩图任务…' : '确认扩图'}</button></div></section>}
+            {(extractMode || extractRect) && !extractDragging && currentImage && <section className="extract-panel"><div className="extract-panel-head"><div><strong>提取素材</strong><span>{extractRect ? '识别模型会聚焦框选主体，并剔除圈入的边缘干扰' : '在图片上拖拽框选想提取的内容'}</span></div><button className="extract-exit" onClick={closeExtract}><Icon name="close" size={13} /> 退出</button></div>{extractRect && <><div className="extract-preview">{extractPreview ? <img src={extractPreview.dataUrl} alt="提取区域截图预览" /> : <span className="extract-preview-loading"><span className="spinner" />正在生成截图…</span>}{extractPreview && <small>{extractPreview.padded ? '已自动补边 · ' : ''}{extractPreview.width} × {extractPreview.height}</small>}</div><textarea value={extractHint} onChange={(event) => setExtractHint(event.target.value)} placeholder="可选补充说明，例如：只要中间的银幕，去掉两侧的座椅" rows={2} /><div className="extract-panel-actions"><button className="button secondary" onClick={() => { setExtractRect(null); setExtractPreview(null); }}>重新框选</button><button className="button primary" disabled={!extractPreview || extractSubmitting || generating} onClick={() => void submitExtract()}>{extractSubmitting ? '正在识别与规划…' : '提取为独立素材'}</button></div></>}</section>}
           </div>
           {currentVersion && currentVersion.outputs.length > 1 && <div className="candidate-strip"><span>本轮候选</span>{currentVersion.outputs.map((image, index) => <button key={image.id} className={image.id === currentImageId ? 'active' : ''} onClick={() => setCurrentImageId(image.id)}><img src={thumbUrl(image)} alt={`候选结果 ${index + 1}`} loading="lazy" /></button>)}</div>}
         </section>

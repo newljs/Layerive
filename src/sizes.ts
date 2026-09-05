@@ -39,6 +39,21 @@ export function isValidSizeForProvider(provider: string | undefined, size: strin
   return sizesForProvider(provider).some((option) => option.value === size);
 }
 
+// Providers accept a small set of canvas sizes. For uploaded source images,
+// choose the option whose aspect ratio is closest on a logarithmic scale so
+// portrait and landscape mismatches are penalized symmetrically.
+export function closestSizeForDimensions(provider: string | undefined, width: number | null, height: number | null): string {
+  if (!width || !height || width <= 0 || height <= 0) return defaultSizeForProvider(provider);
+  const ratio = width / height;
+  return sizesForProvider(provider).reduce((closest, option) => {
+    const [candidateWidth, candidateHeight] = option.value.split('x').map(Number);
+    const closestRatio = Number(closest.split('x')[0]) / Number(closest.split('x')[1]);
+    const candidateDistance = Math.abs(Math.log(ratio / (candidateWidth / candidateHeight)));
+    const closestDistance = Math.abs(Math.log(ratio / closestRatio));
+    return candidateDistance < closestDistance ? option.value : closest;
+  }, defaultSizeForProvider(provider));
+}
+
 // Output format and transparent background are OpenAI-only capabilities.
 export const OUTPUT_FORMATS = [
   { value: 'png', label: 'PNG' },

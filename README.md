@@ -40,9 +40,11 @@ Layerive is inspired by Lovart's image-creation workflow, but it does not depend
 ### Image creation and editing
 
 - **Text to image** — generate from a text prompt.
-- **Image to image** — continue from an uploaded image or a historical version.
+- **Image to image** — continue from an uploaded image or a historical version. Newly uploaded images automatically select the closest aspect ratio supported by the active model to help preserve their composition. You can also paste a screenshot or copied image anywhere in the workbench (canvas included) with Ctrl+V; it uploads exactly like the upload button.
 - **Prompt-based image editing** — select an image and describe the change in natural language.
+- **Image enhancement** — one click sends the current image through the image-edit workflow to improve clarity and detail while preserving its subject, text, composition, and style.
 - **Regional editing** — draw a selection on the canvas and describe the change. A vision model uses the image and selection to prepare an edit prompt, while the image editor is instructed to preserve content outside the selection.
+- **Asset extraction** — circle the content you want on the canvas (e.g. a cinema screen). The app screenshots the selection, a vision model focuses on the intended subject and ignores accidentally included edges (like the seats beside it), then the image editor produces a standalone asset containing only that subject, faithful to the original. An optional hint can clarify your intent.
 - **Outpainting** — choose a size or ratio supported by the current model, preview the expanded canvas, then submit an image-edit request.
 - **Edit in-image text** — a vision model splits visible text into editable regions. Updated text is converted into a focused image-edit prompt. You can also manually select a region to add or replace text.
 - **Project style prompts** — define a shared style for text-to-image generations while keeping the source-image context for edits.
@@ -50,7 +52,7 @@ Layerive is inspired by Lovart's image-creation workflow, but it does not depend
 
 ### Versions, conversation, and comparison
 
-- Every generation, edit, regional edit, and outpaint operation creates a new version. Uploaded images can also become traceable starting nodes.
+- Every generation, edit, image-enhancement, regional-edit, and outpaint operation creates a new version. You can upload additional images even after a project already has images, then use each new upload as the input for later edits.
 - Open the complete version tree, zoom and pan it, select a node to jump to it on the canvas, and branch from any version.
 - The workspace keeps the prompt, selected model, version number, and output images for every turn. Reuse a prompt or continue from an output with one click.
 - Compare images side by side or with a before/after slider, including against a selected historical image.
@@ -125,7 +127,7 @@ Open **Model configuration** from the home page or workspace:
 ### Configuration notes
 
 - Parameter support is determined by the gateway for OpenAI-compatible services. For example, if `quality` accepts only `auto`, `low`, `medium`, or `high`, use one of those values in the model's default parameters.
-- Text editing, regional editing, and outpainting require an image model with **prompt-editing** capability. Text and regional editing also require an enabled vision model.
+- Text editing, regional editing, outpainting, and image enhancement require an image model with **prompt-editing** capability. Text and regional editing also require an enabled vision model.
 - Available outpainting sizes are constrained by the active image model. Confirm the canvas preview before submitting.
 - Output quality, text accuracy, and regional fidelity depend on the underlying model. For complex layouts, recognize text first and use manual selections to edit one region at a time.
 

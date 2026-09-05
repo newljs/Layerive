@@ -134,7 +134,7 @@ export function projectDto(row) {
 }
 
 export function ensureProjectDirs(projectId) {
-  for (const folder of ['uploads', 'generated', 'thumbnails', 'temp']) {
+  for (const folder of ['uploads', 'generated', 'thumbnails', 'temp', 'extracts']) {
     mkdirSync(path.join(PROJECTS_ROOT, projectId, folder), { recursive: true });
   }
 }
