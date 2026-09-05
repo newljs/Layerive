@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { APP_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, imageDto, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
+import { APP_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, GALLERY_ROOT, imageDto, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
 import { makeDemoPng, makeThumbnailPng, readImageDimensions } from './png.mjs';
 import { normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, writeModels } from './models.mjs';
 import { createZip, readZip } from './zip.mjs';
@@ -291,8 +291,10 @@ function textSegments(value) {
 
 async function callVision(model, image, instruction) {
   if (!model?.apiKey) throw Object.assign(new Error('请先在模型配置中填写视觉识别模型的 API Key'), { status: 400 });
-  const absolute = path.join(PROJECTS_ROOT, image.project_id, image.file_path);
-  const encoded = (await readFile(absolute)).toString('base64');
+  // image 通常来自数据库行（按 file_path 读盘）；gallery 分析直接携带 buffer。
+  const encoded = image.buffer
+    ? Buffer.from(image.buffer).toString('base64')
+    : (await readFile(path.join(PROJECTS_ROOT, image.project_id, image.file_path))).toString('base64');
   const dataUrl = `data:${image.mime_type};base64,${encoded}`;
   const host = new URL(normalizeBaseUrl(model.baseUrl)).hostname;
   const isDots = /(?:^|\.)askdiandian\.com$/i.test(host);
@@ -327,6 +329,7 @@ function visionModelOrThrow(config) {
 }
 
 function imageOrThrow(projectId, imageId) {
+  if (!imageId) throw Object.assign(new Error('请先选择一张图片'), { status: 400 });
   const image = db.prepare(`
     SELECT i.* FROM images i
     LEFT JOIN image_versions v ON v.id = i.version_id
@@ -484,7 +487,7 @@ async function extractImageAsset(projectId, input) {
   const config = readModels();
   const visionModel = visionModelOrThrow(config);
   const hint = String(input.hint || '').trim();
-  const edgeNote = input.padded ? '截图上下或左右边缘可能存在为满足平台比例要求而拉伸出的窄边，属于截图产生的填充痕迹，不是主体的一部分，规划时请忽略。' : '';
+  const edgeNote = input.crop?.padded ? '截图上下或左右边缘可能存在为满足平台比例要求而拉伸出的窄边，属于截图产生的填充痕迹，不是主体的一部分，规划时请忽略。' : '';
   const intent = hint
     ? `用户还补充了说明：“${hint}”，请优先按补充说明确定要提取的主体。`
     : '截取框可能不够精确：边缘处只出现一部分、被裁断的物体（例如旁边座椅的局部）通常是误入的干扰，不属于主体；主体应是画面中最完整、最主要、最接近截取中心的对象。';
@@ -494,6 +497,123 @@ async function extractImageAsset(projectId, input) {
   const fallback = `提取图片中的主要主体${subject ? `（${subject}）` : ''}，生成一张只包含该主体的独立素材图。主体的内容、文字、颜色、材质、光影必须与输入图片中的主体完全一致；去除主体之外的所有背景、环境和边缘干扰元素，让主体完整、清晰、居中占满整个画面。`;
   const prompt = String(planned.edit_prompt || planned.prompt || fallback).trim();
   return startGeneration(projectId, { prompt, operation: 'extract_asset', modelId: input.modelId, inputImageId: cropImage.id, parentVersionId: input.parentVersionId || sourceImage.version_id || null, params: input.params || {} });
+}
+
+// ---- Prompt gallery: user-created entries stored in SQLite ------------------
+
+const GALLERY_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
+
+function galleryDto(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    category: row.category,
+    prompt: row.prompt,
+    stylePrompt: row.style_prompt,
+    image: row.image_path ? `/gallery-files/${row.image_path.replaceAll('\\', '/')}` : null,
+    source: row.source,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function listGalleryEntries() {
+  return db.prepare('SELECT * FROM gallery_entries ORDER BY created_at DESC').all().map(galleryDto);
+}
+
+async function saveGalleryImage(data, mimeType) {
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(mimeType)) throw Object.assign(new Error('画廊图片仅支持 PNG、JPG 和 WebP'), { status: 400 });
+  const encoded = String(data || '').replace(/^data:[^;]+;base64,/, '');
+  const bytes = Buffer.from(encoded, 'base64');
+  if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw Object.assign(new Error('画廊图片不能为空且不能超过 10MB'), { status: 400 });
+  const dimensions = readImageDimensions(bytes, mimeType);
+  if (!dimensions) throw Object.assign(new Error('无法读取图片内容，请重新选择'), { status: 400 });
+  const id = uid();
+  const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
+  const relative = `${id}.${extension}`;
+  await writeFile(path.join(GALLERY_ROOT, relative), bytes);
+  return { relative, bytes, mimeType, width: dimensions.width, height: dimensions.height };
+}
+
+function removeGalleryImage(imagePath) {
+  if (!imagePath) return;
+  const absolute = path.resolve(GALLERY_ROOT, imagePath);
+  if (absolute.startsWith(GALLERY_ROOT + path.sep)) rmSync(absolute, { force: true });
+}
+
+async function upsertGalleryEntry(input, existingId) {
+  const title = String(input.title || '').trim() || '未命名提示词';
+  const category = String(input.category || 'mine').trim() || 'mine';
+  const prompt = String(input.prompt || '').trim();
+  const stylePrompt = String(input.stylePrompt || '').trim();
+  if (!prompt && !stylePrompt) throw Object.assign(new Error('请至少填写完整提示词或风格提示词'), { status: 400 });
+  const timestamp = now();
+  if (existingId) {
+    const current = db.prepare('SELECT * FROM gallery_entries WHERE id = ?').get(existingId);
+    if (!current) throw Object.assign(new Error('画廊条目不存在'), { status: 404 });
+    let imagePath = current.image_path;
+    if (input.image?.data) {
+      imagePath = (await saveGalleryImage(input.image.data, String(input.image.mimeType || 'image/png'))).relative;
+      removeGalleryImage(current.image_path);
+    }
+    db.prepare('UPDATE gallery_entries SET title = ?, category = ?, prompt = ?, style_prompt = ?, image_path = ?, updated_at = ? WHERE id = ?')
+      .run(title, category, prompt, stylePrompt, imagePath, timestamp, existingId);
+    return db.prepare('SELECT * FROM gallery_entries WHERE id = ?').get(existingId);
+  }
+  let imagePath = null;
+  if (input.image?.data) imagePath = (await saveGalleryImage(input.image.data, String(input.image.mimeType || 'image/png'))).relative;
+  const id = uid();
+  db.prepare('INSERT INTO gallery_entries (id, title, category, prompt, style_prompt, image_path, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, title, category, prompt, stylePrompt, imagePath, String(input.source || 'manual').trim() || 'manual', timestamp, timestamp);
+  return db.prepare('SELECT * FROM gallery_entries WHERE id = ?').get(id);
+}
+
+const GALLERY_ANALYZE_INSTRUCTION = `你是提示词逆向工程助手。用户会给一张 AI 生成的图片，请反推出可以稳定复现这张图片的中文生图提示词。先仔细分析画面：主体与内容、艺术风格或媒介（如扁平插画、3D 渲染、赛博朋克、水彩）、构图与视角、配色与光影、氛围与细节元素、画质关键词。然后返回严格 JSON：{"title":"8 字以内的简短标题","prompt":"可直接用于文生图模型的完整中文提示词，一段话，把上述要素自然串联，不要分行","stylePrompt":"只提炼可复用的风格描述（风格+媒介+配色+光影+氛围），去掉具体主体内容，一两句话"}。不要返回 Markdown，不要解释。`;
+
+async function analyzeGalleryImage(input) {
+  const config = readModels();
+  const visionModel = visionModelOrThrow(config);
+  const mimeType = String(input.mimeType || 'image/png');
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(mimeType)) throw Object.assign(new Error('图片格式仅支持 PNG、JPG 和 WebP'), { status: 400 });
+  const encoded = String(input.data || '').replace(/^data:[^;]+;base64,/, '');
+  const bytes = Buffer.from(encoded, 'base64');
+  if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw Object.assign(new Error('图片不能为空且不能超过 10MB'), { status: 400 });
+  const planned = parseVisionJson(await callVision(visionModel, { buffer: bytes, mime_type: mimeType }, GALLERY_ANALYZE_INSTRUCTION));
+  const prompt = String(planned.prompt || '').trim();
+  if (!prompt) throw Object.assign(new Error('视觉模型没有提炼出提示词，请重试'), { status: 502 });
+  return { title: String(planned.title || '').trim() || '未命名提示词', prompt, stylePrompt: String(planned.stylePrompt || '').trim() };
+}
+
+async function saveProjectImageToGallery(projectId, input) {
+  projectOrThrow(projectId);
+  const image = imageOrThrow(projectId, input.imageId);
+  const bytes = await readFile(path.join(PROJECTS_ROOT, projectId, image.file_path));
+  const config = readModels();
+  const visionModel = visionModelOrThrow(config);
+  let analysis = null;
+  try {
+    analysis = parseVisionJson(await callVision(visionModel, { buffer: bytes, mime_type: image.mime_type }, GALLERY_ANALYZE_INSTRUCTION));
+  } catch (error) {
+    // 提炼失败不拦截收藏：图片先入库，提示词留空由用户手动补充。
+    console.error('gallery distill failed:', error.message);
+  }
+  const extension = image.mime_type === 'image/jpeg' ? 'jpg' : image.mime_type === 'image/webp' ? 'webp' : 'png';
+  const relative = `${uid()}.${extension}`;
+  await writeFile(path.join(GALLERY_ROOT, relative), bytes);
+  const id = uid();
+  const timestamp = now();
+  db.prepare('INSERT INTO gallery_entries (id, title, category, prompt, style_prompt, image_path, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, String(analysis?.title || '').trim() || '项目收藏', String(input.category || 'mine').trim() || 'mine',
+      String(analysis?.prompt || '').trim(), String(analysis?.stylePrompt || '').trim(), relative, 'project', timestamp, timestamp);
+  return galleryDto(db.prepare('SELECT * FROM gallery_entries WHERE id = ?').get(id));
+}
+
+function deleteGalleryEntry(id) {
+  const row = db.prepare('SELECT * FROM gallery_entries WHERE id = ?').get(id);
+  if (!row) throw Object.assign(new Error('画廊条目不存在'), { status: 404 });
+  db.prepare('DELETE FROM gallery_entries WHERE id = ?').run(id);
+  removeGalleryImage(row.image_path);
+  return { ok: true };
 }
 
 function startGeneration(projectId, input) {
@@ -814,6 +934,9 @@ async function buildBackupZip() {
   for (const file of await collectFiles(PROJECTS_ROOT, 'data/projects')) {
     entries.push({ name: file.name, data: await readFile(file.absolute) });
   }
+  for (const file of await collectFiles(GALLERY_ROOT, 'data/gallery')) {
+    entries.push({ name: file.name, data: await readFile(file.absolute) });
+  }
   return createZip(entries);
 }
 
@@ -832,7 +955,9 @@ async function restoreBackup(buffer) {
   rmSync(path.join(DATA_ROOT, 'app.db-shm'), { force: true });
   rmSync(path.join(DATA_ROOT, 'app.db'), { force: true });
   rmSync(PROJECTS_ROOT, { recursive: true, force: true });
+  rmSync(GALLERY_ROOT, { recursive: true, force: true });
   mkdirSync(PROJECTS_ROOT, { recursive: true });
+  mkdirSync(GALLERY_ROOT, { recursive: true });
 
   await writeFile(path.join(DATA_ROOT, 'app.db'), entries.get('data/app.db'));
   const modelsEntry = entries.get('config/models.json');
@@ -841,7 +966,8 @@ async function restoreBackup(buffer) {
     await writeFile(MODELS_CONFIG_PATH, modelsEntry);
   }
   for (const [name, data] of entries) {
-    if (!name.startsWith('data/projects/') || name.endsWith('/')) continue;
+    if (!name.startsWith('data/projects/') && !name.startsWith('data/gallery/')) continue;
+    if (name.endsWith('/')) continue;
     const absolute = path.join(APP_ROOT, name.replaceAll('/', path.sep));
     mkdirSync(path.dirname(absolute), { recursive: true });
     await writeFile(absolute, data);
@@ -875,6 +1001,16 @@ async function serveFile(req, res, pathname, searchParams) {
   }
   res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
   res.end(await readFile(payloadPath));
+}
+
+async function serveGalleryFile(res, pathname) {
+  const relative = decodeURIComponent(pathname.slice('/gallery-files/'.length));
+  const absolute = path.resolve(GALLERY_ROOT, relative);
+  if (!absolute.startsWith(GALLERY_ROOT + path.sep) || !existsSync(absolute)) return json(res, 404, { error: '图片不存在' });
+  const extension = path.extname(absolute).toLowerCase();
+  const mime = GALLERY_MIME[extension.slice(1)] || 'application/octet-stream';
+  res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
+  res.end(await readFile(absolute));
 }
 
 async function serveApp(res, pathname) {
@@ -933,6 +1069,7 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname;
   try {
     if (pathname.startsWith('/files/') && req.method === 'GET') return await serveFile(req, res, pathname, url.searchParams);
+    if (pathname.startsWith('/gallery-files/') && req.method === 'GET') return await serveGalleryFile(res, pathname);
     if (pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, storage: 'local-sqlite' });
 
     if (pathname === '/api/projects' && req.method === 'GET') return json(res, 200, { projects: listProjects() });
@@ -1069,6 +1206,16 @@ const server = http.createServer(async (req, res) => {
       const config = readModels();
       return json(res, 200, { activeModel: config.active_model, activeVisionModel: config.active_vision_model, models: config.models.map(publicModel) });
     }
+    if (pathname === '/api/gallery' && req.method === 'GET') return json(res, 200, { entries: listGalleryEntries() });
+    if (pathname === '/api/gallery' && req.method === 'POST') return json(res, 201, { entry: galleryDto(await upsertGalleryEntry(await body(req, 32 * 1024 * 1024))) });
+    if (pathname === '/api/gallery/analyze' && req.method === 'POST') return json(res, 200, await analyzeGalleryImage(await body(req, 16 * 1024 * 1024)));
+    if (pathname === '/api/gallery/from-image' && req.method === 'POST') {
+      const input = await body(req);
+      return json(res, 201, { entry: await saveProjectImageToGallery(String(input.projectId || ''), input) });
+    }
+    const galleryIdMatch = pathname.match(/^\/api\/gallery\/([^/]+)$/);
+    if (galleryIdMatch && req.method === 'PATCH') return json(res, 200, { entry: galleryDto(await upsertGalleryEntry(await body(req, 32 * 1024 * 1024), galleryIdMatch[1])) });
+    if (galleryIdMatch && req.method === 'DELETE') return json(res, 200, deleteGalleryEntry(galleryIdMatch[1]));
     if (pathname === '/api/models' && req.method === 'POST') return json(res, 201, { model: upsertModel(await body(req)) });
     if (pathname === '/api/models/test-config' && req.method === 'POST') return json(res, 200, await testModelConnection(await body(req)));
     const modelMatch = pathname.match(/^\/api\/models\/([^/]+)$/);

@@ -5,7 +5,9 @@ import path from 'node:path';
 export const APP_ROOT = path.resolve(import.meta.dirname, '..');
 export const DATA_ROOT = path.join(APP_ROOT, 'data');
 export const PROJECTS_ROOT = path.join(DATA_ROOT, 'projects');
+export const GALLERY_ROOT = path.join(DATA_ROOT, 'gallery');
 mkdirSync(PROJECTS_ROOT, { recursive: true });
+mkdirSync(GALLERY_ROOT, { recursive: true });
 
 export const db = new DatabaseSync(path.join(DATA_ROOT, 'app.db'));
 db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
@@ -81,6 +83,17 @@ db.exec(`
     image_id TEXT NOT NULL,
     input_role TEXT NOT NULL,
     PRIMARY KEY(version_id, image_id)
+  );
+  CREATE TABLE IF NOT EXISTS gallery_entries (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'mine',
+    prompt TEXT NOT NULL DEFAULT '',
+    style_prompt TEXT NOT NULL DEFAULT '',
+    image_path TEXT,
+    source TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_messages_project_created ON messages(project_id, created_at);

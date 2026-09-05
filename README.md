@@ -48,7 +48,7 @@ Layerive is inspired by Lovart's image-creation workflow, but it does not depend
 - **Outpainting** — choose a size or ratio supported by the current model, preview the expanded canvas, then submit an image-edit request.
 - **Edit in-image text** — a vision model splits visible text into editable regions. Updated text is converted into a focused image-edit prompt. You can also manually select a region to add or replace text.
 - **Project style prompts** — define a shared style for text-to-image generations while keeping the source-image context for edits.
-- **Prompt gallery** — browse and reuse prompt and style templates directly in the workspace.
+- **Prompt gallery** — browse and reuse prompt and style templates directly in the workspace, and manage your own library: add or edit entries manually (with an uploaded image or text only), let the vision model distill full prompts and style descriptions from an uploaded image, or right-click any generated image in the workspace to save it into the gallery with its prompt auto-distilled. A dark-mode toggle lives in the header of every view; the preference is remembered locally.
 
 ### Versions, conversation, and comparison
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon';
+import { useTheme } from './theme';
 import type { ModelConfig } from './types';
 
 type Props = {
@@ -43,6 +44,7 @@ function defaultModel(type: ModelConfig['type'], provider: ModelConfig['provider
 }
 
 export function ModelConfigView({ models, activeModel, activeVisionModel, onBack, onSave, onDelete, onActivate, onActivateVision, onTest, onTestConfig }: Props) {
+  const { theme, toggleTheme } = useTheme();
   const [selectedId, setSelectedId] = useState(models[0]?.id || '');
   const [form, setForm] = useState<ModelConfig>(models[0] || blankFor());
   const [creating, setCreating] = useState(false);
@@ -98,7 +100,7 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
       <header className="settings-topbar">
         <button className="back-button" onClick={onBack}><Icon name="left" size={15} /> 返回项目</button>
         <div><p className="eyebrow">GLOBAL SETTINGS</p><h1>模型配置</h1></div>
-        <div className="save-state"><span className="status-dot" />配置保存在本机</div>
+        <div className="save-state"><button className="icon-button theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'} aria-label="切换配色模式"><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} /></button><span className="status-dot" />配置保存在本机</div>
       </header>
 
       <section className="models-layout">

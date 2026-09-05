@@ -6,7 +6,8 @@ import type { CSSProperties } from 'react';
 export type IconName =
   | 'grid' | 'list' | 'models' | 'data' | 'settings' | 'search' | 'plus' | 'minus'
   | 'close' | 'star' | 'starFilled' | 'duplicate' | 'export' | 'image' | 'branch'
-  | 'tree' | 'up' | 'down' | 'left' | 'sparkle' | 'box' | 'edit' | 'download' | 'gallery' | 'extract';
+  | 'tree' | 'up' | 'down' | 'left' | 'sparkle' | 'box' | 'edit' | 'download' | 'gallery' | 'extract'
+  | 'sun' | 'moon' | 'sliders';
 
 const paths: Record<IconName, React.ReactNode> = {
   grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.6" /><rect x="13.5" y="13.5" width="7" height="7" rx="1.6" /></>,
@@ -34,6 +35,9 @@ const paths: Record<IconName, React.ReactNode> = {
   download: <><path d="M12 3.5V14" /><path d="m7.5 9.5 4.5 4.5 4.5-4.5" /><path d="M4.5 17v2a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-2" /></>,
   gallery: <><rect x="3.5" y="3.5" width="17" height="17" rx="2" /><circle cx="9" cy="9" r="1.8" /><path d="m4.8 16.5 3.7-3.8 2.6 2.7 3.2-3.3 5 5" /></>,
   extract: <><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><path d="M8.2 7.6 20 19M8.2 16.4 20 5M13 12l2 2" /></>,
+  sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.2 5.2l1.9 1.9M16.9 16.9l1.9 1.9M18.8 5.2l-1.9 1.9M7.1 16.9l-1.9 1.9" /></>,
+  moon: <path d="M20 13.2A8.2 8.2 0 0 1 10.8 4a8.2 8.2 0 1 0 9.2 9.2Z" />,
+  sliders: <><path d="M5 21v-7M5 10V3M12 21v-9M12 8V3M19 21v-5M19 12V3" /><path d="M2.5 14h5M9.5 8h5M16.5 16h5" /></>,
 };
 
 export function Icon({ name, size = 16, strokeWidth = 1.7, style, className }: { name: IconName; size?: number; strokeWidth?: number; style?: CSSProperties; className?: string }) {

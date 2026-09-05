@@ -39,7 +39,8 @@
 - 扩图：选择目标尺寸，以原图为核心自然补全新增画布区域。
 - 去水印：视觉模型先判断 / 定位水印；确认存在后调用图片编辑模型修复遮挡区域。
 - 提取素材：在画布上框选内容区域，前端用 canvas 截取该区域作为截图随请求上传（上限 2048px、最小边不足 256px 自动放大、宽高比超 2:1 时用边缘像素补边、超大自动转 JPEG，以满足模型平台 256–4096px 且比例 ≤2:1 的输入限制）；服务端保存截图为 `extract` 素材后，视觉模型识别用户想提取的主体（忽略圈入的边缘干扰和补边痕迹，可附加文字提示），生成“仅保留该主体、内容与原图一致”的改图提示词，再由图片编辑模型输出独立素材图。
-- 提示词画廊：按分类浏览本地模板，可将完整提示词填入对话框或将风格提示词设为项目风格。
+- 提示词画廊：按分类浏览内置模板，可将完整提示词填入对话框或将风格提示词设为项目风格。支持手动添加 / 编辑 / 删除“我的收藏”条目（可上传配图，纯文本亦可），上传图片后可调用视觉模型提炼完整提示词与风格描述；在工作台对画布主图、候选条、消息画廊中的图片点击右键，可一键收藏到画廊（视觉模型自动提炼提示词，失败时仅收图、提示词留空）。用户画廊数据存于 SQLite `gallery_entries` 表与 `data/gallery/` 目录，随完整备份 / 恢复。
+- 暗色模式：`src/theme.tsx` 的 ThemeProvider 以 `data-theme` 属性切换 `html` 主题，偏好存于 localStorage（`layerive-theme`），暗色样式统一写在 `styles.css` 末尾的 `html[data-theme='dark']` 覆盖块；首页、工作台、模型配置三处顶栏均有切换按钮。
 
 ### 版本、对话与任务
 
@@ -63,6 +64,7 @@
 src/                        React 单页应用
   main.tsx                  React 挂载入口
   App.tsx                   顶层视图路由与全局项目/模型状态
+  theme.tsx                 暗色模式 ThemeProvider（data-theme + localStorage）
   HomeView.tsx              项目库、创建、导入、备份恢复入口
   WorkspaceView.tsx         三栏工作台、图片操作、任务轮询、版本树/对比
   ModelConfigView.tsx       图片模型、视觉识别模型配置界面
@@ -85,7 +87,7 @@ scripts/
   build-gallery-images.py   构建画廊图片素材
   make-icons.mjs            生成 PWA 图标
 public/                     静态图标、PWA manifest、画廊缩略图
-data/                       运行时 SQLite、项目图片、恢复安全备份（被 Git 忽略）
+data/                       运行时 SQLite、项目图片、画廊配图（data/gallery）、恢复安全备份（被 Git 忽略）
 config/models.json          运行时模型配置，可能含 API Key（被 Git 忽略）
 dist/                       构建产物（被 Git 忽略）
 work/                       临时工作目录（被 Git 忽略）
@@ -124,6 +126,7 @@ work/                       临时工作目录（被 Git 忽略）
 | `image_versions` | 可分支版本节点 | `parent_version_id` 指向父版本；删除为软删除 |
 | `images` | 上传和生成图片元数据 | 文件实际位于 `data/projects/<projectId>/...` |
 | `version_inputs` | 版本输入图片关系 | 关联编辑/生成版本和源图片 |
+| `gallery_entries` | 用户自建提示词画廊条目 | 配图存于 `data/gallery/`；source 为 manual / project；删除条目时同步删除配图 |
 
 重要不变量：
 
@@ -191,6 +194,11 @@ work/                       临时工作目录（被 Git 忽略）
 | `/api/projects/import` | POST | 导入项目 ZIP（base64 请求体） |
 | `/api/backup`、`/api/backup/restore` | GET / POST | 完整备份、恢复并重启服务 |
 | `/api/models...` | GET / POST / PATCH / DELETE | 模型管理、默认设置、连接测试 |
+| `/api/gallery` | GET / POST | 用户画廊条目列表、新增（可附 base64 配图） |
+| `/api/gallery/analyze` | POST | 视觉模型从 base64 图片提炼标题 / 提示词 / 风格提示词 |
+| `/api/gallery/from-image` | POST | 把项目内图片（projectId + imageId）收藏进画廊并自动提炼提示词 |
+| `/api/gallery/:id` | PATCH / DELETE | 编辑（可替换 / 移除配图）、删除画廊条目 |
+| `/gallery-files/<file>` | GET | 画廊配图访问（存于 `data/gallery/`） |
 | `/files/<projectId>/<path>` | GET | 本地图片及按需缩略图访问 |
 
 新增或改变 API 时，必须同步更新 `src/api.ts`、前端调用处、`src/types.ts`（需要时）、此表及 README 中受影响说明。
@@ -199,7 +207,7 @@ work/                       临时工作目录（被 Git 忽略）
 
 - 单项目导出格式为 ZIP，含 `project.json` 和可选 `files/` 图片；导入会生成新的项目及所有关联 ID，缺失的图片文件会被保留为占位关系并提示。
 - 项目“复制”也会复制磁盘图片和全部关系数据，并重映射 ID。
-- 完整备份含数据库、所有项目图片和 `config/models.json`，因此可能含 API Key。恢复前会在 `data/backups/<timestamp>/` 留一份安全备份，然后替换数据并启动新的服务进程。
+- 完整备份含数据库、所有项目图片、`data/gallery/` 画廊配图和 `config/models.json`，因此可能含 API Key。恢复前会在 `data/backups/<timestamp>/` 留一份安全备份（含项目图片与画廊配图），然后替换数据并启动新的服务进程。
 - 这些操作具有高数据风险。修改其逻辑前，必须先评估 SQLite WAL、一致性、失败回滚、路径穿越防护，以及 Windows 文件锁行为。
 
 ## 10. 修改指南

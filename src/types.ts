@@ -101,3 +101,15 @@ export type GenerationTask = {
 };
 
 export type GenerateResult = { taskId: string; status: string; userMessageId: string };
+
+export type GalleryEntryItem = {
+  id: string;
+  title: string;
+  category: string;
+  prompt: string;
+  stylePrompt: string;
+  image: string | null;
+  source: 'manual' | 'project' | string;
+  createdAt: string;
+  updatedAt: string;
+};

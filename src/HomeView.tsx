@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import { Icon } from './Icon';
+import { useTheme } from './theme';
 import type { Project } from './types';
 
 type Props = {
@@ -19,6 +20,7 @@ type Props = {
 const formatUpdated = (value: string) => new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 
 export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDuplicate, onImport, onRefreshProjects, onModels, notify }: Props) {
+  const { theme, toggleTheme } = useTheme();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'recent' | 'favorite'>('all');
   const [viewMode, setViewMode] = useState<'card' | 'list'>(() => (localStorage.getItem('pixelflow.view-mode') === 'list' ? 'list' : 'card'));
@@ -95,13 +97,15 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
           <button className="nav-icon" aria-label="模型配置" onClick={onModels}><Icon name="models" size={19} /></button>
           <button className="nav-icon" aria-label="数据管理" onClick={() => setDataOpen(true)}><Icon name="data" size={19} /></button>
         </nav>
-        <button className="nav-icon nav-bottom" aria-label="设置"><Icon name="settings" size={19} /></button>
       </aside>
 
       <section className="home-content">
         <header className="topbar">
           <div><p className="eyebrow">Layerive · 本地 AI 图片工作台</p><h1>我的项目</h1></div>
           <div className="header-actions">
+            <button className="icon-button theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'} aria-label="切换配色模式">
+              <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
+            </button>
             <button className="button secondary" onClick={() => importRef.current?.click()}>导入项目</button>
             <button className="button secondary" onClick={onModels}>模型配置</button>
             <button className="button primary" onClick={() => setCreateOpen(true)}><Icon name="plus" size={15} /> 新建项目</button>

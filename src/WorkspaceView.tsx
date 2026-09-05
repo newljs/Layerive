@@ -3,6 +3,7 @@ import { api, readFileAsDataUrl, thumbUrl } from './api';
 import { Icon } from './Icon';
 import { PromptGalleryModal } from './PromptGalleryModal';
 import { sizesForProvider, defaultSizeForProvider, closestSizeForDimensions, isValidSizeForProvider, OUTPUT_FORMATS, type OutputFormat } from './sizes';
+import { useTheme } from './theme';
 import type { GalleryEntry } from './gallery';
 import type { ModelConfig, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
 
@@ -213,6 +214,7 @@ function VersionTreeModal({ versions, currentVersionId, onSelect, onClose }: { v
 }
 
 export function WorkspaceView({ projectId, models, activeModel, onBack, onModels, onProjectChanged, notify }: Props) {
+  const { theme, toggleTheme } = useTheme();
   const imageModels = models.filter((model) => model.type !== 'vision');
   const [bundle, setBundle] = useState<ProjectBundle | null>(null);
   const [loading, setLoading] = useState(true);
@@ -256,8 +258,10 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
   const [extractMode, setExtractMode] = useState(false);
   const [extractRect, setExtractRect] = useState<TextSegment['rect'] | null>(null);
   const [extractHint, setExtractHint] = useState('');
-  const [extractPreview, setExtractPreview] = useState<{ rect: NonNullable<TextSegment['rect']>; dataUrl: string; mimeType: 'image/png' | 'image/jpeg'; width: number; height: number; padded: boolean } | null>(null);
+  const [extractPreview, setExtractPreview] = useState<{ imageId: string; rect: NonNullable<TextSegment['rect']>; dataUrl: string; mimeType: 'image/png' | 'image/jpeg'; width: number; height: number; padded: boolean } | null>(null);
   const [extractSubmitting, setExtractSubmitting] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; imageId: string } | null>(null);
+  const [savingToGallery, setSavingToGallery] = useState(false);
   // 面板只在鼠标松开（框选结束）后出现，否则圈选靠下时弹窗会挡住拖拽。
   const [localDragging, setLocalDragging] = useState(false);
   const [extractDragging, setExtractDragging] = useState(false);
@@ -415,6 +419,12 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
     if (operation === 'text_to_image') setOperation('auto');
   }
 
+  // 切换画布图片时，针对旧图片的圈选与截图预览全部失效，一并清理。
+  useEffect(() => {
+    setLocalEditRect(null);
+    closeExtract();
+  }, [currentImageId]);
+
   // Drop a gallery prompt into the composer, or lift its distilled style into
   // the project-level style slot — both close the gallery so the user lands
   // back in the workspace with the text ready to edit or send.
@@ -525,6 +535,15 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
     localBoxStart.current = null;
     setLocalDragging(false);
     if (!localEditRect || localEditRect.width <= 2 || localEditRect.height <= 2) setLocalEditRect(null);
+  }
+
+  // 鼠标划出图片视同放弃本次圈选：面板只在图片内松开鼠标时出现，
+  // 也避免划出瞬间面板闪现挡住后续操作。
+  function onLocalBoxCancel() {
+    if (!localEditMode || !localBoxStart.current) return;
+    localBoxStart.current = null;
+    setLocalDragging(false);
+    setLocalEditRect(null);
   }
 
   function startLocalEdit() {
@@ -648,15 +667,25 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
     const rect = extractRect;
     setExtractPreview(null);
     void cropImageRegion(currentImage!, rect)
-      .then((crop) => setExtractPreview(crop ? { rect, ...crop } : null))
+      .then((crop) => setExtractPreview(crop ? { rect, imageId: currentImage!.id, ...crop } : null))
       .catch((error) => { setExtractPreview(null); notify((error as Error).message, 'error'); });
+  }
+
+  // 鼠标划出图片视同放弃本次圈选，避免划出瞬间面板闪现或重复截图。
+  function onExtractBoxCancel() {
+    if (!extractMode || !extractBoxStart.current) return;
+    extractBoxStart.current = null;
+    setExtractDragging(false);
+    setExtractRect(null);
+    setExtractPreview(null);
   }
 
   async function submitExtract() {
     if (!currentImage || !extractRect || extractSubmitting || generating) return;
     setExtractSubmitting(true);
     try {
-      const cached = extractPreview && sameRect(extractPreview.rect, extractRect) ? extractPreview : null;
+      // 预览仅在截图时的图片与当前图片一致时才可复用，切换画布图片后必须重截。
+      const cached = extractPreview && extractPreview.imageId === currentImage.id && sameRect(extractPreview.rect, extractRect) ? extractPreview : null;
       const crop = cached || await cropImageRegion(currentImage, extractRect);
       if (!crop) throw new Error('生成截图失败，请重新框选');
       const result = await api.extractAsset(projectId, {
@@ -823,6 +852,32 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
     }
   }
 
+  // 画布图片右键 → 收藏到提示词画廊：服务端自动用视觉模型提炼提示词。
+  function openImageContextMenu(event: React.MouseEvent, imageId: string) {
+    event.preventDefault();
+    setContextMenu({ x: event.clientX, y: event.clientY, imageId });
+  }
+
+  async function saveContextImageToGallery() {
+    if (!contextMenu || savingToGallery) return;
+    setSavingToGallery(true);
+    const imageId = contextMenu.imageId;
+    setContextMenu(null);
+    try {
+      await api.addGalleryFromProject({ projectId, imageId });
+      notify('已收藏到提示词画廊，提示词由视觉模型自动提炼', 'success');
+    } catch (error) { notify((error as Error).message, 'error'); }
+    finally { setSavingToGallery(false); }
+  }
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('click', close); window.removeEventListener('resize', close); };
+  }, [contextMenu]);
+
   if (loading || !bundle) return <main className="workspace-loading">正在恢复项目工作台…</main>;
 
   const beforeImage = compareMode === 'slider' ? (compareImage || parentImage) : null;
@@ -839,7 +894,8 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
         <div className={`autosave-state ${saveState}`}><span />{saveState === 'saving' ? '保存中…' : saveState === 'failed' ? '保存失败' : '已自动保存'}</div>
         <div className="workspace-header-actions">
           <select value={modelId} onChange={(event) => setModelId(event.target.value)} aria-label="当前模型">{imageModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select>
-          <button className="icon-button" title="模型配置" onClick={onModels}><Icon name="settings" size={17} /></button>
+          <button className="icon-button theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'} aria-label="切换配色模式"><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} /></button>
+          <button className="icon-button" title="模型配置" onClick={onModels}><Icon name="sliders" size={17} /></button>
         </div>
       </header>
 
@@ -859,14 +915,14 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
             <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label="缩小"><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label="放大"><Icon name="plus" size={14} /></button><button className="upload-image-launch" disabled={uploading} title="向当前项目添加一张图片，并将它作为下一次编辑的输入" onClick={() => fileRef.current?.click()}>{uploading ? '上传中…' : <><Icon name="plus" size={14} /> 上传图片</>}</button><button className={`local-edit-launch ${localEditMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={localEditMode || localEditRect ? '退出局部修改' : '框选图片区域并局部修改'} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit}>{localEditMode || localEditRect ? <><Icon name="close" size={14} /> 退出局部</> : <><Icon name="box" size={14} /> 局部修改</>}</button><button className={`extract-launch ${(extractMode || extractRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={(extractMode || extractRect) ? '退出提取素材' : '框选图片中的主体，提取为一张独立素材图'} onClick={(extractMode || extractRect) ? closeExtract : startExtract}>{(extractMode || extractRect) ? <><Icon name="close" size={14} /> 退出提取</> : <><Icon name="extract" size={14} /> 提取素材</>}</button><button className={`outpaint-launch ${outpaintMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={outpaintMode ? '退出扩图' : '扩展当前图片画布'} onClick={outpaintMode ? closeOutpaint : startOutpaint}>{outpaintMode ? <><Icon name="close" size={14} /> 退出扩图</> : <><Icon name="image" size={14} /> 扩图</>}</button><button className="enhance-launch" disabled={!currentImage || generating || removingWatermark || enhancing} title="调用改图模型提升当前图片的清晰度与细节" onClick={() => void enhanceImage()}>{enhancing ? '处理中…' : <><Icon name="sparkle" size={14} /> 变清晰</>}</button><button className="watermark-remove-launch" disabled={!currentImage || generating || removingWatermark || enhancing} title="先识别覆盖式水印，再调用改图模型修复" onClick={() => void removeWatermark()}>{removingWatermark ? '识别中…' : <><Icon name="sparkle" size={14} /> 去水印</>}</button><button disabled={!currentImage || generating || removingWatermark || enhancing} onClick={() => void openTextEditor()}>编辑文字</button><button disabled={!currentImage} onClick={openCompare}>对比</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>下载</a></div>
           </div>
           <div className="canvas-stage">
-            {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined}>{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={`扩图预览${currentVersion ? `版本 V${currentVersion.number}` : ''}`} /><span>新增画布区域</span></div> : <img src={currentImage.url} alt={`项目图片${currentVersion ? `版本 V${currentVersion.number}` : ''}`} />}{(localEditMode || localEditRect) && <div className={`local-edit-surface ${localEditMode ? 'active' : ''}`} onMouseDown={onLocalBoxStart} onMouseMove={onLocalBoxMove} onMouseUp={onLocalBoxEnd} onMouseLeave={onLocalBoxEnd}>{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>修改区域</em></span>}</div>}{(extractMode || extractRect) && <div className={`extract-surface ${extractMode ? 'active' : ''}`} onMouseDown={onExtractBoxStart} onMouseMove={onExtractBoxMove} onMouseUp={onExtractBoxEnd} onMouseLeave={onExtractBoxEnd}>{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>提取区域</em></span>}</div>}<span className="image-chip">{outpaintMode ? `目标 ${outpaintSize}` : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
+            {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined} onContextMenu={(event) => openImageContextMenu(event, currentImage.id)}>{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={`扩图预览${currentVersion ? `版本 V${currentVersion.number}` : ''}`} /><span>新增画布区域</span></div> : <img src={currentImage.url} alt={`项目图片${currentVersion ? `版本 V${currentVersion.number}` : ''}`} />}{(localEditMode || localEditRect) && <div className={`local-edit-surface ${localEditMode ? 'active' : ''}`} onMouseDown={onLocalBoxStart} onMouseMove={onLocalBoxMove} onMouseUp={onLocalBoxEnd} onMouseLeave={onLocalBoxCancel}>{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>修改区域</em></span>}</div>}{(extractMode || extractRect) && <div className={`extract-surface ${extractMode ? 'active' : ''}`} onMouseDown={onExtractBoxStart} onMouseMove={onExtractBoxMove} onMouseUp={onExtractBoxEnd} onMouseLeave={onExtractBoxCancel}>{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>提取区域</em></span>}</div>}<span className="image-chip">{outpaintMode ? `目标 ${outpaintSize}` : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
               <div className="canvas-empty"><div className="empty-visual"><span /><span /><span /></div><h2>开始你的第一张作品</h2><p>在右侧输入创作描述，或者上传 / 直接 Ctrl+V 粘贴一张图片进行修改。</p><button className="button secondary" onClick={() => fileRef.current?.click()}>上传初始图片</button></div>
             )}
             {(localEditMode || localEditRect) && !localDragging && currentImage && <section className="local-edit-panel"><div className="local-edit-panel-head"><div><strong>局部修改</strong><span>{localEditRect ? '描述改动，系统将只修改框选区域' : '在图片上拖拽框选需要修改的位置'}</span></div><button className="local-edit-exit" onClick={closeLocalEdit}><Icon name="close" size={13} /> 退出</button></div>{localEditRect && <><textarea value={localEditInstruction} onChange={(event) => setLocalEditInstruction(event.target.value)} placeholder="例如：将桌上的咖啡杯替换成透明玻璃花瓶，保留光影和画面风格" rows={2} /><div className="local-edit-panel-actions"><button className="button secondary" onClick={() => setLocalEditRect(null)}>重新框选</button><button className="button primary" disabled={!localEditInstruction.trim() || localEditSubmitting || generating} onClick={() => void submitLocalEdit()}>{localEditSubmitting ? '正在组装提示词…' : '应用局部修改'}</button></div></>}</section>}
             {outpaintMode && currentImage && <section className="outpaint-panel"><div className="outpaint-panel-head"><div><strong>扩图</strong><span>选择当前模型支持的目标画布比例</span></div><button className="outpaint-exit" onClick={closeOutpaint}><Icon name="close" size={13} /> 退出</button></div><div className="outpaint-size-list">{sizesForProvider(provider).map((option) => <button key={option.value} className={option.value === outpaintSize ? 'active' : ''} onClick={() => setOutpaintSize(option.value)}><strong>{option.ratio}</strong><span>{option.value}</span></button>)}</div><p className="outpaint-summary">原图将居中保留，绿色虚线框内的新增区域会由模型自然延展补全。</p><div className="outpaint-panel-actions"><button className="button secondary" onClick={closeOutpaint}>取消</button><button className="button primary" disabled={!outpaintSize || outpaintSubmitting || generating} onClick={() => void submitOutpaint()}>{outpaintSubmitting ? '正在创建扩图任务…' : '确认扩图'}</button></div></section>}
             {(extractMode || extractRect) && !extractDragging && currentImage && <section className="extract-panel"><div className="extract-panel-head"><div><strong>提取素材</strong><span>{extractRect ? '识别模型会聚焦框选主体，并剔除圈入的边缘干扰' : '在图片上拖拽框选想提取的内容'}</span></div><button className="extract-exit" onClick={closeExtract}><Icon name="close" size={13} /> 退出</button></div>{extractRect && <><div className="extract-preview">{extractPreview ? <img src={extractPreview.dataUrl} alt="提取区域截图预览" /> : <span className="extract-preview-loading"><span className="spinner" />正在生成截图…</span>}{extractPreview && <small>{extractPreview.padded ? '已自动补边 · ' : ''}{extractPreview.width} × {extractPreview.height}</small>}</div><textarea value={extractHint} onChange={(event) => setExtractHint(event.target.value)} placeholder="可选补充说明，例如：只要中间的银幕，去掉两侧的座椅" rows={2} /><div className="extract-panel-actions"><button className="button secondary" onClick={() => { setExtractRect(null); setExtractPreview(null); }}>重新框选</button><button className="button primary" disabled={!extractPreview || extractSubmitting || generating} onClick={() => void submitExtract()}>{extractSubmitting ? '正在识别与规划…' : '提取为独立素材'}</button></div></>}</section>}
           </div>
-          {currentVersion && currentVersion.outputs.length > 1 && <div className="candidate-strip"><span>本轮候选</span>{currentVersion.outputs.map((image, index) => <button key={image.id} className={image.id === currentImageId ? 'active' : ''} onClick={() => setCurrentImageId(image.id)}><img src={thumbUrl(image)} alt={`候选结果 ${index + 1}`} loading="lazy" /></button>)}</div>}
+          {currentVersion && currentVersion.outputs.length > 1 && <div className="candidate-strip"><span>本轮候选</span>{currentVersion.outputs.map((image, index) => <button key={image.id} className={image.id === currentImageId ? 'active' : ''} onClick={() => setCurrentImageId(image.id)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt={`候选结果 ${index + 1}`} loading="lazy" /></button>)}</div>}
         </section>
 
         <aside className="conversation-panel">
@@ -881,7 +937,7 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
               if (message.type === 'canceled') return <article className="message canceled-message" key={message.id}><div className="message-meta"><strong>已取消</strong><span>{formatTime(message.createdAt)}</span></div><p>{message.content.message}</p>{message.content.prompt && <button onClick={() => setPrompt(message.content.prompt || '')}>恢复提示词</button>}</article>;
               if (message.type === 'error') return <article className="message error-message" key={message.id}><div className="message-meta"><strong>生成失败</strong><span>{formatTime(message.createdAt)}</span></div><p>{message.content.message}</p><button onClick={() => setPrompt(message.content.prompt || '')}>恢复提示词</button></article>;
               const outputs = (message.content.outputImageIds || []).map((id) => imageMap.get(id)).filter(Boolean) as ProjectImage[];
-              return <article className="message assistant-message" key={message.id}><div className="message-meta"><strong>Layerive</strong><span>V{message.content.versionNumber} · {formatTime(message.createdAt)}</span></div><p>已完成生成，得到 {outputs.length} 张候选图片。</p><div className={`message-gallery count-${outputs.length}`}>{outputs.map((image) => <button key={image.id} onClick={() => setCurrentImageId(image.id)}><img src={thumbUrl(image)} alt="生成结果" loading="lazy" /></button>)}</div><div className="message-actions"><button onClick={() => { const first = outputs[0]; if (first) { setCurrentImageId(first.id); setInputImageId(first.id); } }}>使用此轮继续</button><button onClick={() => setPrompt(message.content.prompt || '')}>复用提示词</button></div></article>;
+              return <article className="message assistant-message" key={message.id}><div className="message-meta"><strong>Layerive</strong><span>V{message.content.versionNumber} · {formatTime(message.createdAt)}</span></div><p>已完成生成，得到 {outputs.length} 张候选图片。</p><div className={`message-gallery count-${outputs.length}`}>{outputs.map((image) => <button key={image.id} onClick={() => setCurrentImageId(image.id)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt="生成结果" loading="lazy" /></button>)}</div><div className="message-actions"><button onClick={() => { const first = outputs[0]; if (first) { setCurrentImageId(first.id); setInputImageId(first.id); } }}>使用此轮继续</button><button onClick={() => setPrompt(message.content.prompt || '')}>复用提示词</button></div></article>;
             })}
             {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>正在生成</span></div><div className="generation-progress"><span /><span /><span /></div><p>{selectedModel?.name} 正在创作，完成后会自动保存为新版本。</p><button className="cancel-task-button" onClick={() => void cancelActiveTask()}>取消任务</button></article>}
             <div ref={messagesEnd} />
@@ -978,6 +1034,10 @@ export function WorkspaceView({ projectId, models, activeModel, onBack, onModels
           </div>
           <div className="modal-actions text-editor-actions"><button className="button secondary" disabled={textEditSubmitting || generating} onClick={() => setTextEditorOpen(false)}>取消</button><button className="button primary" disabled={recognizingText || Boolean(textEditorError) || textEditSubmitting || generating || !textSegments.some((segment) => segment.text.trim() && segment.text.trim() !== segment.originalText.trim())} onClick={() => void submitTextEdit()}>{generating ? '正在排队生成…' : textEditSubmitting ? '正在提交…' : '提交并改图'}</button></div>
         </section>
+      </div>}
+
+      {contextMenu && <div className="image-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+        <button onClick={() => void saveContextImageToGallery()}><Icon name="gallery" size={14} /> {savingToGallery ? '正在提炼提示词…' : '收藏到提示词画廊'}</button>
       </div>}
     </main>
   );

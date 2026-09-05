@@ -1,4 +1,4 @@
-import type { GenerateResult, GenerationTask, ModelConfig, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
+import type { GenerateResult, GenerationTask, GalleryEntryItem, ModelConfig, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -66,6 +66,16 @@ export const api = {
     request<GenerateResult>(`/api/projects/${id}/extract-asset`, { method: 'POST', body: JSON.stringify(input) }),
   uploadImage: (id: string, input: { data: string; mimeType: string; name: string }) =>
     request<ProjectBundle>(`/api/projects/${id}/images`, { method: 'POST', body: JSON.stringify(input) }),
+  gallery: () => request<{ entries: GalleryEntryItem[] }>('/api/gallery'),
+  saveGalleryEntry: (input: { id?: string; title: string; category: string; prompt: string; stylePrompt: string; image?: { data: string; mimeType: string } | null }) =>
+    request<{ entry: GalleryEntryItem }>(`/api/gallery`, { method: 'POST', body: JSON.stringify(input) }),
+  updateGalleryEntry: (id: string, input: { title?: string; category?: string; prompt?: string; stylePrompt?: string; image?: { data: string; mimeType: string } | null }) =>
+    request<{ entry: GalleryEntryItem }>(`/api/gallery/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  deleteGalleryEntry: (id: string) => request<{ ok: boolean }>(`/api/gallery/${id}`, { method: 'DELETE' }),
+  analyzeGalleryImage: (input: { data: string; mimeType: string }) =>
+    request<{ title: string; prompt: string; stylePrompt: string }>('/api/gallery/analyze', { method: 'POST', body: JSON.stringify(input) }),
+  addGalleryFromProject: (input: { projectId: string; imageId: string }) =>
+    request<{ entry: GalleryEntryItem }>('/api/gallery/from-image', { method: 'POST', body: JSON.stringify(input) }),
   models: () => request<ModelsPayload>('/api/models'),
   createModel: (input: Partial<ModelConfig>) => request<{ model: ModelConfig }>('/api/models', { method: 'POST', body: JSON.stringify(input) }),
   updateModel: (id: string, input: Partial<ModelConfig>) => request<{ model: ModelConfig }>(`/api/models/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
