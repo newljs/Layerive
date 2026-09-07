@@ -14,6 +14,8 @@ A local, project-based AI image workspace. Inspired by Lovart's image-creation e
 [![Storage](https://img.shields.io/badge/Storage-SQLite%20%2B%20local%20files-2e8c78)](#-local-data-and-privacy)
 [![Tech](https://img.shields.io/badge/React%2019%20%C2%B7%20Vite%20%C2%B7%20SQLite-TypeScript-3178c6)](#%EF%B8%8F-tech-stack)
 
+[Get started](#-getting-started) · [Capabilities](#-core-capabilities) · [Configure models](#-configure-real-models) · [Workflow](#-workflow) · [Privacy](#-local-data-and-privacy) · [FAQ](#-faq)
+
 </div>
 
 ---
@@ -28,7 +30,17 @@ Layerive is inspired by Lovart's image-creation workflow, but it does not depend
 
 > **Note:** Layerive is an independent local project with no official affiliation with Lovart. Lovart is mentioned only as a product-design reference.
 
-## ✨ Current capabilities
+## 🧭 Three steps to try it
+
+You can explore the entire project-and-version workflow before adding an API key, using the built-in **demo model**:
+
+1. Create a project from the home page and describe what you want to create.
+2. Keep the demo model, write a prompt, and send it.
+3. Review the result on the canvas, then revisit, branch, or compare it in the version tree.
+
+To generate, edit, or recognize images with a real service, continue with [Configure real models](#-configure-real-models).
+
+## ✨ Core capabilities
 
 ### Project and asset management
 
@@ -96,7 +108,10 @@ npm run build  # Type-check and build into dist/
 npm start      # Serve the frontend and local API
 ```
 
-## 🧭 Suggested workflow (interface screenshots)
+> [!TIP]
+> For everyday local use, run `npm run build` once and then use `npm start`. Use `npm run dev` while changing code.
+
+## 🧭 Workflow (interface screenshots)
 
 > Screenshots live in `doc/界面操作截图/`, in operation order — one glance covers the core flow.
 
@@ -124,10 +139,15 @@ Open **Model configuration** from the home page or workspace:
 3. Enter a display name, Base URL, API key, model name, and capabilities. Switching provider fills in matching endpoint and model examples.
 4. Use **Test connection**, save the model, then set an image model as the default or a vision model as the recognition default.
 
+| Model type | Supported providers | Primary use |
+| --- | --- | --- |
+| Image model | SenseNova, OpenAI-compatible, Gemini, Grok | Text-to-image, image-to-image, edits, outpainting, and more |
+| Vision model | SenseNova, OpenAI-compatible | Analysis and prompt planning for text editing, regional edits, and asset extraction |
+
 ### Configuration notes
 
 - Parameter support is determined by the gateway for OpenAI-compatible services. For example, if `quality` accepts only `auto`, `low`, `medium`, or `high`, use one of those values in the model's default parameters.
-- Text editing, regional editing, outpainting, and image enhancement require an image model with **prompt-editing** capability. Text and regional editing also require an enabled vision model.
+- Text editing, regional editing, outpainting, enhancement, and asset extraction require an image model with **prompt-editing** capability. The first two recognition-driven operations also require an enabled vision model.
 - Available outpainting sizes are constrained by the active image model. Confirm the canvas preview before submitting.
 - Output quality, text accuracy, and regional fidelity depend on the underlying model. For complex layouts, recognize text first and use manual selections to edit one region at a time.
 
@@ -136,6 +156,25 @@ Open **Model configuration** from the home page or workspace:
 - No account or sign-in is required. Project metadata is stored in `data/app.db`, and project images live in local directories under `data/`.
 - Model configuration is stored in `config/models.json`, which may include API keys. Do not commit it to a public repository, and handle backups carefully.
 - Full backups include project data and configuration. Keep a backup before restoring another one.
+- The local API listens only on `127.0.0.1`; it is not directly exposed to your network or the internet.
+
+## ❓ FAQ
+
+### The page opens, but image generation fails. What should I do?
+
+The demo model is only for exploring the workflow. In **Model configuration**, add a real image model, enter its API key, test the connection, and set it as the default.
+
+### Why is text editing or regional editing unavailable?
+
+Those operations need both an image model that can edit by prompt and a vision model for image analysis. Configure and enable both, then verify the image model has the **prompt-editing** capability.
+
+### How do I move my data to another computer?
+
+Export a full backup ZIP from the home page. On the new computer, install and start Layerive, then use Restore to import it. Restoration overwrites the current local data, so export a current backup first.
+
+### What if a port is already in use?
+
+Development uses frontend port `5173` and API port `8788` by default. Stop the process using the port; to change the API port, set `PIXELFLOW_API_PORT` before starting and update Vite's API proxy to match.
 
 ## 🏗️ Tech stack
 
@@ -156,6 +195,15 @@ Project layout:
 ├── public/         # Icons, PWA resources, and prompt-gallery assets
 ├── config/         # Local model configuration (generated at runtime; sensitive)
 └── data/           # SQLite database and project images (generated at runtime)
+```
+
+## 🧪 Useful commands
+
+```bash
+npm run dev    # Start frontend and API in development mode
+npm run lint   # Type-check TypeScript
+npm run build  # Type-check and build the frontend
+npm start      # Start the local production service
 ```
 
 ## License
