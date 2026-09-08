@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Local-first AI image creation workspace",
   "license": "LGPL-3.0-or-later",
+  "author": {
+    "name": "newljs",
+    "email": "a@liujunsheng.com"
+  },
   "private": true,
   "engines": {
     "node": ">=22.13.0"
