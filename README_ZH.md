@@ -109,6 +109,19 @@ npm start      # 启动本地服务，同时托管前端与 API
 > [!TIP]
 > 日常本地使用时，先执行一次 `npm run build`，之后运行 `npm start` 即可；开发或修改代码时使用 `npm run dev`。
 
+### 桌面版
+
+同一份源码可以构建为 Electron 桌面应用：
+
+```bash
+npm run desktop:dev   # 构建后以 Electron 启动
+npm run desktop:dist  # 生成安装包与便携版
+```
+
+桌面版会在系统的 Layerive 用户数据目录保存 SQLite 数据库、项目图片、画廊和模型配置；程序升级不会覆盖这些数据。浏览器本地版与桌面版使用相同功能代码，但默认各自保存本地数据；可通过完整备份 / 恢复迁移项目。
+
+也可以直接从 [GitHub Releases](https://github.com/newljs/Layerive/releases) 下载预构建安装包：推送 `v*` tag 后 GitHub Actions 会自动发布 Windows（安装包 + 便携版）、macOS（x64 + arm64 DMG）和 Linux（AppImage + deb）产物。
+
 ## 🧭 操作流程（界面截图）
 
 > 截图位于 `doc/界面操作截图/`，按操作顺序排列，一眼看完核心链路。
@@ -151,8 +164,8 @@ npm start      # 启动本地服务，同时托管前端与 API
 
 ## 🔒 本地数据与隐私
 
-- 不需要注册或登录；项目元数据存于 `data/app.db`，项目图片保存在 `data/` 下的本地目录。
-- 模型配置保存在 `config/models.json`，其中可能包含 API Key。请勿提交到公共仓库，也请谨慎处理备份文件。
+- 不需要注册或登录；浏览器本地版的项目元数据存于 `data/app.db`，项目图片保存在 `data/` 下的本地目录。桌面版将同类数据保存在系统的 Layerive 用户数据目录。
+- 浏览器本地版的模型配置保存在 `config/models.json`；桌面版保存在其用户数据目录。其中可能包含 API Key。请勿提交到公共仓库，也请谨慎处理备份文件。
 - 完整备份会包含项目数据与配置；导入前建议先保留一份现有备份。
 - 本地 API 仅监听 `127.0.0.1`，不会直接暴露给局域网或互联网。
 
@@ -204,6 +217,26 @@ npm run build  # 类型检查并打包前端
 npm start      # 启动生产模式本地服务
 ```
 
+## Star History
+
+<a href="https://star-history.com/#newljs/Layerive&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=newljs/Layerive&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=newljs/Layerive&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=newljs/Layerive&type=Date" />
+ </picture>
+</a>
+
+---
+
 ## 许可
 
-当前仓库未附带独立的许可文件。对外分发或商用前，请补充并确认适用许可。
+本项目基于 [GNU 宽通用公共许可证 v3.0（LGPL-3.0）](LICENSE)（或更新版本）发布。
+
+Copyright (c) 2026 newljs
+
+<div align="center">
+
+**如果这个项目对你有帮助，欢迎点一个 Star！**
+
+</div>

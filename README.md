@@ -111,6 +111,19 @@ npm start      # Serve the frontend and local API
 > [!TIP]
 > For everyday local use, run `npm run build` once and then use `npm start`. Use `npm run dev` while changing code.
 
+### Desktop app
+
+The same source can be packaged as an Electron desktop application:
+
+```bash
+npm run desktop:dev   # Build and start Electron
+npm run desktop:dist  # Create installer and portable packages
+```
+
+The desktop app stores its SQLite database, project images, gallery, and model configuration in the operating system's Layerive user-data directory, which is not replaced during application upgrades. The browser-local and desktop modes share feature code but keep separate local data by default; use full backup and restore to migrate projects.
+
+Prebuilt installers are also published automatically to [GitHub Releases](https://github.com/newljs/Layerive/releases) by GitHub Actions whenever a `v*` tag is pushed — Windows (installer + portable), macOS (x64 + arm64 DMG), and Linux (AppImage + deb).
+
 ## 🧭 Workflow (interface screenshots)
 
 > Screenshots live in `doc/界面操作截图/`, in operation order — one glance covers the core flow.
@@ -153,8 +166,8 @@ Open **Model configuration** from the home page or workspace:
 
 ## 🔒 Local data and privacy
 
-- No account or sign-in is required. Project metadata is stored in `data/app.db`, and project images live in local directories under `data/`.
-- Model configuration is stored in `config/models.json`, which may include API keys. Do not commit it to a public repository, and handle backups carefully.
+- No account or sign-in is required. In browser-local mode, project metadata is stored in `data/app.db`, and project images live in local directories under `data/`. The desktop app stores equivalent data in its operating-system user-data directory.
+- In browser-local mode, model configuration is stored in `config/models.json`; the desktop app stores it in its user-data directory. It may include API keys. Do not commit it to a public repository, and handle backups carefully.
 - Full backups include project data and configuration. Keep a backup before restoring another one.
 - The local API listens only on `127.0.0.1`; it is not directly exposed to your network or the internet.
 
@@ -206,6 +219,26 @@ npm run build  # Type-check and build the frontend
 npm start      # Start the local production service
 ```
 
+## Star History
+
+<a href="https://star-history.com/#newljs/Layerive&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=newljs/Layerive&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=newljs/Layerive&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=newljs/Layerive&type=Date" />
+ </picture>
+</a>
+
+---
+
 ## License
 
-This repository does not yet include a standalone license file. Add and confirm an appropriate license before distributing or using it commercially.
+This project is licensed under the [GNU Lesser General Public License v3.0](LICENSE) (or later).
+
+Copyright (c) 2026 newljs
+
+<div align="center">
+
+**If you find this project useful, please give it a star!**
+
+</div>
