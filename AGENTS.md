@@ -3,18 +3,21 @@
 > **维护契约（必须遵守）**：只要改动了项目的功能、架构、数据结构、API、模型适配、运行方式、文件位置或重要约束，必须在同一次改动中更新本文件。先核对相关实现，再更新受影响章节；不要仅凭 README 推断。纯格式调整且不改变行为时可不更新。  
 > 更新时请同步修改本文的“最后核对”日期和相应内容；若现有描述不再可信，优先修正文档而不是保留过期说明。
 
-**最后核对**：2026-09-05  
+**最后核对**：2026-09-08
 **项目定位**：Layerive 是一个仅本地运行的、以“项目 + 图片版本树”为中心的 AI 图片创作工作台。它将文生图、基于图片的编辑、文字编辑、局部编辑、扩图、去水印、对话记录和项目备份统一保存到本机。
 
 ## 1. 运行与边界
 
-- 技术栈：React 19 + TypeScript + Vite 前端；Node.js 原生 `http` 服务端；`node:sqlite` / SQLite 数据库。
+- 技术栈：React 19 + TypeScript + Vite 前端；Node.js 原生 `http` 服务端；`node:sqlite` / SQLite 数据库；Electron 将同一套本地产品打包为桌面应用。
 - Node 版本要求：`>= 22.13.0`（依赖内置 `node:sqlite`）。
 - 开发：`npm run dev` 同时启动 Vite `127.0.0.1:5173` 和后端 `127.0.0.1:8788`；Vite 将 `/api`、`/files` 代理至后端。
 - 生产：先 `npm run build`，再 `npm start`。后端从 `dist/` 托管前端，同时提供 API 和本地图片文件。
+- 桌面开发：`npm run desktop:dev` 先构建相同的前端，再由 Electron 启动本地服务和原生窗口；`npm run desktop:dist` 构建安装包。Electron 专属代码只在 `electron/main.cjs`，不得复制 `src/`、`server/` 或 `public/` 到另一个桌面项目。
+- CI 发布：推送 `v*` tag 触发 `.github/workflows/build.yml`，在 GitHub Actions 的 Windows / macOS / Ubuntu Runner 上执行 `npm ci` → `npm run build` → `electron-builder --publish never`，由独立 release 任务把安装包发布为已发布的 GitHub Release（非草稿）。mac 同时构建 x64 与 arm64；三端均未做代码签名，产物为未签名安装包。
 - 检查：`npm run lint`（TypeScript no-emit）；`npm run build`（先类型检查再构建）。目前没有自动化测试套件。
 - Windows 双击启动入口：`Layerive.bat`。该文件使用固定的工作目录，移动仓库后需要同步更新。
 - 项目不依赖登录、云端数据库或第三方后端。模型请求会发送给用户配置的模型服务；其他项目数据留在本机。
+- 许可：项目以 LGPL-3.0-or-later 发布，根目录 `LICENSE` 为 GNU LGPL v3.0 全文（参考 Wei-Shaw/sub2api 的做法）；`package.json` 的 `license` 字段与之保持一致。对外分发或商用前应遵守该许可条款。
 
 ## 2. 功能清单（改动时必须同步维护）
 
@@ -80,6 +83,8 @@ server/
   models.mjs                config/models.json 的读写、脱敏与模型规范化
   png.mjs                   演示图和缩略图的 PNG 工具
   zip.mjs                   无额外依赖的 ZIP 读写
+electron/
+  main.cjs                  桌面窗口、原生菜单与本地服务生命周期；运行时将用户数据根目录传给 server/
 scripts/
   dev.mjs                   并行启动前端和后端
   parse-gallery.mjs         从外部 GPT-Image2-Skill 参考资料生成画廊源 JSON
@@ -87,9 +92,10 @@ scripts/
   build-gallery-images.py   构建画廊图片素材
   make-icons.mjs            生成 PWA 图标
 public/                     静态图标、PWA manifest、画廊缩略图
-data/                       运行时 SQLite、项目图片、画廊配图（data/gallery）、恢复安全备份（被 Git 忽略）
-config/models.json          运行时模型配置，可能含 API Key（被 Git 忽略）
+data/                       浏览器本地版的运行时 SQLite、项目图片、画廊配图（data/gallery）、恢复安全备份（被 Git 忽略）
+config/models.json          浏览器本地版的运行时模型配置，可能含 API Key（被 Git 忽略）
 dist/                       构建产物（被 Git 忽略）
+release/                    Electron 构建产物（被 Git 忽略）
 work/                       临时工作目录（被 Git 忽略）
 ```
 
@@ -116,7 +122,7 @@ work/                       临时工作目录（被 Git 忽略）
 
 ## 5. 核心数据模型与不变量
 
-数据库在 `data/app.db`，启动时由 `server/db.mjs` 创建表并启用外键和 WAL。数据库模式没有迁移框架；变更表结构时必须实现对旧本地数据库安全的迁移/兼容策略，并更新本文件。
+浏览器本地版数据库在 `data/app.db`；桌面版数据库在 Electron `userData/data/app.db`。启动时由 `server/db.mjs` 创建表并启用外键和 WAL。`LAYERIVE_DATA_ROOT` 和 `LAYERIVE_CONFIG_ROOT` 可分别覆盖数据和模型配置目录，Electron 必须传入其 `userData` 子目录，确保升级不覆盖用户项目、图片或 API Key。数据库模式没有迁移框架；变更表结构时必须实现对旧本地数据库安全的迁移/兼容策略，并更新本文件。
 
 | 表 | 用途 | 关键关系 / 约束 |
 | --- | --- | --- |
@@ -161,7 +167,7 @@ work/                       临时工作目录（被 Git 忽略）
 
 ## 7. 模型适配和安全注意事项
 
-模型配置在 `config/models.json`，由 `server/models.mjs` 管理。向前端返回模型时使用 `publicModel()`，API Key 显示为掩码；保存掩码值时保留原 Key。
+模型配置在 `config/models.json`（或 `LAYERIVE_CONFIG_ROOT/models.json`），由 `server/models.mjs` 管理。向前端返回模型时使用 `publicModel()`，API Key 显示为掩码；保存掩码值时保留原 Key。
 
 | 提供商 | 图像适配实现 | 备注 |
 | --- | --- | --- |
@@ -207,7 +213,7 @@ work/                       临时工作目录（被 Git 忽略）
 
 - 单项目导出格式为 ZIP，含 `project.json` 和可选 `files/` 图片；导入会生成新的项目及所有关联 ID，缺失的图片文件会被保留为占位关系并提示。
 - 项目“复制”也会复制磁盘图片和全部关系数据，并重映射 ID。
-- 完整备份含数据库、所有项目图片、`data/gallery/` 画廊配图和 `config/models.json`，因此可能含 API Key。恢复前会在 `data/backups/<timestamp>/` 留一份安全备份（含项目图片与画廊配图），然后替换数据并启动新的服务进程。
+- 完整备份含数据库、所有项目图片、`data/gallery/` 画廊配图和 `config/models.json`，因此可能含 API Key。恢复前会在当前 `DATA_ROOT/backups/<timestamp>/` 留一份安全备份（含项目图片与画廊配图），然后替换数据并启动新的服务进程。
 - 这些操作具有高数据风险。修改其逻辑前，必须先评估 SQLite WAL、一致性、失败回滚、路径穿越防护，以及 Windows 文件锁行为。
 
 ## 10. 修改指南
