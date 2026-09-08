@@ -2,8 +2,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
-export const APP_ROOT = path.resolve(import.meta.dirname, '..');
-export const DATA_ROOT = path.join(APP_ROOT, 'data');
+// Web mode keeps runtime data beside the source checkout. The Electron shell
+// supplies writable per-user locations, so packaged application resources can
+// remain read-only and user projects survive application upgrades.
+export const APP_ROOT = process.env.LAYERIVE_APP_ROOT ? path.resolve(process.env.LAYERIVE_APP_ROOT) : path.resolve(import.meta.dirname, '..');
+export const DATA_ROOT = process.env.LAYERIVE_DATA_ROOT ? path.resolve(process.env.LAYERIVE_DATA_ROOT) : path.join(APP_ROOT, 'data');
+export const CONFIG_ROOT = process.env.LAYERIVE_CONFIG_ROOT ? path.resolve(process.env.LAYERIVE_CONFIG_ROOT) : path.join(APP_ROOT, 'config');
 export const PROJECTS_ROOT = path.join(DATA_ROOT, 'projects');
 export const GALLERY_ROOT = path.join(DATA_ROOT, 'gallery');
 mkdirSync(PROJECTS_ROOT, { recursive: true });

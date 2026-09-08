@@ -1,8 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { APP_ROOT, uid } from './db.mjs';
+import { CONFIG_ROOT, uid } from './db.mjs';
 
-const configPath = path.join(APP_ROOT, 'config', 'models.json');
+const configPath = path.join(CONFIG_ROOT, 'models.json');
 mkdirSync(path.dirname(configPath), { recursive: true });
 
 export function normalizeBaseUrl(value) {

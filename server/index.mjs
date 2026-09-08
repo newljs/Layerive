@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { APP_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, GALLERY_ROOT, imageDto, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
+import { APP_ROOT, CONFIG_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, GALLERY_ROOT, imageDto, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
 import { makeDemoPng, makeThumbnailPng, readImageDimensions } from './png.mjs';
 import { normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, writeModels } from './models.mjs';
 import { createZip, readZip } from './zip.mjs';
@@ -11,7 +11,7 @@ import { createZip, readZip } from './zip.mjs';
 const PORT = Number(process.env.PIXELFLOW_API_PORT || 8788);
 const HOST = '127.0.0.1';
 const DIST_ROOT = path.join(APP_ROOT, 'dist');
-const MODELS_CONFIG_PATH = path.join(APP_ROOT, 'config', 'models.json');
+const MODELS_CONFIG_PATH = path.join(CONFIG_ROOT, 'models.json');
 
 // Tasks still marked `generating` when the server starts can never finish —
 // the request died with the previous process. Mark them instead of leaving
@@ -968,11 +968,13 @@ async function restoreBackup(buffer) {
   for (const [name, data] of entries) {
     if (!name.startsWith('data/projects/') && !name.startsWith('data/gallery/')) continue;
     if (name.endsWith('/')) continue;
-    const absolute = path.join(APP_ROOT, name.replaceAll('/', path.sep));
+    const absolute = name.startsWith('data/projects/')
+      ? path.join(PROJECTS_ROOT, name.slice('data/projects/'.length).replaceAll('/', path.sep))
+      : path.join(GALLERY_ROOT, name.slice('data/gallery/'.length).replaceAll('/', path.sep));
     mkdirSync(path.dirname(absolute), { recursive: true });
     await writeFile(absolute, data);
   }
-  return { safetyBackup: path.relative(APP_ROOT, safety) };
+  return { safetyBackup: path.relative(DATA_ROOT, safety) };
 }
 
 // ---- Static files with on-demand thumbnails ---------------------------------

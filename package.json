@@ -1,6 +1,8 @@
 {
-  "name": "layerive-local-workspace",
+  "name": "layerive",
   "version": "0.1.0",
+  "description": "Local-first AI image creation workspace",
+  "license": "LGPL-3.0-or-later",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -9,7 +11,10 @@
     "dev": "node scripts/dev.mjs",
     "build": "node node_modules/typescript/bin/tsc --noEmit && node node_modules/vite/bin/vite.js build",
     "start": "node server/index.mjs",
-    "lint": "node node_modules/typescript/bin/tsc --noEmit"
+    "lint": "node node_modules/typescript/bin/tsc --noEmit",
+    "desktop:dev": "npm run build && electron .",
+    "desktop:dir": "npm run build && electron-builder --dir",
+    "desktop:dist": "npm run build && electron-builder"
   },
   "dependencies": {
     "react": "19.2.6",
@@ -20,7 +25,52 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "typescript": "5.9.3",
-    "vite": "5.4.21"
+    "vite": "5.4.21",
+    "electron": "44.2.0",
+    "electron-builder": "26.15.3"
   },
-  "type": "module"
+  "type": "module",
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.layerive.desktop",
+    "productName": "Layerive",
+    "icon": "public/icons/icon-512.png",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "app/dist"
+      },
+      {
+        "from": "server",
+        "to": "app/server"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Graphics"
+    }
+  }
 }
