@@ -79,6 +79,7 @@ export const api = {
   models: () => request<ModelsPayload>('/api/models'),
   createModel: (input: Partial<ModelConfig>) => request<{ model: ModelConfig }>('/api/models', { method: 'POST', body: JSON.stringify(input) }),
   updateModel: (id: string, input: Partial<ModelConfig>) => request<{ model: ModelConfig }>(`/api/models/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  revealModelApiKey: (id: string) => request<{ apiKey: string }>(`/api/models/${id}/api-key`, { method: 'POST' }),
   deleteModel: (id: string) => request<{ ok: boolean }>(`/api/models/${id}`, { method: 'DELETE' }),
   activateModel: (id: string) => request<{ ok: boolean }>(`/api/models/${id}/activate`, { method: 'POST' }),
   activateVisionModel: (id: string) => request<{ ok: boolean }>(`/api/models/${id}/activate-vision`, { method: 'POST' }),

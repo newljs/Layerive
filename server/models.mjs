@@ -9,19 +9,62 @@ export function normalizeBaseUrl(value) {
   return String(value || '').trim().replace(/\/(?:images\/generations|images\/edits)\/?$/i, '').replace(/\/+$/, '');
 }
 
+const VISION_API_FORMATS = new Set(['anthropic_messages', 'chat_completions', 'responses']);
+
+function hostnameOf(value) {
+  try { return new URL(value).hostname; }
+  catch { return ''; }
+}
+
+// The legacy multimodal API is hosted at api.sensenova.cn and uses the
+// /llm/chat-completions route. Token Plan's newer multimodal models (such as
+// sensenova-6.8-flash-lite) are OpenAI Chat Completions-compatible and use
+// token.sensenova.cn/v1/chat/completions instead.
+export function isSenseNovaLegacyVisionEndpoint(value) {
+  return /^api\.sensenova\.cn$/i.test(hostnameOf(value));
+}
+
+export function isSenseNovaTokenChatEndpoint(value) {
+  return /^token\.sensenova\.(?:cn|ai)$/i.test(hostnameOf(value));
+}
+
+export function visionApiFormat(model) {
+  if (VISION_API_FORMATS.has(model?.apiFormat)) return model.apiFormat;
+  // Before apiFormat existed, Dots/askdiandian was the sole Messages-style
+  // adapter. Preserve that route while defaulting every other legacy vision
+  // configuration to its previous Chat Completions behavior.
+  return /(?:^|\.)askdiandian\.com$/i.test(hostnameOf(normalizeBaseUrl(model?.baseUrl)))
+    ? 'anthropic_messages'
+    : 'chat_completions';
+}
+
+export function visionEndpoint(model) {
+  const baseUrl = normalizeBaseUrl(model?.baseUrl);
+  const format = visionApiFormat(model);
+  const pathSuffix = format === 'anthropic_messages' ? '/messages' : format === 'responses' ? '/responses' : '/chat/completions';
+  if (baseUrl.toLowerCase().endsWith(pathSuffix)) return baseUrl;
+  if (format === 'anthropic_messages' && /(?:^|\.)askdiandian\.com$/i.test(hostnameOf(baseUrl))) return `${baseUrl}/messages`;
+  if (format === 'anthropic_messages' && /\/v1$/i.test(baseUrl)) return `${baseUrl}/messages`;
+  if (format === 'anthropic_messages') return `${baseUrl}/v1/messages`;
+  if (format === 'chat_completions' && isSenseNovaLegacyVisionEndpoint(baseUrl)) return `${baseUrl}/llm/chat-completions`;
+  return `${baseUrl}${pathSuffix}`;
+}
+
 export function readModels() {
   try {
     const config = JSON.parse(readFileSync(configPath, 'utf8'));
     config.models = Array.isArray(config.models) ? config.models.map((model) => {
       const baseUrl = normalizeBaseUrl(model.baseUrl);
        const isSenseNova = model.provider === 'sensenova' || /(?:^|[/.])sensenova\.cn(?:[/:]|$)/i.test(baseUrl);
-       const isGemini = model.provider === 'gemini' || /(?:^|\.)generativelanguage\.googleapis\.com$/i.test(new URL(baseUrl).hostname);
-       const isGrok = model.provider === 'grok' || /(?:^|\.)x\.ai$/i.test(new URL(baseUrl).hostname);
+       const host = hostnameOf(baseUrl);
+       const isGemini = model.provider === 'gemini' || /(?:^|\.)generativelanguage\.googleapis\.com$/i.test(host);
+       const isGrok = model.provider === 'grok' || /(?:^|\.)x\.ai$/i.test(host);
       return {
         ...model,
         type: model.type === 'vision' ? 'vision' : 'image',
          provider: isSenseNova ? 'sensenova' : isGemini ? 'gemini' : isGrok ? 'grok' : 'openai',
         baseUrl,
+        ...(model.type === 'vision' ? { apiFormat: visionApiFormat({ ...model, baseUrl }) } : {}),
       };
     }) : [];
     if (!config.active_vision_model || !config.models.some((model) => model.id === config.active_vision_model && model.type === 'vision')) {
@@ -61,6 +104,7 @@ export function upsertModel(input, modelId) {
     name: String(input.name || '未命名模型'),
     type,
     provider,
+    ...(type === 'vision' ? { apiFormat: VISION_API_FORMATS.has(input.apiFormat) ? input.apiFormat : visionApiFormat(existing || input) } : {}),
     baseUrl: normalizeBaseUrl(input.baseUrl || defaultBaseUrl),
     apiKey: input.apiKey === '••••••••' ? existing?.apiKey ?? '' : String(input.apiKey || ''),
     model: String(input.model || defaultModel),

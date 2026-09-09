@@ -68,6 +68,11 @@ button:disabled, a.disabled { cursor: not-allowed; opacity: .48; pointer-events:
 .field input:focus, .field textarea:focus, .field select:focus { border-color: #8a78f8; box-shadow: 0 0 0 3px #6d55f714; }
 .field input:disabled { color: #999da6; background: #f3f4f6; }
 .field-help { margin-top: -2px; color: #8b909a; font-size: 11px; line-height: 1.5; }
+.secret-input { position: relative; display: block; }
+.field .secret-input input { padding-right: 46px; }
+.secret-input button { position: absolute; top: 50%; right: 6px; width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #777d88; transform: translateY(-50%); }
+.secret-input button:hover { background: #f0eefc; color: var(--accent); }
+.secret-loading { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: #1518219c; backdrop-filter: blur(5px); }
 .modal-card { width: min(520px, 100%); border: 1px solid #ffffff52; border-radius: 22px; background: white; padding: 26px; box-shadow: 0 30px 90px #12131a42; }
 .modal-heading { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 24px; }
@@ -117,6 +122,7 @@ button:disabled, a.disabled { cursor: not-allowed; opacity: .48; pointer-events:
 .model-provider.sensenova { background: #6d55f7; }
 .model-provider.gemini { background: #3079ed; }
 .model-provider.grok { background: #15171c; }
+.model-provider.vision-api { background: #5e6270; }
 .model-label { min-width: 0; display: grid; gap: 4px; }
 .model-label strong { overflow: hidden; text-overflow: ellipsis; font-size: 13px; white-space: nowrap; }
 .model-label small { overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 11px; white-space: nowrap; }
@@ -753,6 +759,8 @@ html[data-theme='dark'] .field > span, html[data-theme='dark'] .capability-field
 html[data-theme='dark'] .field input, html[data-theme='dark'] .field textarea, html[data-theme='dark'] .field select { background: #1b1e25; border-color: #34373f; color: var(--ink); }
 html[data-theme='dark'] .field input:disabled { background: #22252d; color: #6b707a; }
 html[data-theme='dark'] .field-help { color: #858b96; }
+html[data-theme='dark'] .secret-input button { color: #9aa0ab; }
+html[data-theme='dark'] .secret-input button:hover { background: #2b2d38; color: #b8adff; }
 html[data-theme='dark'] .provider-guide, html[data-theme='dark'] .vision-guide { border-color: #34373f; background: #22252d; }
 html[data-theme='dark'] .provider-guide p, html[data-theme='dark'] .vision-guide p { color: #9aa0ab; }
 html[data-theme='dark'] .provider-guide.sensenova-guide { border-color: #3f3a63; background: #272438; }

@@ -3,7 +3,7 @@
 > **维护契约（必须遵守）**：只要改动了项目的功能、架构、数据结构、API、模型适配、运行方式、文件位置或重要约束，必须在同一次改动中更新本文件。先核对相关实现，再更新受影响章节；不要仅凭 README 推断。纯格式调整且不改变行为时可不更新。  
 > 更新时请同步修改本文的“最后核对”日期和相应内容；若现有描述不再可信，优先修正文档而不是保留过期说明。
 
-**最后核对**：2026-09-08
+**最后核对**：2026-09-09
 **项目定位**：Layerive 是一个仅本地运行的、以“项目 + 图片版本树”为中心的 AI 图片创作工作台。它将文生图、基于图片的编辑、文字编辑、局部编辑、扩图、去水印、对话记录和项目备份统一保存到本机。
 
 ## 1. 运行与边界
@@ -57,9 +57,9 @@
 ### 模型管理
 
 - 图片模型：新增、编辑、删除、连接测试、设置默认模型，并按能力控制工作台可用操作。
-- 视觉识别模型：新增、编辑、删除、连接测试、设置默认识别模型；供改字、局部编辑、去水印、提取素材规划使用。
+- 视觉识别模型：新增、编辑、删除、连接测试、设置默认识别模型；可选择 Anthropic Messages、Chat Completions 或 Responses API 格式（新建默认 Chat Completions），供改字、局部编辑、去水印、提取素材规划使用。API Key 输入框可切换显示 / 隐藏。
 - 已适配图像提供商：OpenAI 兼容、SenseNova、Gemini、Grok；另有仅服务端兼容的本地 `mock` 演示路径。
-- 已适配视觉请求：SenseNova、OpenAI 兼容，以及 Dots（`askdiandian.com`）格式兼容。
+- 已适配视觉请求：Anthropic Messages、OpenAI Chat Completions、OpenAI Responses，并保留 SenseNova 和 Dots（`askdiandian.com`）旧配置兼容。
 
 ## 3. 目录职责
 
@@ -167,7 +167,7 @@ work/                       临时工作目录（被 Git 忽略）
 
 ## 7. 模型适配和安全注意事项
 
-模型配置在 `config/models.json`（或 `LAYERIVE_CONFIG_ROOT/models.json`），由 `server/models.mjs` 管理。向前端返回模型时使用 `publicModel()`，API Key 显示为掩码；保存掩码值时保留原 Key。
+模型配置在 `config/models.json`（或 `LAYERIVE_CONFIG_ROOT/models.json`），由 `server/models.mjs` 管理。常规模型列表向前端返回时使用 `publicModel()`，API Key 显示为掩码；保存掩码值时保留原 Key。用户点击显隐按钮时，前端才通过 `POST /api/models/:id/api-key` 按需读取该模型的真实 Key；响应禁止缓存，并拒绝来源不是本机页面的跨站请求，不得把真实 Key 加回常规模型列表响应。
 
 | 提供商 | 图像适配实现 | 备注 |
 | --- | --- | --- |
@@ -177,7 +177,9 @@ work/                       临时工作目录（被 Git 忽略）
 | `grok` | Images `generations` / `edits` | 输入图以 data URL 放入 JSON |
 | `mock` | 本地演示 PNG | 仅服务端兼容路径；配置 UI 的常规提供商集合不包含它 |
 
-- 视觉模型目前仅允许 `sensenova` 或 `openai` 兼容协议；另有对 `askdiandian.com` 的 Dots 请求格式兼容。
+- 视觉模型以独立的 `apiFormat` 字段选择 `anthropic_messages`、`chat_completions` 或 `responses`。该字段缺失的旧配置不会被重写：`askdiandian.com` 自动沿用 Anthropic Messages，其余配置沿用 Chat Completions；旧 `provider` 字段继续原样保留，视觉请求根据 Base URL 识别 SenseNova 专用端点，避免隐藏的旧提供商值干扰用户修改后的地址。
+- `visionEndpoint()` 根据 Base URL 和 API 格式补全 `/v1/messages`、`/chat/completions` 或 `/responses`；若用户已填写完整端点则不会重复拼接。
+- SenseNova 视觉模型有两条不同的兼容路径：旧融合模态服务 `api.sensenova.cn/v1` 使用 `/llm/chat-completions` 和 `max_new_tokens`；Token Plan 的 `sensenova-6.8-flash-lite` 等模型使用 `token.sensenova.cn/v1/chat/completions`、标准 `max_tokens` 与 OpenAI Vision 图片块。不得仅按 `sensenova.cn` 域名笼统选择旧路径。
 - `normalizeBaseUrl()` 会移除末尾的 `images/generations` 或 `images/edits`，避免重复拼接路径。
 - 不要读取、输出、提交或写入示例真实 API Key；`config/` 和 `data/` 已被 Git 忽略。
 - 新增供应商或参数时，必须同时检查：`types.ts`、`ModelConfigView.tsx`、`sizes.ts`、`models.mjs`、`index.mjs` 的调用适配和模型测试逻辑。
@@ -199,7 +201,7 @@ work/                       临时工作目录（被 Git 忽略）
 | `/api/projects/:id/duplicate`、`/export` | POST / GET | 深复制项目、导出项目 ZIP |
 | `/api/projects/import` | POST | 导入项目 ZIP（base64 请求体） |
 | `/api/backup`、`/api/backup/restore` | GET / POST | 完整备份、恢复并重启服务 |
-| `/api/models...` | GET / POST / PATCH / DELETE | 模型管理、默认设置、连接测试 |
+| `/api/models...` | GET / POST / PATCH / DELETE | 模型管理、默认设置、连接测试；`POST /api/models/:id/api-key` 仅供本机配置页按需回显已保存密钥 |
 | `/api/gallery` | GET / POST | 用户画廊条目列表、新增（可附 base64 配图） |
 | `/api/gallery/analyze` | POST | 视觉模型从 base64 图片提炼标题 / 提示词 / 风格提示词 |
 | `/api/gallery/from-image` | POST | 把项目内图片（projectId + imageId）收藏进画廊并自动提炼提示词 |

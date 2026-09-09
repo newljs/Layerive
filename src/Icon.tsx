@@ -7,7 +7,7 @@ export type IconName =
   | 'grid' | 'list' | 'models' | 'data' | 'settings' | 'search' | 'plus' | 'minus'
   | 'close' | 'star' | 'starFilled' | 'duplicate' | 'export' | 'image' | 'branch'
   | 'tree' | 'up' | 'down' | 'left' | 'sparkle' | 'box' | 'edit' | 'download' | 'gallery' | 'extract'
-  | 'sun' | 'moon' | 'sliders';
+  | 'sun' | 'moon' | 'sliders' | 'eye' | 'eyeOff';
 
 const paths: Record<IconName, React.ReactNode> = {
   grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.6" /><rect x="13.5" y="13.5" width="7" height="7" rx="1.6" /></>,
@@ -38,6 +38,8 @@ const paths: Record<IconName, React.ReactNode> = {
   sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.2 5.2l1.9 1.9M16.9 16.9l1.9 1.9M18.8 5.2l-1.9 1.9M7.1 16.9l-1.9 1.9" /></>,
   moon: <path d="M20 13.2A8.2 8.2 0 0 1 10.8 4a8.2 8.2 0 1 0 9.2 9.2Z" />,
   sliders: <><path d="M5 21v-7M5 10V3M12 21v-9M12 8V3M19 21v-5M19 12V3" /><path d="M2.5 14h5M9.5 8h5M16.5 16h5" /></>,
+  eye: <><path d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.6" /></>,
+  eyeOff: <><path d="m3.5 3.5 17 17" /><path d="M10.3 6.2A10.4 10.4 0 0 1 12 6c6.1 0 9.5 6 9.5 6a15.2 15.2 0 0 1-2.4 3.1M6.1 7.1A15.4 15.4 0 0 0 2.5 12s3.4 6 9.5 6a10 10 0 0 0 3-.5" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></>,
 };
 
 export function Icon({ name, size = 16, strokeWidth = 1.7, style, className }: { name: IconName; size?: number; strokeWidth?: number; style?: CSSProperties; className?: string }) {

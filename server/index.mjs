@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { APP_ROOT, CONFIG_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, GALLERY_ROOT, imageDto, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
 import { makeDemoPng, makeThumbnailPng, readImageDimensions } from './png.mjs';
-import { normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, writeModels } from './models.mjs';
+import { isSenseNovaLegacyVisionEndpoint, isSenseNovaTokenChatEndpoint, normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, visionApiFormat, visionEndpoint, writeModels } from './models.mjs';
 import { createZip, readZip } from './zip.mjs';
 
 const PORT = Number(process.env.PIXELFLOW_API_PORT || 8788);
@@ -30,6 +30,20 @@ function json(res, status, payload) {
     'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
   });
   res.end(JSON.stringify(payload));
+}
+
+function assertLocalUiRequest(req) {
+  const fetchSite = String(req.headers['sec-fetch-site'] || '');
+  if (fetchSite && !['same-origin', 'same-site', 'none'].includes(fetchSite)) {
+    throw Object.assign(new Error('仅允许本机应用读取已保存的 API Key'), { status: 403 });
+  }
+  const origin = String(req.headers.origin || '');
+  if (!origin) return;
+  let hostname = '';
+  try { hostname = new URL(origin).hostname; } catch { /* handled below */ }
+  if (!['127.0.0.1', 'localhost', '[::1]'].includes(hostname)) {
+    throw Object.assign(new Error('仅允许本机应用读取已保存的 API Key'), { status: 403 });
+  }
 }
 
 function zipResponse(res, buffer, downloadName) {
@@ -298,25 +312,41 @@ async function callVision(model, image, instruction) {
   const dataUrl = `data:${image.mime_type};base64,${encoded}`;
   const host = new URL(normalizeBaseUrl(model.baseUrl)).hostname;
   const isDots = /(?:^|\.)askdiandian\.com$/i.test(host);
-  const headers = isDots ? { 'api-key': model.apiKey, 'Content-Type': 'application/json' } : { Authorization: `Bearer ${model.apiKey}`, 'Content-Type': 'application/json' };
-  const isSenseNova = model.provider === 'sensenova';
-  const endpoint = isDots ? `${model.baseUrl}/messages` : isSenseNova ? `${model.baseUrl}/llm/chat-completions` : `${model.baseUrl}/chat/completions`;
-  const requestBody = isDots
+  const isSenseNovaLegacyVision = isSenseNovaLegacyVisionEndpoint(model.baseUrl);
+  const isSenseNovaTokenChat = isSenseNovaTokenChatEndpoint(model.baseUrl);
+  const apiFormat = visionApiFormat(model);
+  const headers = apiFormat === 'anthropic_messages'
+    ? isDots
+      ? { 'api-key': model.apiKey, 'Content-Type': 'application/json' }
+      : { 'x-api-key': model.apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
+    : { Authorization: `Bearer ${model.apiKey}`, 'Content-Type': 'application/json' };
+  const requestBody = apiFormat === 'anthropic_messages'
     ? {
       model: model.model,
       system: '你是严谨的图像文字识别与编辑规划助手。必须只返回用户要求的 JSON，不要使用 Markdown。',
       messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: image.mime_type, data: encoded } }, { type: 'text', text: instruction }] }],
       max_tokens: 900,
       stream: false,
-      thinking: { type: 'disabled' },
+      ...(isDots ? { thinking: { type: 'disabled' } } : {}),
     }
-    : isSenseNova
+    : apiFormat === 'responses'
+    ? {
+      model: model.model,
+      instructions: '你是严谨的图像文字识别与编辑规划助手。必须只返回用户要求的 JSON，不要使用 Markdown。',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: instruction }, { type: 'input_image', image_url: dataUrl }] }],
+      text: { format: { type: 'json_object' } },
+      temperature: 0.1,
+    }
+    : isSenseNovaLegacyVision
     ? { model: model.model, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: dataUrl }, { type: 'text', text: instruction }] }], max_new_tokens: 1600, temperature: 0.1, stream: false }
-    : { model: model.model, messages: [{ role: 'system', content: '你是严谨的图像文字识别与编辑规划助手。必须只返回用户要求的 JSON，不要使用 Markdown。' }, { role: 'user', content: [{ type: 'text', text: instruction }, { type: 'image_url', image_url: { url: dataUrl } }] }], response_format: { type: 'json_object' }, temperature: 0.1 };
-  const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal: AbortSignal.timeout(120000) });
+    : { model: model.model, messages: [{ role: 'system', content: '你是严谨的图像文字识别与编辑规划助手。必须只返回用户要求的 JSON，不要使用 Markdown。' }, { role: 'user', content: [{ type: 'text', text: instruction }, { type: 'image_url', image_url: { url: dataUrl } }] }], ...(!isSenseNovaTokenChat ? { response_format: { type: 'json_object' } } : {}), temperature: 0.1 };
+  const response = await fetch(visionEndpoint(model), { method: 'POST', headers, body: JSON.stringify(requestBody), signal: AbortSignal.timeout(120000) });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload?.error?.message || payload?.message || `视觉识别请求失败（${response.status}）`);
-  const message = payload?.content ?? payload?.data?.choices?.[0]?.message ?? payload?.choices?.[0]?.message?.content ?? payload?.choices?.[0]?.message;
+  const responseOutput = Array.isArray(payload?.output)
+    ? payload.output.flatMap((item) => Array.isArray(item?.content) ? item.content : []).map((item) => item?.text || '').join('')
+    : '';
+  const message = payload?.output_text || responseOutput || payload?.content || payload?.data?.choices?.[0]?.message || payload?.choices?.[0]?.message?.content || payload?.choices?.[0]?.message;
   const content = Array.isArray(message) ? message.map((item) => item.text || item.content || '').join('') : message?.content || message;
   if (!content) throw new Error('视觉识别模型没有返回内容');
   return content;
@@ -1040,17 +1070,28 @@ async function testModelConnection(model) {
     if (!response.ok) throw Object.assign(new Error(payload?.error?.message || payload?.message || `连接失败（${response.status}）`), { status: 502 });
     return { ok: true, latency: Date.now() - started, message: 'Gemini Nano Banana 模型已识别' };
   }
-  const isDots = model.type === 'vision' && /(?:^|\.)askdiandian\.com$/i.test(new URL(baseUrl).hostname);
-  if (isDots) {
-    const response = await fetch(`${baseUrl}/messages`, {
+  if (model.type === 'vision') {
+    const isDots = /(?:^|\.)askdiandian\.com$/i.test(new URL(baseUrl).hostname);
+    const apiFormat = visionApiFormat(model);
+    const headers = apiFormat === 'anthropic_messages'
+      ? isDots
+        ? { 'api-key': model.apiKey, 'Content-Type': 'application/json' }
+        : { 'x-api-key': model.apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
+      : { Authorization: `Bearer ${model.apiKey}`, 'Content-Type': 'application/json' };
+    const requestBody = apiFormat === 'anthropic_messages'
+      ? { model: model.model, max_tokens: 8, stream: false, ...(isDots ? { thinking: { type: 'disabled' } } : {}), messages: [{ role: 'user', content: '请只回复 OK。' }] }
+      : apiFormat === 'responses'
+      ? { model: model.model, input: '请只回复 OK。', max_output_tokens: 16 }
+      : { model: model.model, messages: [{ role: 'user', content: '请只回复 OK。' }], ...(isSenseNovaLegacyVisionEndpoint(baseUrl) ? { max_new_tokens: 8 } : { max_tokens: 8 }), stream: false };
+    const response = await fetch(visionEndpoint(model), {
       method: 'POST',
-      headers: { 'api-key': model.apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: model.model, max_tokens: 1, stream: false, thinking: { type: 'disabled' }, messages: [{ role: 'user', content: '请只回复 OK。' }] }),
+      headers,
+      body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(15000),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw Object.assign(new Error(payload?.error?.message || payload?.message || `连接失败（${response.status}）`), { status: 502 });
-    return { ok: true, latency: Date.now() - started, message: '视觉识别端点连接成功（已关闭思考）' };
+    return { ok: true, latency: Date.now() - started, message: `视觉识别端点连接成功（${apiFormat === 'anthropic_messages' ? 'Anthropic Messages' : apiFormat === 'responses' ? 'Responses' : 'Chat Completions'}）` };
   }
   const modelEndpoint = `${baseUrl}/models/${model.model}`;
   const isSenseNova = /(?:^|\.)sensenova\.cn$/i.test(new URL(baseUrl).hostname);
@@ -1220,6 +1261,14 @@ const server = http.createServer(async (req, res) => {
     if (galleryIdMatch && req.method === 'DELETE') return json(res, 200, deleteGalleryEntry(galleryIdMatch[1]));
     if (pathname === '/api/models' && req.method === 'POST') return json(res, 201, { model: upsertModel(await body(req)) });
     if (pathname === '/api/models/test-config' && req.method === 'POST') return json(res, 200, await testModelConnection(await body(req)));
+    const modelApiKeyMatch = pathname.match(/^\/api\/models\/([^/]+)\/api-key$/);
+    if (modelApiKeyMatch && req.method === 'POST') {
+      assertLocalUiRequest(req);
+      const model = readModels().models.find((item) => item.id === modelApiKeyMatch[1]);
+      if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
+      res.setHeader('Cache-Control', 'no-store');
+      return json(res, 200, { apiKey: String(model.apiKey || '') });
+    }
     const modelMatch = pathname.match(/^\/api\/models\/([^/]+)$/);
     if (modelMatch && req.method === 'PATCH') return json(res, 200, { model: upsertModel(await body(req), modelMatch[1]) });
     if (modelMatch && req.method === 'DELETE') { removeModel(modelMatch[1]); return json(res, 200, { ok: true }); }

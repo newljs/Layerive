@@ -81,7 +81,7 @@ Image models can be added, edited, tested, deleted, and set as defaults independ
 | Grok | Native xAI image API | Grok Imagine image models |
 
 - Configure a separate **vision model** for image text editing and regional-edit planning.
-- Vision models support SenseNova and OpenAI-compatible APIs. Supported `dots3-note`-series models disable thinking to reduce text-recognition latency.
+- Vision models support Anthropic Messages, Chat Completions, and Responses API formats while retaining compatibility with existing SenseNova and `dots3-note` configurations.
 - Each model declares its own capabilities: text-to-image, image-to-image, prompt editing, or image understanding. The workspace only presents operations and sizes supported by the selected model.
 - A built-in demo model lets you try projects, conversations, and versioning without an API key.
 
@@ -148,14 +148,14 @@ Prebuilt installers are also published automatically to [GitHub Releases](https:
 Open **Model configuration** from the home page or workspace:
 
 1. Select **Add image model** or **Add vision model**.
-2. Image models support **SenseNova / OpenAI / Gemini / Grok**. Vision models support **SenseNova / OpenAI-compatible** APIs.
-3. Enter a display name, Base URL, API key, model name, and capabilities. Switching provider fills in matching endpoint and model examples.
+2. Image models support **SenseNova / OpenAI / Gemini / Grok**. Vision models support **Anthropic Messages / Chat Completions / Responses** API formats, with Chat Completions selected by default for new configurations.
+3. Enter a display name, Base URL, API key, model name, and capabilities. The button beside the API key toggles visibility and can reveal a previously saved key on demand. Switching an image provider fills in matching endpoint and model examples.
 4. Use **Test connection**, save the model, then set an image model as the default or a vision model as the recognition default.
 
 | Model type | Supported providers | Primary use |
 | --- | --- | --- |
 | Image model | SenseNova, OpenAI-compatible, Gemini, Grok | Text-to-image, image-to-image, edits, outpainting, and more |
-| Vision model | SenseNova, OpenAI-compatible | Analysis and prompt planning for text editing, regional edits, and asset extraction |
+| Vision model | Anthropic Messages, Chat Completions, Responses | Analysis and prompt planning for text editing, regional edits, and asset extraction |
 
 ### Configuration notes
 

@@ -3,6 +3,7 @@ export type ModelConfig = {
   name: string;
   type: 'image' | 'vision';
   provider: 'sensenova' | 'openai' | 'gemini' | 'grok';
+  apiFormat?: 'anthropic_messages' | 'chat_completions' | 'responses';
   baseUrl: string;
   apiKey: string;
   model: string;

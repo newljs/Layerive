@@ -79,7 +79,8 @@
 | Grok | xAI 原生图片接口 | Grok Imagine 图片生成模型 |
 
 - 可配置独立的**视觉识别模型**，用于图片改字和局部修改的图片分析与提示词规划。
-- 视觉识别支持日日新以及 OpenAI 兼容接口；`dots3-note` 等已适配的视觉模型可关闭思考以缩短文字识别等待时间。
+- 视觉识别支持 Anthropic Messages、Chat Completions 和 Responses 三种 API 格式；旧日日新与 `dots3-note` 等配置保持兼容。
+- 使用 SenseNova Token Plan 的 `sensenova-6.8-flash-lite` 时，选择 Chat Completions，并填写 `https://token.sensenova.cn/v1`；应用会调用标准 `/chat/completions` 路径。
 - 每个模型可声明文生图、图生图、提示词改图或图片理解能力。工作台只展示并调用当前选中模型支持的操作和尺寸。
 - 内置演示模型，不填 API Key 也可以体验项目、对话和版本流程。
 
@@ -146,14 +147,14 @@ npm run desktop:dist  # 生成安装包与便携版
 从首页或工作台进入「模型配置」：
 
 1. 选择「添加图片模型」或「添加视觉识别模型」。
-2. 图片模型选择 **日日新 / OpenAI / Gemini / Grok**；视觉识别模型选择 **日日新 / OpenAI 兼容**。
-3. 填写显示名称、Base URL、API Key、模型名和能力；提供商切换后会带入相应的默认接口地址与模型示例。
+2. 图片模型选择 **日日新 / OpenAI / Gemini / Grok**；视觉识别模型选择 **Anthropic Messages / Chat Completions / Responses** API 格式，新建时默认 Chat Completions。
+3. 填写显示名称、Base URL、API Key、模型名和能力；API Key 右侧按钮可切换显示与隐藏，也能按需回显已保存的密钥。图片提供商切换后会带入相应的默认接口地址与模型示例。
 4. 点击「测试连接」，成功后保存；图片模型可「设为默认」，视觉识别模型可「设为识别默认」。
 
 | 模型类型 | 支持的提供商 | 主要用途 |
 | --- | --- | --- |
 | 图片模型 | 日日新、OpenAI 兼容、Gemini、Grok | 文生图、图生图、改图、扩图等 |
-| 视觉识别模型 | 日日新、OpenAI 兼容 | 图片改字、局部修改与素材提取的识别和提示词规划 |
+| 视觉识别模型 | Anthropic Messages、Chat Completions、Responses | 图片改字、局部修改与素材提取的识别和提示词规划 |
 
 ### 配置提示
 

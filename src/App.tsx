@@ -97,10 +97,15 @@ export default function App() {
     catch (error) { return `连接失败：${(error as Error).message}`; }
   }
 
+  async function revealModelApiKey(id: string) {
+    try { return (await api.revealModelApiKey(id)).apiKey; }
+    catch (error) { notify((error as Error).message, 'error'); return ''; }
+  }
+
   return (
     <>
       {view.name === 'home' && <HomeView projects={projects} loading={loading} onOpen={(projectId) => setView({ name: 'workspace', projectId })} onCreate={createProject} onDelete={deleteProject} onDuplicate={duplicateProject} onImport={importProject} onRefreshProjects={refreshProjects} onModels={() => setView({ name: 'models' })} notify={notify} />}
-      {view.name === 'models' && <ModelConfigView models={models} activeModel={activeModel} activeVisionModel={activeVisionModel} onBack={() => view.backTo ? setView({ name: 'workspace', projectId: view.backTo }) : setView({ name: 'home' })} onSave={saveModel} onDelete={deleteModel} onActivate={activateModel} onActivateVision={activateVisionModel} onTest={testModel} onTestConfig={testModelConfig} />}
+      {view.name === 'models' && <ModelConfigView models={models} activeModel={activeModel} activeVisionModel={activeVisionModel} onBack={() => view.backTo ? setView({ name: 'workspace', projectId: view.backTo }) : setView({ name: 'home' })} onSave={saveModel} onDelete={deleteModel} onActivate={activateModel} onActivateVision={activateVisionModel} onTest={testModel} onTestConfig={testModelConfig} onRevealApiKey={revealModelApiKey} />}
       {view.name === 'workspace' && <WorkspaceView projectId={view.projectId} models={models} activeModel={activeModel} onBack={() => { setView({ name: 'home' }); void refreshProjects(); }} onModels={() => setView({ name: 'models', backTo: view.projectId })} onProjectChanged={handleProjectChanged} notify={notify} />}
       {toast && <div className={`toast ${toast.kind}`} role="status"><span>{toast.kind === 'success' ? '✓' : '!'}</span>{toast.message}</div>}
     </>
