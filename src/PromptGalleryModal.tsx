@@ -5,6 +5,7 @@ import { Icon } from './Icon';
 import type { GalleryEntryItem } from './types';
 
 type Props = {
+  visionModelId?: string;
   onClose: () => void;
   // `full` = the original prompt for this entry; `style` = the distilled
   // style-only prompt meant for project-level reuse.
@@ -63,7 +64,7 @@ function userToItem(entry: GalleryEntryItem): GalleryItem {
   };
 }
 
-export function PromptGalleryModal({ onClose, onUsePrompt, onUseStyle }: Props) {
+export function PromptGalleryModal({ visionModelId, onClose, onUsePrompt, onUseStyle }: Props) {
   const [categoryId, setCategoryId] = useState<string>('all');
   const [query, setQuery] = useState('');
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -123,7 +124,7 @@ export function PromptGalleryModal({ onClose, onUsePrompt, onUseStyle }: Props) 
     if (!source) return;
     patchEditor({ analyzing: true });
     try {
-      const result = await api.analyzeGalleryImage({ data: source.dataUrl, mimeType: source.mimeType });
+      const result = await api.analyzeGalleryImage({ data: source.dataUrl, mimeType: source.mimeType, visionModelId });
       patchEditor({ analyzing: false, title: editor.title.trim() || result.title, prompt: result.prompt, stylePrompt: result.stylePrompt, uploaded: source });
     } catch {
       patchEditor({ analyzing: false });

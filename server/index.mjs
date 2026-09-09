@@ -155,13 +155,21 @@ function friendlyModelMessage(raw) {
   return message;
 }
 
+function requestedImageCount(params) {
+  return Math.min(4, Math.max(1, Math.trunc(Number(params?.count) || 1)));
+}
+
+function isSenseNovaImageModel(model) {
+  return model.provider === 'sensenova' || /(?:^|[/.])sensenova\.cn(?:[/:]|$)/i.test(normalizeBaseUrl(model.baseUrl));
+}
+
 async function callOpenAi(model, prompt, params, inputImage, signal) {
-  const count = Math.min(4, Math.max(1, Number(params.count || 1)));
+  const count = requestedImageCount(params);
   const size = params.size || '1024x1024';
   const endpoint = inputImage ? 'images/edits' : 'images/generations';
   const headers = { Authorization: `Bearer ${model.apiKey}` };
   let requestBody;
-  const isSenseNova = model.provider === 'sensenova' || /(?:^|[/.])sensenova\.cn(?:[/:]|$)/i.test(normalizeBaseUrl(model.baseUrl));
+  const isSenseNova = isSenseNovaImageModel(model);
   // OpenAI-only knobs: output format (png/jpeg/webp) and transparent background.
   // Transparent backgrounds require a lossless format, so jpeg forces opaque.
   const outputFormat = ['png', 'jpeg', 'webp'].includes(String(params.outputFormat)) ? String(params.outputFormat) : 'png';
@@ -245,7 +253,7 @@ async function callGemini(model, prompt, params, inputImage, signal) {
 }
 
 async function callGrok(model, prompt, params, inputImage, signal) {
-  const count = Math.min(4, Math.max(1, Number(params.count || 1)));
+  const count = requestedImageCount(params);
   const body = {
     model: model.model,
     prompt,
@@ -282,6 +290,41 @@ async function callGrok(model, prompt, params, inputImage, signal) {
   return outputs;
 }
 
+async function callImageProvider(model, prompt, params, inputImage, signal) {
+  return model.provider === 'gemini'
+    ? callGemini(model, prompt, params, inputImage, signal)
+    : model.provider === 'grok'
+      ? callGrok(model, prompt, params, inputImage, signal)
+      : callOpenAi(model, prompt, params, inputImage, signal);
+}
+
+// Some providers accept only one image per request, while some compatible
+// gateways silently ignore `n`. Always fulfill the workspace count when
+// possible: known single-image providers fan out immediately; other providers
+// get one normal batch request followed by count=1 requests for any shortfall.
+async function callImageProviderBatch(model, prompt, params, inputImage, signal) {
+  const desired = requestedImageCount(params);
+  const onePerRequest = model.provider === 'gemini' || isSenseNovaImageModel(model);
+  const firstBatchSize = onePerRequest ? desired : 1;
+  const settled = await Promise.allSettled(Array.from({ length: firstBatchSize }, () =>
+    callImageProvider(model, prompt, onePerRequest ? { ...params, count: 1 } : params, inputImage, signal)));
+  if (signal.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+
+  const outputs = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+  const errors = settled.filter((result) => result.status === 'rejected').map((result) => result.reason);
+
+  const missing = desired - outputs.length;
+  if (!onePerRequest && missing > 0) {
+    const supplements = await Promise.allSettled(Array.from({ length: missing }, () =>
+      callImageProvider(model, prompt, { ...params, count: 1 }, inputImage, signal)));
+    if (signal.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+    outputs.push(...supplements.flatMap((result) => result.status === 'fulfilled' ? result.value : []));
+    errors.push(...supplements.filter((result) => result.status === 'rejected').map((result) => result.reason));
+  }
+  if (!outputs.length) throw errors.at(-1) || new Error('模型没有返回图片');
+  return outputs.slice(0, desired);
+}
+
 function parseVisionJson(value) {
   const source = String(value || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   try { return JSON.parse(source); }
@@ -301,6 +344,15 @@ function textSegments(value) {
   }).filter((item) => item.text);
   if (!segments.length) throw new Error('未识别到可编辑文字，请确认图片内含有清晰文字');
   return segments;
+}
+
+function visionModelFingerprint(model) {
+  return JSON.stringify({
+    provider: model.provider || 'openai',
+    apiFormat: visionApiFormat(model),
+    baseUrl: normalizeBaseUrl(model.baseUrl),
+    model: model.model,
+  });
 }
 
 async function callVision(model, image, instruction) {
@@ -352,7 +404,13 @@ async function callVision(model, image, instruction) {
   return content;
 }
 
-function visionModelOrThrow(config) {
+function visionModelOrThrow(config, requestedModelId) {
+  const requestedId = String(requestedModelId || '').trim();
+  if (requestedId) {
+    const requested = config.models.find((item) => item.id === requestedId && item.type === 'vision');
+    if (!requested) throw Object.assign(new Error('所选视觉识别模型不存在或已删除，请重新选择'), { status: 400 });
+    return requested;
+  }
   const model = config.models.find((item) => item.id === config.active_vision_model && item.type === 'vision') || config.models.find((item) => item.type === 'vision');
   if (!model) throw Object.assign(new Error('请先在模型配置中添加并配置一个视觉识别模型'), { status: 400 });
   return model;
@@ -389,16 +447,41 @@ function ensureUploadVersion(projectId, image) {
 async function recognizeImageText(projectId, input) {
   projectOrThrow(projectId);
   const config = readModels();
-  const visionModel = visionModelOrThrow(config);
+  const visionModel = visionModelOrThrow(config, input.visionModelId);
   const image = imageOrThrow(projectId, input.imageId);
+  const fingerprint = visionModelFingerprint(visionModel);
+  const cached = db.prepare(`
+    SELECT model_name, segments_json
+    FROM text_recognitions
+    WHERE image_id = ? AND vision_model_id = ? AND vision_model_fingerprint = ?
+  `).get(image.id, visionModel.id, fingerprint);
+  if (cached) {
+    try {
+      return { modelName: cached.model_name, segments: textSegments(JSON.stringify({ segments: parseJson(cached.segments_json, []) })), cached: true };
+    } catch {
+      // A malformed cache must never block editing; replace it with a fresh
+      // recognition result below.
+      db.prepare('DELETE FROM text_recognitions WHERE image_id = ? AND vision_model_id = ?').run(image.id, visionModel.id);
+    }
+  }
   const result = await callVision(visionModel, image, '识别图片内所有可编辑的可见文字，并按视觉区域分段。返回严格 JSON：{"segments":[{"id":"text-1","text":"原始文字","context":"文字所在位置、字号、颜色、排版和附近视觉元素的简短描述"}]}。不要遗漏文字；不要翻译、改写或解释；不要返回 Markdown。');
-  return { modelName: visionModel.name, segments: textSegments(result) };
+  const segments = textSegments(result);
+  db.prepare(`
+    INSERT INTO text_recognitions (image_id, vision_model_id, vision_model_fingerprint, model_name, segments_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(image_id, vision_model_id) DO UPDATE SET
+      vision_model_fingerprint = excluded.vision_model_fingerprint,
+      model_name = excluded.model_name,
+      segments_json = excluded.segments_json,
+      created_at = excluded.created_at
+  `).run(image.id, visionModel.id, fingerprint, visionModel.name, JSON.stringify(segments), now());
+  return { modelName: visionModel.name, segments, cached: false };
 }
 
 async function editImageText(projectId, input) {
   projectOrThrow(projectId);
   const config = readModels();
-  const visionModel = visionModelOrThrow(config);
+  const visionModel = visionModelOrThrow(config, input.visionModelId);
   const image = imageOrThrow(projectId, input.imageId);
   // Manual boxes have no recognized original text; they describe an addition
   // or a replacement at a hand-drawn region, so accept them without one.
@@ -408,13 +491,15 @@ async function editImageText(projectId, input) {
       ? Object.fromEntries(['x', 'y', 'width', 'height'].map((key) => [key, Math.min(100, Math.max(0, Number(rawRect[key])))]))
       : null;
     return { originalText: String(item.originalText || '').trim(), text: String(item.text || '').trim(), context: String(item.context || '').trim(), manual: Boolean(item.manual), rect };
-  }).filter((item) => item.text && item.originalText !== item.text && (item.originalText || item.manual));
-  if (!changed.length) throw Object.assign(new Error('请先修改至少一段文字或框选一个区域再提交'), { status: 400 });
+  }).filter((item) => item.originalText !== item.text && (item.originalText || (item.manual && item.text)));
+  if (!changed.length) throw Object.assign(new Error('请先修改或删除至少一段文字，或框选一个区域再提交'), { status: 400 });
   const rectDescription = (rect) => rect
     ? `框选区域为整张图片的 x=${rect.x.toFixed(1)}%、y=${rect.y.toFixed(1)}%、宽=${rect.width.toFixed(1)}%、高=${rect.height.toFixed(1)}%`
     : '';
   const changeList = changed.map((item, index) => item.originalText
-    ? `${index + 1}. 将“${item.originalText}”替换为“${item.text}”（位置与样式：${[item.context || '保持原区域', rectDescription(item.rect)].filter(Boolean).join('；')}）`
+    ? item.text
+      ? `${index + 1}. 将“${item.originalText}”替换为“${item.text}”（位置与样式：${[item.context || '保持原区域', rectDescription(item.rect)].filter(Boolean).join('；')}）`
+      : `${index + 1}. 删除文字“${item.originalText}”，并自然修复文字覆盖的背景（位置与样式：${[item.context || '保持原区域', rectDescription(item.rect)].filter(Boolean).join('；')}）`
     : `${index + 1}. 在 ${[item.context || '指定区域', rectDescription(item.rect)].filter(Boolean).join('；')} 添加文字“${item.text}”，样式与周围内容协调`)
     .join('\n');
   const planning = await callVision(visionModel, image, `根据图片内容和下面的文字替换项，为图片编辑模型生成一条准确中文提示词。只允许修改列出的文字，必须保留其他文字以及人物、背景、构图、配色、风格、尺寸和物体不变；新文字需要保持原位置、层级、字体风格、字号和颜色，除非替换文本长度导致微小的排版调整。若替换项给出框选区域，必须在 edit_prompt 中保留该精确区域约束，禁止改动框外内容。返回严格 JSON：{"edit_prompt":"..."}。\n替换项：\n${changeList}`);
@@ -422,7 +507,7 @@ async function editImageText(projectId, input) {
   const fallback = `仅修改以下图片文字，其他所有画面元素、文字、构图、人物、背景、色彩、风格与尺寸均保持不变。${changeList}`;
   const coordinateConstraints = changed.map((item) => rectDescription(item.rect)).filter(Boolean).join('；');
   const prompt = `${String(planned.edit_prompt || planned.prompt || fallback).trim()}${coordinateConstraints ? `\n精确区域约束：${coordinateConstraints}。框外内容不得改动。` : ''}`;
-  return startGeneration(projectId, { prompt, operation: 'edit_text', modelId: input.modelId, inputImageId: image.id, parentVersionId: input.parentVersionId || image.version_id || null });
+  return startGeneration(projectId, { prompt, operation: 'edit_text', modelId: input.modelId, inputImageId: image.id, parentVersionId: input.parentVersionId || image.version_id || null, params: input.params || {} });
 }
 
 async function editImageRegion(projectId, input) {
@@ -436,7 +521,7 @@ async function editImageRegion(projectId, input) {
   const rect = Object.fromEntries(['x', 'y', 'width', 'height'].map((key) => [key, Math.min(100, Math.max(0, Number(rawRect[key])))]));
   if (rect.width < 1 || rect.height < 1) throw Object.assign(new Error('框选区域太小，请重新框选'), { status: 400 });
   const config = readModels();
-  const visionModel = visionModelOrThrow(config);
+  const visionModel = visionModelOrThrow(config, input.visionModelId);
   const image = imageOrThrow(projectId, input.imageId);
   const region = `整张图片的 x=${rect.x.toFixed(1)}%、y=${rect.y.toFixed(1)}%、宽=${rect.width.toFixed(1)}%、高=${rect.height.toFixed(1)}%`;
   const planning = await callVision(visionModel, image, `你是图片局部修改规划助手。用户只允许修改框选区域，框外的文字、人物、背景、构图、光影、颜色、风格、尺寸和其他物体必须完全保持不变。请结合图片内容和用户要求，为图片编辑模型生成一条准确中文提示词。提示词必须保留精确区域坐标，并说明只改该区域。返回严格 JSON：{"edit_prompt":"..."}。\n框选区域：${region}\n用户修改要求：${instruction}`);
@@ -468,7 +553,7 @@ async function enhanceImage(projectId, input) {
 async function removeImageWatermark(projectId, input) {
   projectOrThrow(projectId);
   const config = readModels();
-  const visionModel = visionModelOrThrow(config);
+  const visionModel = visionModelOrThrow(config, input.visionModelId);
   const image = imageOrThrow(projectId, input.imageId);
   const analysis = await callVision(visionModel, image, `分析图片中是否存在覆盖在画面上的水印、平台标识、半透明文字或重复 logo。不要把画面本身的招牌、产品 logo、海报正文或自然出现的文字当成水印。若存在水印，描述每个水印的精确位置、范围、形状、透明度、颜色、文字和它遮挡的背景内容，并生成一条供图片编辑模型使用的中文修复提示词。修复时只移除水印并自然补全其遮挡区域，必须完整保留人物、主体、产品、原有设计文字、构图、风格、光影、颜色和尺寸。返回严格 JSON：{"has_watermark":true,"watermarks":[{"location":"...","appearance":"...","coverage":"..."}],"edit_prompt":"..."}。不要返回 Markdown。`);
   const planned = parseVisionJson(analysis);
@@ -515,7 +600,7 @@ async function extractImageAsset(projectId, input) {
   const cropImage = db.prepare('SELECT * FROM images WHERE id = ?').get(cropImageId);
 
   const config = readModels();
-  const visionModel = visionModelOrThrow(config);
+  const visionModel = visionModelOrThrow(config, input.visionModelId);
   const hint = String(input.hint || '').trim();
   const edgeNote = input.crop?.padded ? '截图上下或左右边缘可能存在为满足平台比例要求而拉伸出的窄边，属于截图产生的填充痕迹，不是主体的一部分，规划时请忽略。' : '';
   const intent = hint
@@ -602,7 +687,7 @@ const GALLERY_ANALYZE_INSTRUCTION = `你是提示词逆向工程助手。用户�
 
 async function analyzeGalleryImage(input) {
   const config = readModels();
-  const visionModel = visionModelOrThrow(config);
+  const visionModel = visionModelOrThrow(config, input.visionModelId);
   const mimeType = String(input.mimeType || 'image/png');
   if (!['image/png', 'image/jpeg', 'image/webp'].includes(mimeType)) throw Object.assign(new Error('图片格式仅支持 PNG、JPG 和 WebP'), { status: 400 });
   const encoded = String(input.data || '').replace(/^data:[^;]+;base64,/, '');
@@ -619,7 +704,7 @@ async function saveProjectImageToGallery(projectId, input) {
   const image = imageOrThrow(projectId, input.imageId);
   const bytes = await readFile(path.join(PROJECTS_ROOT, projectId, image.file_path));
   const config = readModels();
-  const visionModel = visionModelOrThrow(config);
+  const visionModel = visionModelOrThrow(config, input.visionModelId);
   let analysis = null;
   try {
     analysis = parseVisionJson(await callVision(visionModel, { buffer: bytes, mime_type: image.mime_type }, GALLERY_ANALYZE_INSTRUCTION));
@@ -664,6 +749,7 @@ function startGeneration(projectId, input) {
     throw Object.assign(new Error('当前模型不支持这个操作'), { status: 400 });
   }
   const params = { ...model.defaultParams, ...(input.params || {}) };
+  params.count = requestedImageCount(params);
   const userMessageId = uid();
   const taskId = uid();
   const createdAt = now();
@@ -702,7 +788,7 @@ async function runGenerationTask(projectId, taskId, context) {
     let outputWidth = width;
     let outputHeight = height;
     if (model.provider === 'mock') {
-      const count = Math.min(4, Math.max(1, Number(params.count || 1)));
+      const count = requestedImageCount(params);
       const scale = Math.min(1, 1024 / Math.max(width, height));
       outputWidth = Math.round(width * scale);
       outputHeight = Math.round(height * scale);
@@ -710,11 +796,7 @@ async function runGenerationTask(projectId, taskId, context) {
       generated = Array.from({ length: count }, (_, index) => ({ bytes: makeDemoPng(effectivePrompt || '基于图片继续创作', outputWidth, outputHeight, index), mimeType: 'image/png', width: outputWidth, height: outputHeight }));
     } else {
       if (!model.apiKey) throw new Error('模型尚未配置 API Key');
-       generated = model.provider === 'gemini'
-         ? await callGemini(model, effectivePrompt, params, inputImage, controller.signal)
-         : model.provider === 'grok'
-           ? await callGrok(model, effectivePrompt, params, inputImage, controller.signal)
-           : await callOpenAi(model, effectivePrompt, params, inputImage, controller.signal);
+      generated = await callImageProviderBatch(model, effectivePrompt, params, inputImage, controller.signal);
     }
 
     const versionId = uid();
@@ -825,6 +907,7 @@ async function duplicateProject(sourceId, nameSuffix = ' 副本') {
     messages: db.prepare('SELECT * FROM messages WHERE project_id = ?').all(sourceId),
     tasks: db.prepare('SELECT * FROM generation_tasks WHERE project_id = ?').all(sourceId),
     versionInputs: db.prepare('SELECT vi.* FROM version_inputs vi JOIN image_versions v ON v.id = vi.version_id WHERE v.project_id = ?').all(sourceId),
+    textRecognitions: db.prepare('SELECT tr.* FROM text_recognitions tr JOIN images i ON i.id = tr.image_id WHERE i.project_id = ?').all(sourceId),
   };
   ensureProjectDirs(newId);
   await new Promise((resolve, reject) => {
@@ -849,6 +932,11 @@ async function duplicateProject(sourceId, nameSuffix = ' 副本') {
     db.prepare(`INSERT INTO images (id, project_id, version_id, task_id, source_type, file_path, mime_type, width, height, file_size, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(maps.images.get(row.id), newId, row.version_id ? maps.versions.get(row.version_id) : null, row.task_id ? maps.tasks.get(row.task_id) : null, row.source_type, row.file_path, row.mime_type, row.width, row.height, row.file_size, row.created_at);
+  }
+  for (const row of rows.textRecognitions) {
+    const imageId = maps.images.get(row.image_id);
+    if (imageId) db.prepare(`INSERT INTO text_recognitions (image_id, vision_model_id, vision_model_fingerprint, model_name, segments_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`).run(imageId, row.vision_model_id, row.vision_model_fingerprint, row.model_name, row.segments_json, row.created_at);
   }
   for (const row of rows.versions) {
     db.prepare(`INSERT INTO image_versions (id, project_id, task_id, parent_version_id, version_number, operation_type, selected_image_id, status, deleted_at, created_at)
@@ -891,8 +979,9 @@ async function exportProjectZip(projectId, includeImages) {
     messages: db.prepare('SELECT * FROM messages WHERE project_id = ?').all(projectId),
     tasks: db.prepare('SELECT * FROM generation_tasks WHERE project_id = ?').all(projectId),
     versionInputs: db.prepare('SELECT vi.* FROM version_inputs vi JOIN image_versions v ON v.id = vi.version_id WHERE v.project_id = ?').all(projectId),
+    textRecognitions: db.prepare('SELECT tr.* FROM text_recognitions tr JOIN images i ON i.id = tr.image_id WHERE i.project_id = ?').all(projectId),
   };
-  const meta = { format: 'pixelflow-project', version: 1, exportedAt: now(), project: source, ...rows };
+  const meta = { format: 'pixelflow-project', version: 2, exportedAt: now(), project: source, ...rows };
   const entries = [{ name: 'project.json', data: Buffer.from(JSON.stringify(meta, null, 2), 'utf8') }];
   if (includeImages) {
     for (const image of rows.images) {
@@ -937,6 +1026,11 @@ async function importProjectZip(buffer) {
     db.prepare(`INSERT INTO images (id, project_id, version_id, task_id, source_type, file_path, mime_type, width, height, file_size, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(maps.images.get(row.id), newId, row.version_id ? maps.versions.get(row.version_id) : null, row.task_id ? maps.tasks.get(row.task_id) : null, row.source_type, row.file_path, row.mime_type, row.width, row.height, row.file_size, row.created_at);
+  }
+  for (const row of meta.textRecognitions || []) {
+    const imageId = maps.images.get(row.image_id);
+    if (imageId) db.prepare(`INSERT INTO text_recognitions (image_id, vision_model_id, vision_model_fingerprint, model_name, segments_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`).run(imageId, row.vision_model_id, row.vision_model_fingerprint, row.model_name, row.segments_json, row.created_at);
   }
   for (const row of meta.versions || []) {
     db.prepare(`INSERT INTO image_versions (id, project_id, task_id, parent_version_id, version_number, operation_type, selected_image_id, status, deleted_at, created_at)

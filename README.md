@@ -51,14 +51,15 @@ To generate, edit, or recognize images with a real service, continue with [Confi
 
 ### Image creation and editing
 
-- **Text to image** — generate from a text prompt.
+- **Text to image** — generate 1–4 images from one prompt. Multiple results are stored as candidates in the same version and can be selected from the candidate strip or conversation. Providers that return only one image per call are fanned out into multiple billable requests automatically.
 - **Image to image** — continue from an uploaded image or a historical version. Newly uploaded images automatically select the closest aspect ratio supported by the active model to help preserve their composition. You can also paste a screenshot or copied image anywhere in the workbench (canvas included) with Ctrl+V; it uploads exactly like the upload button.
 - **Prompt-based image editing** — select an image and describe the change in natural language.
 - **Image enhancement** — one click sends the current image through the image-edit workflow to improve clarity and detail while preserving its subject, text, composition, and style.
-- **Regional editing** — draw a selection on the canvas and describe the change. A vision model uses the image and selection to prepare an edit prompt, while the image editor is instructed to preserve content outside the selection.
-- **Asset extraction** — circle the content you want on the canvas (e.g. a cinema screen). The app screenshots the selection, a vision model focuses on the intended subject and ignores accidentally included edges (like the seats beside it), then the image editor produces a standalone asset containing only that subject, faithful to the original. An optional hint can clarify your intent.
+- **Regional editing** — start a selection either inside or outside the image and keep dragging beyond the image or workspace edge without losing it. The app uses the selection's intersection with the source image; a vision model prepares an edit prompt while the image editor preserves content outside that region.
+- **Asset extraction** — start inside or outside the image and drag beyond its edge to select content (e.g. a cinema screen). The app screenshots the selection's valid intersection with the source image, a vision model focuses on the intended subject and ignores accidentally included edges (like nearby seats), then the image editor produces a faithful standalone asset. An optional hint can clarify your intent.
 - **Outpainting** — choose a size or ratio supported by the current model, preview the expanded canvas, then submit an image-edit request.
-- **Edit in-image text** — a vision model splits visible text into editable regions. Updated text is converted into a focused image-edit prompt. You can also manually select a region to add or replace text.
+- **Edit in-image text** — a vision model splits visible text into editable regions. Replace text, clear it to remove it, or manually select a region to add content; output uses the closest supported size matching the source image's aspect ratio. Clicking submit closes the editor immediately and returns to the project conversation while vision planning and generation continue. If submission fails, the editor reopens with the original edits intact.
+- **Reuse recognition results** — successful text recognition is stored locally per image and vision-model configuration. Reopening text editing reuses it; switching or changing the vision model triggers a fresh recognition.
 - **Project style prompts** — define a shared style for text-to-image generations while keeping the source-image context for edits.
 - **Prompt gallery** — browse and reuse prompt and style templates directly in the workspace, and manage your own library: add or edit entries manually (with an uploaded image or text only), let the vision model distill full prompts and style descriptions from an uploaded image, or right-click any generated image in the workspace to save it into the gallery with its prompt auto-distilled. A dark-mode toggle lives in the header of every view; the preference is remembered locally.
 
@@ -72,6 +73,8 @@ To generate, edit, or recognize images with a real service, continue with [Confi
 ### Model integrations
 
 Image models can be added, edited, tested, deleted, and set as defaults independently. Each project also remembers the default image model selected at creation time.
+
+The workspace header lets you choose image-generation and vision-recognition models independently. The vision choice is saved per project and is used for text recognition/editing, regional-edit planning, watermark removal, asset extraction, and prompt distillation. Recognition caches remain isolated by the selected vision model.
 
 | Provider | Integration | Typical use |
 | --- | --- | --- |

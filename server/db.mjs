@@ -88,6 +88,16 @@ db.exec(`
     input_role TEXT NOT NULL,
     PRIMARY KEY(version_id, image_id)
   );
+  CREATE TABLE IF NOT EXISTS text_recognitions (
+    image_id TEXT NOT NULL,
+    vision_model_id TEXT NOT NULL,
+    vision_model_fingerprint TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    segments_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(image_id, vision_model_id),
+    FOREIGN KEY(image_id) REFERENCES images(id)
+  );
   CREATE TABLE IF NOT EXISTS gallery_entries (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -103,6 +113,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_project_created ON messages(project_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_versions_project_created ON image_versions(project_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_images_project_version ON images(project_id, version_id);
+  CREATE INDEX IF NOT EXISTS idx_text_recognitions_image ON text_recognitions(image_id);
   PRAGMA optimize;
 `);
 

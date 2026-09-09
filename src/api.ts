@@ -50,19 +50,19 @@ export const api = {
   listGeneratingTasks: (id: string) => request<{ tasks: GenerationTask[] }>(`/api/projects/${id}/tasks`),
   getTask: (id: string, taskId: string) => request<GenerationTask>(`/api/projects/${id}/tasks/${taskId}`),
   cancelTask: (id: string, taskId: string) => request<{ ok: boolean; status: string }>(`/api/projects/${id}/tasks/${taskId}/cancel`, { method: 'POST' }),
-  recognizeText: (id: string, imageId: string) =>
-    request<{ segments: TextSegment[]; modelName: string }>(`/api/projects/${id}/recognize-text`, { method: 'POST', body: JSON.stringify({ imageId }) }),
-  editText: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; segments: TextSegment[] }) =>
+  recognizeText: (id: string, imageId: string, visionModelId?: string) =>
+    request<{ segments: TextSegment[]; modelName: string; cached: boolean }>(`/api/projects/${id}/recognize-text`, { method: 'POST', body: JSON.stringify({ imageId, visionModelId }) }),
+  editText: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; segments: TextSegment[]; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/edit-text`, { method: 'POST', body: JSON.stringify(input) }),
-  localEdit: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; instruction: string; rect: { x: number; y: number; width: number; height: number }; params?: Record<string, unknown> }) =>
+  localEdit: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; instruction: string; rect: { x: number; y: number; width: number; height: number }; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/local-edit`, { method: 'POST', body: JSON.stringify(input) }),
   outpaint: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; size: string; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/outpaint`, { method: 'POST', body: JSON.stringify(input) }),
   enhance: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/enhance`, { method: 'POST', body: JSON.stringify(input) }),
-  removeWatermark: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; params?: Record<string, unknown> }) =>
+  removeWatermark: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/remove-watermark`, { method: 'POST', body: JSON.stringify(input) }),
-  extractAsset: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; crop: { data: string; mimeType: string; padded?: boolean }; hint?: string; params?: Record<string, unknown> }) =>
+  extractAsset: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; crop: { data: string; mimeType: string; padded?: boolean }; hint?: string; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/extract-asset`, { method: 'POST', body: JSON.stringify(input) }),
   uploadImage: (id: string, input: { data: string; mimeType: string; name: string }) =>
     request<ProjectBundle>(`/api/projects/${id}/images`, { method: 'POST', body: JSON.stringify(input) }),
@@ -72,9 +72,9 @@ export const api = {
   updateGalleryEntry: (id: string, input: { title?: string; category?: string; prompt?: string; stylePrompt?: string; image?: { data: string; mimeType: string } | null }) =>
     request<{ entry: GalleryEntryItem }>(`/api/gallery/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   deleteGalleryEntry: (id: string) => request<{ ok: boolean }>(`/api/gallery/${id}`, { method: 'DELETE' }),
-  analyzeGalleryImage: (input: { data: string; mimeType: string }) =>
+  analyzeGalleryImage: (input: { data: string; mimeType: string; visionModelId?: string }) =>
     request<{ title: string; prompt: string; stylePrompt: string }>('/api/gallery/analyze', { method: 'POST', body: JSON.stringify(input) }),
-  addGalleryFromProject: (input: { projectId: string; imageId: string }) =>
+  addGalleryFromProject: (input: { projectId: string; imageId: string; visionModelId?: string }) =>
     request<{ entry: GalleryEntryItem }>('/api/gallery/from-image', { method: 'POST', body: JSON.stringify(input) }),
   models: () => request<ModelsPayload>('/api/models'),
   createModel: (input: Partial<ModelConfig>) => request<{ model: ModelConfig }>('/api/models', { method: 'POST', body: JSON.stringify(input) }),

@@ -33,15 +33,15 @@
 
 ### 图片创作与编辑
 
-- 文生图：以提示词生成图片；可配置尺寸、数量、质量、PNG/JPEG/WebP 输出和透明背景（格式 / 提供商能力受限）。
+- 文生图：以提示词生成图片；可配置尺寸、1–4 张数量、质量、PNG/JPEG/WebP 输出和透明背景（格式 / 提供商能力受限）。多张结果作为同一版本的候选图保存和展示。
 - 图生图 / 提示词改图：选择上传图或历史图片作为输入，以文本继续生成或修改。
 - 项目风格提示词：只自动叠加到无输入图的文生图请求。
-- 图片改字：视觉模型识别图片文字为分段内容；用户可修改、删除或框选区域手动新增文字，再由视觉模型规划图片编辑提示词。
-- 局部编辑：用户以百分比坐标框选区域并输入要求；视觉模型生成“仅改框内”的编辑提示词。
+- 图片改字：视觉模型识别图片文字为分段内容；用户可修改、删除或框选区域手动新增文字，再由视觉模型规划图片编辑提示词。点击“提交并改图”后立即关闭编辑弹窗并回到项目对话，从视觉规划阶段开始展示等待状态；创建失败时自动恢复弹窗和编辑内容。
+- 局部编辑：用户可在整个中间画布从图片内外起拖框选区域并输入要求；拖拽越过图片或画布边缘时仍会继续，最终选区按与图片相交的百分比坐标保存；视觉模型生成“仅改框内”的编辑提示词。
 - 图片变清晰：对当前图片调用图片模型的改图能力，提升细节和清晰度，同时约束模型保持原图的主体、文字、构图、比例、颜色和风格不变。
 - 扩图：选择目标尺寸，以原图为核心自然补全新增画布区域。
 - 去水印：视觉模型先判断 / 定位水印；确认存在后调用图片编辑模型修复遮挡区域。
-- 提取素材：在画布上框选内容区域，前端用 canvas 截取该区域作为截图随请求上传（上限 2048px、最小边不足 256px 自动放大、宽高比超 2:1 时用边缘像素补边、超大自动转 JPEG，以满足模型平台 256–4096px 且比例 ≤2:1 的输入限制）；服务端保存截图为 `extract` 素材后，视觉模型识别用户想提取的主体（忽略圈入的边缘干扰和补边痕迹，可附加文字提示），生成“仅保留该主体、内容与原图一致”的改图提示词，再由图片编辑模型输出独立素材图。
+- 提取素材：用户可在整个中间画布从图片内外起拖，且拖拽越过图片或画布边缘不会取消；最终选区取与图片相交的有效区域，前端用 canvas 截取该区域作为截图随请求上传（上限 2048px、最小边不足 256px 自动放大、宽高比超 2:1 时用边缘像素补边、超大自动转 JPEG，以满足模型平台 256–4096px 且比例 ≤2:1 的输入限制）；服务端保存截图为 `extract` 素材后，视觉模型识别用户想提取的主体（忽略圈入的边缘干扰和补边痕迹，可附加文字提示），生成“仅保留该主体、内容与原图一致”的改图提示词，再由图片编辑模型输出独立素材图。
 - 提示词画廊：按分类浏览内置模板，可将完整提示词填入对话框或将风格提示词设为项目风格。支持手动添加 / 编辑 / 删除“我的收藏”条目（可上传配图，纯文本亦可），上传图片后可调用视觉模型提炼完整提示词与风格描述；在工作台对画布主图、候选条、消息画廊中的图片点击右键，可一键收藏到画廊（视觉模型自动提炼提示词，失败时仅收图、提示词留空）。用户画廊数据存于 SQLite `gallery_entries` 表与 `data/gallery/` 目录，随完整备份 / 恢复。
 - 暗色模式：`src/theme.tsx` 的 ThemeProvider 以 `data-theme` 属性切换 `html` 主题，偏好存于 localStorage（`layerive-theme`），暗色样式统一写在 `styles.css` 末尾的 `html[data-theme='dark']` 覆盖块；首页、工作台、模型配置三处顶栏均有切换按钮。
 
@@ -57,7 +57,7 @@
 ### 模型管理
 
 - 图片模型：新增、编辑、删除、连接测试、设置默认模型，并按能力控制工作台可用操作。
-- 视觉识别模型：新增、编辑、删除、连接测试、设置默认识别模型；可选择 Anthropic Messages、Chat Completions 或 Responses API 格式（新建默认 Chat Completions），供改字、局部编辑、去水印、提取素材规划使用。API Key 输入框可切换显示 / 隐藏。
+- 视觉识别模型：新增、编辑、删除、连接测试、设置默认识别模型；可选择 Anthropic Messages、Chat Completions 或 Responses API 格式（新建默认 Chat Completions），供改字、局部编辑、去水印、提取素材规划使用。工作台顶部可为当前项目切换视觉识别模型，选择保存在项目 `draft.visionModelId` 中；旧项目或已删除的选择回退到全局识别默认模型。API Key 输入框可切换显示 / 隐藏。
 - 已适配图像提供商：OpenAI 兼容、SenseNova、Gemini、Grok；另有仅服务端兼容的本地 `mock` 演示路径。
 - 已适配视觉请求：Anthropic Messages、OpenAI Chat Completions、OpenAI Responses，并保留 SenseNova 和 Dots（`askdiandian.com`）旧配置兼容。
 
@@ -111,10 +111,10 @@ work/                       临时工作目录（被 Git 忽略）
 
 `WorkspaceView.tsx` 是核心 UI。它加载 `ProjectBundle`，把项目 `draft` 作为可恢复的工作台草稿；草稿修改会在 900ms 防抖后 PATCH 回服务端。该组件还：
 
-- 每 1.5 秒轮询正在生成的任务；完成后重新读取项目 Bundle。
+- 每 1.5 秒轮询正在生成的任务；完成后重新读取项目 Bundle。图片改字点击提交时会先用任务 ID 为空的 `activeTask` 表示视觉规划阶段，立即关闭文字编辑弹窗、在项目对话中展示等待状态并自动滚动到最新消息；服务端返回真实任务 ID 后开始轮询，提交失败则清除等待状态并重新打开原弹窗。
 - 监听 document 的 `paste` 事件：剪贴板含图片时复用上传流程（画布可直接 Ctrl+V 贴图）；文本框内文本优先，上传进行中忽略重复粘贴。
-- 维护当前查看图片、下一次编辑的输入图片、模型、尺寸、输出格式、数量、透明背景等本地状态。
-- 使用百分比坐标 `{ x, y, width, height }` 记录文字/局部编辑/提取素材选区；服务端和视觉模型提示词均以此为准。
+- 维护当前查看图片、下一次编辑的输入图片、图片模型、视觉识别模型、尺寸、输出格式、数量、透明背景等本地状态。工作台选择的视觉模型随项目草稿保存，并通过请求体 `visionModelId` 传给所有视觉理解操作；视觉请求进行中禁止切换，避免界面选择与已提交请求不一致。
+- 使用百分比坐标 `{ x, y, width, height }` 记录文字/局部编辑/提取素材选区；局部编辑和提取素材通过画布级 Pointer Events 与指针捕获支持从图片外起拖及越界拖拽，再将结果限制为图片内 0–100% 的有效交集；选区显示层必须以 `inset: 0` 对齐图片内容边缘，不能因容器已有边框而再次向内缩进；服务端和视觉模型提示词均以此为准。
 - 提取素材在圈选完成后立即用 canvas 生成截图预览（`cropImageRegion()`），提交时随请求发送截图 base64；局部修改与提取素材、扩图等模式互斥，切换时自动关闭其他模式。
 - 在版本树中按父子关系布局；从历史节点继续编辑会成为新的分支。
 
@@ -132,12 +132,14 @@ work/                       临时工作目录（被 Git 忽略）
 | `image_versions` | 可分支版本节点 | `parent_version_id` 指向父版本；删除为软删除 |
 | `images` | 上传和生成图片元数据 | 文件实际位于 `data/projects/<projectId>/...` |
 | `version_inputs` | 版本输入图片关系 | 关联编辑/生成版本和源图片 |
+| `text_recognitions` | 图片文字识别缓存 | 以图片、视觉模型 ID 和模型配置指纹缓存成功的文字分段；同一配置直接复用，切换或修改视觉模型则重新识别 |
 | `gallery_entries` | 用户自建提示词画廊条目 | 配图存于 `data/gallery/`；source 为 manual / project；删除条目时同步删除配图 |
 
 重要不变量：
 
 - 上传图片先作为未版本化素材保存；服务端用 `readImageDimensions()` 读取 PNG/JPEG/WebP 的宽高并写入 `images.width` / `images.height`。第一次拿它编辑时，`ensureUploadVersion()` 会补建 `upload` 起始版本。
-- 每个成功生成任务都会创建一个版本、写入所有输出图片、选第一张作为 `selected_image_id`，并更新项目的当前图片/版本/封面。
+- 每个成功生成任务都会创建一个版本、写入所有输出图片、选第一张作为 `selected_image_id`，并更新项目的当前图片/版本/封面。前端点击候选条或消息画廊中的任意候选图时，同时更新 `currentImageId` 和 `inputImageId`，确保画布所见候选就是下一次继续创作的输入。
+- 所有图片生成和编辑任务都把 `params.count` 规范为 1–4。OpenAI / Grok 等优先使用原生 `n` 批量请求；SenseNova / Gemini 等单图接口由 `callImageProviderBatch()` 并发拆成多次 `count=1` 请求；兼容接口若忽略或拒绝 `n`，会按缺口补发单图请求。成功返回的图片统一写入同一版本，前端候选条与对话画廊展示全部结果；单图接口的多张生成意味着多次计费请求。
 - 项目 Bundle 会隐藏软删除版本所属的图片，未版本化上传图片仍可见。
 - 删除版本只软删除记录，**不会删除图片文件**。如被后续版本引用，须显式强制删除，后代会重新连接到被删节点的父节点。
 - 服务重启时所有仍为 `generating` 的任务会被标为失败，不能尝试恢复执行。
@@ -159,7 +161,8 @@ work/                       临时工作目录（被 Git 忽略）
 - `operation: auto`：有输入图时为 `edit_prompt`，否则为 `text_to_image`。
 - 选择上传图片作为改图输入时，前端通过 `closestSizeForDimensions()` 把生成尺寸切换为当前提供商允许的最接近宽高比；固定尺寸模型只能保证比例尽量一致，不能保证输出像素值与原图完全相同。
 - 项目风格提示词只追加到无输入图的文生图，避免重绘已有图片的风格。
-- `edit_text` 与 `local_edit` 先调用视觉模型生成严格 JSON 的编辑提示词，再调用图片生成模型。
+- `edit_text` 与 `local_edit` 先调用视觉模型生成严格 JSON 的编辑提示词，再调用图片生成模型。文字编辑允许替换、清空删除及手动框选新增；提交时按源图片宽高匹配当前图片模型最接近的支持比例，不能回落到模型默认的 1:1。
+- `recognize-text` 首次成功识别某张图片后，将分段结果持久化至 `text_recognitions`；再次打开“编辑文字”时，若工作台所选视觉模型 ID 和其 provider / API 格式 / Base URL / 模型名均未变化，则直接复用缓存，不再发送识别请求。切换视觉模型会读取该模型自己的缓存或重新识别；缓存会随项目复制、导出导入和完整备份保留。
 - `outpaint` 直接构建保留原图、仅扩展新增区域的提示词；`enhance` 直接构建提升清晰度、但不改变原图内容的改图提示词。
 - `remove_watermark` 先让视觉模型判断并定位水印；若未发现水印则拒绝提交编辑。
 - `extract_asset` 请求体内携带前端 canvas 截图（base64），服务端先保存为 `source_type='extract'` 的未版本化素材（存于 `data/projects/<projectId>/extracts/`），再让视觉模型聚焦主体生成改图提示词，最后以截图为输入图调用编辑模型；版本挂在原图片所在版本的下游。
@@ -178,6 +181,7 @@ work/                       临时工作目录（被 Git 忽略）
 | `mock` | 本地演示 PNG | 仅服务端兼容路径；配置 UI 的常规提供商集合不包含它 |
 
 - 视觉模型以独立的 `apiFormat` 字段选择 `anthropic_messages`、`chat_completions` 或 `responses`。该字段缺失的旧配置不会被重写：`askdiandian.com` 自动沿用 Anthropic Messages，其余配置沿用 Chat Completions；旧 `provider` 字段继续原样保留，视觉请求根据 Base URL 识别 SenseNova 专用端点，避免隐藏的旧提供商值干扰用户修改后的地址。
+- 项目工作台发起的视觉请求可携带 `visionModelId`。`visionModelOrThrow()` 优先严格解析该 ID；未携带时才沿用全局 `active_vision_model`，以兼容旧前端和其他调用方。请求的模型已删除时返回 400，不得静默切换到另一个模型。
 - `visionEndpoint()` 根据 Base URL 和 API 格式补全 `/v1/messages`、`/chat/completions` 或 `/responses`；若用户已填写完整端点则不会重复拼接。
 - SenseNova 视觉模型有两条不同的兼容路径：旧融合模态服务 `api.sensenova.cn/v1` 使用 `/llm/chat-completions` 和 `max_new_tokens`；Token Plan 的 `sensenova-6.8-flash-lite` 等模型使用 `token.sensenova.cn/v1/chat/completions`、标准 `max_tokens` 与 OpenAI Vision 图片块。不得仅按 `sensenova.cn` 域名笼统选择旧路径。
 - `normalizeBaseUrl()` 会移除末尾的 `images/generations` 或 `images/edits`，避免重复拼接路径。
@@ -195,7 +199,7 @@ work/                       临时工作目录（被 Git 忽略）
 | `/api/projects/:id` | GET / PATCH / DELETE | Bundle 查询、项目/草稿更新、项目软删除 |
 | `/api/projects/:id/images` | POST | 上传 PNG/JPEG/WebP（最大 10MB） |
 | `/api/projects/:id/generate` | POST | 文生图、图生图、提示词改图 |
-| `/api/projects/:id/{recognize-text,edit-text,local-edit,outpaint,enhance,remove-watermark,extract-asset}` | POST | 专项图片操作 |
+| `/api/projects/:id/{recognize-text,edit-text,local-edit,outpaint,enhance,remove-watermark,extract-asset}` | POST | 专项图片操作；使用视觉能力的请求可传 `visionModelId` |
 | `/api/projects/:id/tasks`、`/tasks/:taskId`、`/tasks/:taskId/cancel` | GET / GET / POST | 查询和取消生成任务 |
 | `/api/projects/:id/versions/:versionId` | DELETE | 软删除版本，可加 `?force=1` |
 | `/api/projects/:id/duplicate`、`/export` | POST / GET | 深复制项目、导出项目 ZIP |
@@ -203,8 +207,8 @@ work/                       临时工作目录（被 Git 忽略）
 | `/api/backup`、`/api/backup/restore` | GET / POST | 完整备份、恢复并重启服务 |
 | `/api/models...` | GET / POST / PATCH / DELETE | 模型管理、默认设置、连接测试；`POST /api/models/:id/api-key` 仅供本机配置页按需回显已保存密钥 |
 | `/api/gallery` | GET / POST | 用户画廊条目列表、新增（可附 base64 配图） |
-| `/api/gallery/analyze` | POST | 视觉模型从 base64 图片提炼标题 / 提示词 / 风格提示词 |
-| `/api/gallery/from-image` | POST | 把项目内图片（projectId + imageId）收藏进画廊并自动提炼提示词 |
+| `/api/gallery/analyze` | POST | 视觉模型从 base64 图片提炼标题 / 提示词 / 风格提示词，可传 `visionModelId` |
+| `/api/gallery/from-image` | POST | 把项目内图片（projectId + imageId）收藏进画廊并自动提炼提示词，可传 `visionModelId` |
 | `/api/gallery/:id` | PATCH / DELETE | 编辑（可替换 / 移除配图）、删除画廊条目 |
 | `/gallery-files/<file>` | GET | 画廊配图访问（存于 `data/gallery/`） |
 | `/files/<projectId>/<path>` | GET | 本地图片及按需缩略图访问 |
@@ -213,7 +217,7 @@ work/                       临时工作目录（被 Git 忽略）
 
 ## 9. 导入、导出、删除与恢复
 
-- 单项目导出格式为 ZIP，含 `project.json` 和可选 `files/` 图片；导入会生成新的项目及所有关联 ID，缺失的图片文件会被保留为占位关系并提示。
+- 单项目导出格式为 ZIP（当前 `project.json` 格式版本为 2），含可选 `files/` 图片和文字识别缓存；导入会生成新的项目及所有关联 ID，缺失的图片文件会被保留为占位关系并提示。旧版本导出包缺少缓存字段时仍可正常导入。
 - 项目“复制”也会复制磁盘图片和全部关系数据，并重映射 ID。
 - 完整备份含数据库、所有项目图片、`data/gallery/` 画廊配图和 `config/models.json`，因此可能含 API Key。恢复前会在当前 `DATA_ROOT/backups/<timestamp>/` 留一份安全备份（含项目图片与画廊配图），然后替换数据并启动新的服务进程。
 - 这些操作具有高数据风险。修改其逻辑前，必须先评估 SQLite WAL、一致性、失败回滚、路径穿越防护，以及 Windows 文件锁行为。
