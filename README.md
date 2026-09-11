@@ -6,68 +6,56 @@
 
 # Layerive
 
-**Turn one-off AI images into traceable, comparable, continuously evolving creative projects.**
+**A local workspace that keeps images, conversations, and edit history together by project.**
 
-A local, project-based AI image workspace. Inspired by Lovart's image-creation experience, Layerive brings image generation, editing, regional changes, outpainting, in-image text editing, conversations, and version relationships into one project — all saved on your own machine.
+Layerive is built for image work that takes more than one prompt. Start from text or an existing image, then edit, replace a region, change text, outpaint, or extract an asset. Each result becomes a version in the project, while images, conversations, and model settings remain on your machine.
 
-[![Runs locally](https://img.shields.io/badge/Runs%20locally-No%20sign--in-6d55f7)](#-local-data-and-privacy)
-[![Storage](https://img.shields.io/badge/Storage-SQLite%20%2B%20local%20files-2e8c78)](#-local-data-and-privacy)
-[![Tech](https://img.shields.io/badge/React%2019%20%C2%B7%20Vite%20%C2%B7%20SQLite-TypeScript-3178c6)](#%EF%B8%8F-tech-stack)
+[![Runs locally](https://img.shields.io/badge/Runs%20locally-No%20sign--in-6d55f7)](#local-data-and-privacy)
+[![Storage](https://img.shields.io/badge/Storage-SQLite%20%2B%20local%20files-2e8c78)](#local-data-and-privacy)
+[![Tech](https://img.shields.io/badge/React%2019%20%C2%B7%20Vite%20%C2%B7%20SQLite-TypeScript-3178c6)](#tech-stack)
 
-[Get started](#-getting-started) · [Capabilities](#-core-capabilities) · [Configure models](#-configure-real-models) · [Workflow](#-workflow) · [Privacy](#-local-data-and-privacy) · [FAQ](#-faq)
+[Get started](#getting-started) · [Features](#features) · [Configure models](#configure-real-models) · [Workflow](#workflow) · [Privacy](#local-data-and-privacy) · [FAQ](#faq)
 
 </div>
 
 ---
 
-## Why Layerive?
+## What it is for
 
-Most AI image tools are centered on one-off chats. After twenty iterations, it is hard to find version seven again, remember the prompt behind it, or see which source image it came from. Layerive is centered on **projects and versions**: every generation or edit becomes a node in a version tree, so you can return to any point, continue from it, and compare branches.
+Prompt-to-image pages are good at generating a new image. They are less convenient when the job is to change one line of text, replace a subject, edit a selected region, or extend the canvas. Those changes often require repeated prompt revisions, and the model may still alter parts of the image that were meant to stay unchanged.
 
-Layerive is inspired by Lovart's image-creation workflow, but it does not depend on a hosted project or a fixed model provider. Images, conversations, versions, and model settings stay local. Connect SenseNova, OpenAI-compatible services, Gemini, Grok, or any gateway compatible with the OpenAI API format; choose the models, accounts, and pricing that work for you, reduce image-generation costs, and turn scattered outputs into manageable project assets.
+Layerive exposes these tasks as tools in the workspace: recognize and edit text, select a region and describe a change or provide a reference image, choose a target ratio for outpainting, extract an asset, enhance an image, or remove a watermark. Enhancement and watermark removal can be started from their dedicated actions; text and regional edits work from recognized content or a selection. A vision model interprets the image and selection, while the image model performs the edit. You do not have to work out a long editing prompt or repeatedly regenerate the whole image for a local change.
 
-> **In short:** this is not just another prompt-to-image page. It is a local workspace for sustained image creation.
+The work stays in one project. Each generation or edit creates a version that can be revisited, compared, or used as the start of a new branch. Layerive does not require a hosted project or a fixed model provider. Apart from requests sent to services you configure, images, conversations, and version data stay local.
 
-> **Note:** Layerive is an independent local project with no official affiliation with Lovart. Lovart is mentioned only as a product-design reference.
-
-## 🧭 Three steps to try it
-
-You can explore the entire project-and-version workflow before adding an API key, using the built-in **demo model**:
-
-1. Create a project from the home page and describe what you want to create.
-2. Keep the demo model, write a prompt, and send it.
-3. Review the result on the canvas, then revisit, branch, or compare it in the version tree.
-
-To generate, edit, or recognize images with a real service, continue with [Configure real models](#-configure-real-models).
-
-## ✨ Core capabilities
+## Features
 
 ### Project and asset management
 
-- The home page supports card and list views, search, recent projects, favorites, duplication, and deletion.
-- Project covers use a consistent landscape ratio and center-crop the source image without stretching it.
-- Each new project opens in its own workspace; conversations, assets, versions, and project style prompts are automatically saved.
-- Import project ZIP files, export individual projects (optionally including images), and create or restore complete local backups.
+- The project library provides card and list views, search, favorites, duplication, renaming, and soft deletion.
+- Each project stores its description, cover, current image, default model, and unfinished workspace state.
+- Projects can be imported or exported individually as ZIP files. Full local backup and restore are also available.
 
 ### Image creation and editing
 
-- **Text to image** — generate 1–4 images from one prompt. Multiple results are stored as candidates in the same version and can be selected from the candidate strip or conversation. Providers that return only one image per call are fanned out into multiple billable requests automatically.
-- **Image to image** — continue from an uploaded image or a historical version. Newly uploaded images automatically select the closest aspect ratio supported by the active model to help preserve their composition. You can also paste a screenshot or copied image anywhere in the workbench (canvas included) with Ctrl+V; it uploads exactly like the upload button.
-- **Prompt-based image editing** — select an image and describe the change in natural language.
-- **Image enhancement** — one click sends the current image through the image-edit workflow to improve clarity and detail while preserving its subject, text, composition, and style.
-- **Regional editing** — start a selection either inside or outside the image and keep dragging beyond the image or workspace edge without losing it. The app uses the selection's intersection with the source image; a vision model prepares an edit prompt while the image editor preserves content outside that region.
+- **Text to image** — generate 1–4 images from one prompt. Multiple results belong to the same version, and any candidate can be selected for further editing. Providers that return one image per call are split into multiple requests and may bill each request separately.
+- **Image to image and prompt-based editing** — start from an uploaded, pasted, or historical image and describe the next change. The app chooses the supported output size closest to the source aspect ratio.
+- **Image enhancement** — ask the image model to improve clarity and detail while keeping the subject, text, composition, and style as stable as possible.
+- **Regional editing** — drag a selection from inside or outside the image, even beyond the workspace edge. Describe a change, or upload/paste a reference image in the selection panel (PNG/JPEG/WebP, up to 10MB). For example, select a person's head and upload a dog photo: the vision model infers the replacement intent and locates both subjects, the backend crops and places the reference subject, and the image model blends it naturally. Instructions are optional with a reference. Reference edits restore original pixels outside the selection and save a PNG at the source dimensions. Leave room inside the selection for connecting edges; blend quality depends on the model. Progress and cancellation cover planning, compositing, generation and saving. Text-only regional editing remains available.
 - **Asset extraction** — start inside or outside the image and drag beyond its edge to select content (e.g. a cinema screen). The app screenshots the selection's valid intersection with the source image, a vision model focuses on the intended subject and ignores accidentally included edges (like nearby seats), then the image editor produces a faithful standalone asset. An optional hint can clarify your intent.
 - **Outpainting** — choose a size or ratio supported by the current model, preview the expanded canvas, then submit an image-edit request.
+- **Watermark removal** — a vision model checks for and locates a watermark before the image model repairs the affected region.
 - **Edit in-image text** — a vision model splits visible text into editable regions. Replace text, clear it to remove it, or manually select a region to add content; output uses the closest supported size matching the source image's aspect ratio. Clicking submit closes the editor immediately and returns to the project conversation while vision planning and generation continue. If submission fails, the editor reopens with the original edits intact.
 - **Reuse recognition results** — successful text recognition is stored locally per image and vision-model configuration. Reopening text editing reuses it; switching or changing the vision model triggers a fresh recognition.
 - **Project style prompts** — define a shared style for text-to-image generations while keeping the source-image context for edits.
-- **Prompt gallery** — browse and reuse prompt and style templates directly in the workspace, and manage your own library: add or edit entries manually (with an uploaded image or text only), let the vision model distill full prompts and style descriptions from an uploaded image, or right-click any generated image in the workspace to save it into the gallery with its prompt auto-distilled. A dark-mode toggle lives in the header of every view; the preference is remembered locally.
+- **Prompt gallery** — browse built-in templates or maintain a personal library of prompts and reference images. A vision model can derive prompts from an uploaded image, and workspace images can be added from their context menu.
+- **Dark mode** — available from the home, workspace, and model-configuration headers, with the preference stored locally.
 
 ### Versions, conversation, and comparison
 
 - Every generation, edit, image-enhancement, regional-edit, and outpaint operation creates a new version. You can upload additional images even after a project already has images, then use each new upload as the input for later edits.
 - Open the complete version tree, zoom and pan it, select a node to jump to it on the canvas, and branch from any version.
-- The workspace keeps the prompt, selected model, version number, and output images for every turn. Reuse a prompt or continue from an output with one click.
+- The workspace keeps the prompt, selected model, version number, and output images for every turn. Prompts can be reused, and any result can become the next input.
 - Compare images side by side or with a before/after slider, including against a selected historical image.
 
 ### Model integrations
@@ -88,7 +76,7 @@ The workspace header lets you choose image-generation and vision-recognition mod
 - Each model declares its own capabilities: text-to-image, image-to-image, prompt editing, or image understanding. The workspace only presents operations and sizes supported by the selected model.
 - A built-in demo model lets you try projects, conversations, and versioning without an API key.
 
-## 🚀 Getting started
+## Getting started
 
 ### Requirements
 
@@ -127,26 +115,26 @@ The desktop app stores its SQLite database, project images, gallery, and model c
 
 Prebuilt installers are also published automatically to [GitHub Releases](https://github.com/newljs/Layerive/releases) by GitHub Actions whenever a `v*` tag is pushed — Windows (installer + portable), macOS (x64 + arm64 DMG), and Linux (AppImage + deb).
 
-## 🧭 Workflow (interface screenshots)
+## Workflow
 
-> Screenshots live in `doc/界面操作截图/`, in operation order — one glance covers the core flow.
+Screenshots are stored in `doc/界面操作截图/` and listed below in workflow order.
 
-| Step | Screenshot | Highlight |
+| Step | Screenshot | Description |
 | --- | --- | --- |
-| 1 | ![1 首页-项目管理](doc/界面操作截图/1首页-项目管理.png) | **Project home** — card-based library; import / export / favorite / copy / delete, one-click new |
-| 2 | ![2 创建项目](doc/界面操作截图/2创建项目.png) | **Create project** — name + description gets you into the workbench; auto-saved locally |
-| 3 | ![3 项目初始面板](doc/界面操作截图/3项目初始面板.png) | **Workbench initial state** — three columns: versions · canvas · conversation; upload or type |
-| 4 | ![4 提示词画廊](doc/界面操作截图/4提示词画廊.png) | **Prompt gallery** — 161 quality templates across 16+ categories, pick and reuse |
-| 5 | ![5 提示词画廊2](doc/界面操作截图/5提示词画廊2.png) | **Apply a template** — one click to use as conversation prompt or project style |
-| 6 | ![6 生图操作](doc/界面操作截图/6生图操作.png) | **Text-to-image** — result lands in version history; reuse the prompt from the conversation |
-| 7 | ![7 编辑图片文字](doc/界面操作截图/7编辑图片文字.png) | **Edit image text** — vision model segments text; edits only change text, preserving layout |
-| 8 | ![8 局部修改](doc/界面操作截图/8局部修改.png) | **Regional edit** — box a region + natural-language instruction; only the box changes |
-| 9 | ![9 局部修改效果](doc/界面操作截图/9局部修改效果.png) | **Regional edit result** — auto-saved as a new version; the rest of the image stays untouched |
-| 10 | ![10 版本关系](doc/界面操作截图/10版本关系.png) | **Version tree** — full relationship graph with parent/child links, branch and backtrack anytime |
-| 11 | ![11 修改对比](doc/界面操作截图/11修改对比.png) | **Compare** — side-by-side or slider before/after; one click to continue from either side |
-| 12 | ![12 扩图](doc/界面操作截图/12扩图.png) | **Outpaint** — pick a target ratio; original image stays centered, new areas extend naturally |
+| 1 | ![1 首页-项目管理](doc/界面操作截图/1首页-项目管理.png) | Project library: import, export, favorite, copy, delete, and create |
+| 2 | ![2 创建项目](doc/界面操作截图/2创建项目.png) | Enter a project name and description |
+| 3 | ![3 项目初始面板](doc/界面操作截图/3项目初始面板.png) | Workspace with version history, canvas, and project conversation |
+| 4 | ![4 提示词画廊](doc/界面操作截图/4提示词画廊.png) | Browse prompt templates by category |
+| 5 | ![5 提示词画廊2](doc/界面操作截图/5提示词画廊2.png) | Use a template in the conversation or as the project style |
+| 6 | ![6 生图操作](doc/界面操作截图/6生图操作.png) | Store generated results in version and conversation history |
+| 7 | ![7 编辑图片文字](doc/界面操作截图/7编辑图片文字.png) | Recognize and edit text in separate regions |
+| 8 | ![8 局部修改](doc/界面操作截图/8局部修改.png) | Select a region and describe the required change |
+| 9 | ![9 局部修改效果](doc/界面操作截图/9局部修改效果.png) | Save the regional edit as a new version |
+| 10 | ![10 版本关系](doc/界面操作截图/10版本关系.png) | View parent, child, and branch relationships |
+| 11 | ![11 修改对比](doc/界面操作截图/11修改对比.png) | Compare two images side by side or with a slider |
+| 12 | ![12 扩图](doc/界面操作截图/12扩图.png) | Select a target ratio and preview the outpaint area |
 
-## 🔧 Configure real models
+## Configure real models
 
 Open **Model configuration** from the home page or workspace:
 
@@ -167,14 +155,14 @@ Open **Model configuration** from the home page or workspace:
 - Available outpainting sizes are constrained by the active image model. Confirm the canvas preview before submitting.
 - Output quality, text accuracy, and regional fidelity depend on the underlying model. For complex layouts, recognize text first and use manual selections to edit one region at a time.
 
-## 🔒 Local data and privacy
+## Local data and privacy
 
 - No account or sign-in is required. In browser-local mode, project metadata is stored in `data/app.db`, and project images live in local directories under `data/`. The desktop app stores equivalent data in its operating-system user-data directory.
 - In browser-local mode, model configuration is stored in `config/models.json`; the desktop app stores it in its user-data directory. It may include API keys. Do not commit it to a public repository, and handle backups carefully.
 - Full backups include project data and configuration. Keep a backup before restoring another one.
 - The local API listens only on `127.0.0.1`; it is not directly exposed to your network or the internet.
 
-## ❓ FAQ
+## FAQ
 
 ### The page opens, but image generation fails. What should I do?
 
@@ -192,7 +180,7 @@ Export a full backup ZIP from the home page. On the new computer, install and st
 
 Development uses frontend port `5173` and API port `8788` by default. Stop the process using the port; to change the API port, set `PIXELFLOW_API_PORT` before starting and update Vite's API proxy to match.
 
-## 🏗️ Tech stack
+## Tech stack
 
 | Layer | Technology |
 | --- | --- |
@@ -213,12 +201,13 @@ Project layout:
 └── data/           # SQLite database and project images (generated at runtime)
 ```
 
-## 🧪 Useful commands
+## Useful commands
 
 ```bash
 npm run dev    # Start frontend and API in development mode
 npm run lint   # Type-check TypeScript
 npm run build  # Type-check and build the frontend
+npm run test:local-edit  # Run regional-edit regression tests
 npm start      # Start the local production service
 ```
 
@@ -239,9 +228,3 @@ npm start      # Start the local production service
 This project is licensed under the [GNU Lesser General Public License v3.0](LICENSE) (or later).
 
 Copyright (c) 2026 newljs
-
-<div align="center">
-
-**If you find this project useful, please give it a star!**
-
-</div>

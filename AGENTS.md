@@ -3,18 +3,18 @@
 > **维护契约（必须遵守）**：只要改动了项目的功能、架构、数据结构、API、模型适配、运行方式、文件位置或重要约束，必须在同一次改动中更新本文件。先核对相关实现，再更新受影响章节；不要仅凭 README 推断。纯格式调整且不改变行为时可不更新。  
 > 更新时请同步修改本文的“最后核对”日期和相应内容；若现有描述不再可信，优先修正文档而不是保留过期说明。
 
-**最后核对**：2026-09-09
+**最后核对**：2026-09-10
 **项目定位**：Layerive 是一个仅本地运行的、以“项目 + 图片版本树”为中心的 AI 图片创作工作台。它将文生图、基于图片的编辑、文字编辑、局部编辑、扩图、去水印、对话记录和项目备份统一保存到本机。
 
 ## 1. 运行与边界
 
-- 技术栈：React 19 + TypeScript + Vite 前端；Node.js 原生 `http` 服务端；`node:sqlite` / SQLite 数据库；Electron 将同一套本地产品打包为桌面应用。
+- 技术栈：React 19 + TypeScript + Vite 前端；Node.js 原生 `http` 服务端；`node:sqlite` / SQLite 数据库；Sharp 负责局部替换的图片解码、裁剪与合成；Electron 将同一套本地产品打包为桌面应用。
 - Node 版本要求：`>= 22.13.0`（依赖内置 `node:sqlite`）。
 - 开发：`npm run dev` 同时启动 Vite `127.0.0.1:5173` 和后端 `127.0.0.1:8788`；Vite 将 `/api`、`/files` 代理至后端。
 - 生产：先 `npm run build`，再 `npm start`。后端从 `dist/` 托管前端，同时提供 API 和本地图片文件。
 - 桌面开发：`npm run desktop:dev` 先构建相同的前端，再由 Electron 启动本地服务和原生窗口；`npm run desktop:dist` 构建安装包。Electron 专属代码只在 `electron/main.cjs`，不得复制 `src/`、`server/` 或 `public/` 到另一个桌面项目。
-- CI 发布：推送 `v*` tag 触发 `.github/workflows/build.yml`，在 GitHub Actions 的 Windows / macOS / Ubuntu Runner 上执行 `npm ci` → `npm run build` → `electron-builder --publish never`，由独立 release 任务把安装包发布为已发布的 GitHub Release（非草稿）。mac 同时构建 x64 与 arm64；三端均未做代码签名，产物为未签名安装包。
-- 检查：`npm run lint`（TypeScript no-emit）；`npm run build`（先类型检查再构建）。目前没有自动化测试套件。
+- CI 发布：推送 `v*` tag 触发 `.github/workflows/build.yml`，矩阵包含 Windows x64、macOS arm64 / x64、Ubuntu x64；各任务执行 `npm ci --cpu=<arch>` → `npm run build` → `electron-builder --<arch> --publish never`，按目标架构安装 Sharp 原生依赖。独立 release 任务发布非草稿 GitHub Release，三端均未签名。桌面服务位于资源目录 `app/server`，所需 Sharp、`@img`、`detect-libc`、`semver` 由 `extraResources` 放在同级 `app/node_modules`；新增或升级图像依赖时必须核对该运行时依赖清单，不能只依赖 `app.asar` 内的模块。
+- 检查：`npm run lint`（TypeScript no-emit）；`npm run build`（先类型检查再构建）；`npm run test:local-edit` 使用 Node 内置测试和本地模拟模型验证图片处理、三种视觉协议、局部编辑任务及取消。测试仅使用生成的图片和 `work/local-edit-test-*` 内的独立数据/配置，不读取真实用户数据或调用真实模型；测试文件不打入桌面服务资源。
 - Windows 双击启动入口：`Layerive.bat`。该文件使用固定的工作目录，移动仓库后需要同步更新。
 - 项目不依赖登录、云端数据库或第三方后端。模型请求会发送给用户配置的模型服务；其他项目数据留在本机。
 - 许可：项目以 LGPL-3.0-or-later 发布，根目录 `LICENSE` 为 GNU LGPL v3.0 全文（参考 Wei-Shaw/sub2api 的做法）；`package.json` 的 `license` 字段与之保持一致。对外分发或商用前应遵守该许可条款。
@@ -37,7 +37,7 @@
 - 图生图 / 提示词改图：选择上传图或历史图片作为输入，以文本继续生成或修改。
 - 项目风格提示词：只自动叠加到无输入图的文生图请求。
 - 图片改字：视觉模型识别图片文字为分段内容；用户可修改、删除或框选区域手动新增文字，再由视觉模型规划图片编辑提示词。点击“提交并改图”后立即关闭编辑弹窗并回到项目对话，从视觉规划阶段开始展示等待状态；创建失败时自动恢复弹窗和编辑内容。
-- 局部编辑：用户可在整个中间画布从图片内外起拖框选区域并输入要求；拖拽越过图片或画布边缘时仍会继续，最终选区按与图片相交的百分比坐标保存；视觉模型生成“仅改框内”的编辑提示词。
+- 局部编辑：支持从画布图片内外起拖并越界框选，最终取图片内有效百分比选区。选区浮窗支持文字要求，或上传 / Ctrl+V 粘贴参考图（静态 PNG/JPEG/WebP，最大 10MB）。有参考图时文字可留空：视觉模型同时理解原图、选区与参考图，推断替换意图并返回两图主体坐标；后台裁剪参考主体、等比缩放并粘贴至目标位置，图片模型再按场景融合轮廓、背景、光影、透视和连接处。参考图模式最终仅回填选区内生成结果，边界向内羽化，框外保留原图解码后的像素，并以原图尺寸保存 PNG；纯文字方式继续使用原有模型输出。定位失败或目标超出选区时停止，不盲目拼贴。视觉规划、合成、生成、框外保留均在可取消任务中运行。
 - 图片变清晰：对当前图片调用图片模型的改图能力，提升细节和清晰度，同时约束模型保持原图的主体、文字、构图、比例、颜色和风格不变。
 - 扩图：选择目标尺寸，以原图为核心自然补全新增画布区域。
 - 去水印：视觉模型先判断 / 定位水印；确认存在后调用图片编辑模型修复遮挡区域。
@@ -82,6 +82,8 @@ server/
   db.mjs                    SQLite 初始化、目录常量、DTO 转换
   models.mjs                config/models.json 的读写、脱敏与模型规范化
   png.mjs                   演示图和缩略图的 PNG 工具
+  local-edit.mjs            Sharp 图片规范化、坐标校验、参考主体裁剪合成、框外像素保留
+  local-edit.test.mjs       局部编辑的隔离图片处理与 HTTP 集成回归测试
   zip.mjs                   无额外依赖的 ZIP 读写
 electron/
   main.cjs                  桌面窗口、原生菜单与本地服务生命周期；运行时将用户数据根目录传给 server/
@@ -112,6 +114,7 @@ work/                       临时工作目录（被 Git 忽略）
 `WorkspaceView.tsx` 是核心 UI。它加载 `ProjectBundle`，把项目 `draft` 作为可恢复的工作台草稿；草稿修改会在 900ms 防抖后 PATCH 回服务端。该组件还：
 
 - 每 1.5 秒轮询正在生成的任务；完成后重新读取项目 Bundle。图片改字点击提交时会先用任务 ID 为空的 `activeTask` 表示视觉规划阶段，立即关闭文字编辑弹窗、在项目对话中展示等待状态并自动滚动到最新消息；服务端返回真实任务 ID 后开始轮询，提交失败则清除等待状态并重新打开原弹窗。
+- 局部编辑提交后立刻显示等待状态，取得任务 ID 后收起浮窗，并按任务 `stage` 显示视觉定位 / 合成 / 生成 / 框外还原进度。失败或取消时在同一工作台会话恢复选区、文字与参考图；成功后清空。参考图只在本次操作中使用，不替换当前画布或项目草稿；切换画布图片会清除旧参考图并使未完成的文件读取失效。局部编辑浮窗有选区时，图片粘贴优先进入参考图，文本框仍保持文本优先。
 - 监听 document 的 `paste` 事件：剪贴板含图片时复用上传流程（画布可直接 Ctrl+V 贴图）；文本框内文本优先，上传进行中忽略重复粘贴。
 - 维护当前查看图片、下一次编辑的输入图片、图片模型、视觉识别模型、尺寸、输出格式、数量、透明背景等本地状态。工作台选择的视觉模型随项目草稿保存，并通过请求体 `visionModelId` 传给所有视觉理解操作；视觉请求进行中禁止切换，避免界面选择与已提交请求不一致。
 - 使用百分比坐标 `{ x, y, width, height }` 记录文字/局部编辑/提取素材选区；局部编辑和提取素材通过画布级 Pointer Events 与指针捕获支持从图片外起拖及越界拖拽，再将结果限制为图片内 0–100% 的有效交集；选区显示层必须以 `inset: 0` 对齐图片内容边缘，不能因容器已有边框而再次向内缩进；服务端和视觉模型提示词均以此为准。
@@ -138,6 +141,7 @@ work/                       临时工作目录（被 Git 忽略）
 重要不变量：
 
 - 上传图片先作为未版本化素材保存；服务端用 `readImageDimensions()` 读取 PNG/JPEG/WebP 的宽高并写入 `images.width` / `images.height`。第一次拿它编辑时，`ensureUploadVersion()` 会补建 `upload` 起始版本。
+- 局部替换参考图和初步合成图保存在项目 `local-edits/`，`images.source_type` 分别为 `local_reference` / `local_composite`，保持未版本化并带所属 `task_id`。成功版本的 `version_inputs` 同时关联原图、参考图和合成图，父节点始终来自原图；中间图不成为画布当前版本。它们作为普通项目图片随复制、导出导入及备份保留，失败任务已保存的参考素材也会留存。`generation_tasks.input_json` 可附加 `stage`、`localEdit`（选区、意图、双图百分比坐标、规范化尺寸及视觉模型 ID）和 `effectivePrompt`，不存 API Key；不新增表或列，旧数据库兼容。
 - 每个成功生成任务都会创建一个版本、写入所有输出图片、选第一张作为 `selected_image_id`，并更新项目的当前图片/版本/封面。前端点击候选条或消息画廊中的任意候选图时，同时更新 `currentImageId` 和 `inputImageId`，确保画布所见候选就是下一次继续创作的输入。
 - 所有图片生成和编辑任务都把 `params.count` 规范为 1–4。OpenAI / Grok 等优先使用原生 `n` 批量请求；SenseNova / Gemini 等单图接口由 `callImageProviderBatch()` 并发拆成多次 `count=1` 请求；兼容接口若忽略或拒绝 `n`，会按缺口补发单图请求。成功返回的图片统一写入同一版本，前端候选条与对话画廊展示全部结果；单图接口的多张生成意味着多次计费请求。
 - 项目 Bundle 会隐藏软删除版本所属的图片，未版本化上传图片仍可见。
@@ -152,7 +156,7 @@ work/                       临时工作目录（被 Git 忽略）
 前端 POST 操作
   → 校验项目、模型能力、输入图片与参数
   → 写 user message + generation_tasks(generating)
-  → 异步调用供应商（总超时 120 秒）
+  → 异步调用供应商（常规总超时 120 秒；局部编辑含规划与图像处理总超时 300 秒）
   → 成功：写 image_versions、images、assistant result、更新项目指针
   → 失败/取消：只更新 task 并写 assistant error/canceled message
 前端轮询 GET /tasks/:taskId，完成后重新 GET 项目 Bundle
@@ -161,7 +165,9 @@ work/                       临时工作目录（被 Git 忽略）
 - `operation: auto`：有输入图时为 `edit_prompt`，否则为 `text_to_image`。
 - 选择上传图片作为改图输入时，前端通过 `closestSizeForDimensions()` 把生成尺寸切换为当前提供商允许的最接近宽高比；固定尺寸模型只能保证比例尽量一致，不能保证输出像素值与原图完全相同。
 - 项目风格提示词只追加到无输入图的文生图，避免重绘已有图片的风格。
-- `edit_text` 与 `local_edit` 先调用视觉模型生成严格 JSON 的编辑提示词，再调用图片生成模型。文字编辑允许替换、清空删除及手动框选新增；提交时按源图片宽高匹配当前图片模型最接近的支持比例，不能回落到模型默认的 1:1。
+- `edit_text` 与 `local_edit` 先调用视觉模型生成严格 JSON 的编辑提示词，再调用图片生成模型。文字编辑允许替换、清空删除及手动框选新增；文字编辑和局部修改提交时按源图片宽高匹配当前图片模型最接近的支持比例，不能回落到模型默认的 1:1。
+- `local_edit` 在校验后立即返回 202，视觉规划移入 `runGenerationTask()`。带 `reference: { data, mimeType, name? }` 时，后台用 Sharp 按 EXIF 方向规范化两图，最多解码 4000 万像素；参考图等比缩小至最长边不超过 4096px。视觉模型看到的图片与坐标计算使用同一份规范化数据，返回 `intent` / `target_rect` / `reference_rect` / `edit_prompt`。坐标必须有限且处于各自全图 0–100% 内，目标至少 80% 位于选区内，再限制为交集，否则终止。裁剪主体等比放入目标框，矩形裁剪残留背景交由模型在选区内修复。生成后将结果缩放回原图尺寸，只拷贝选区像素并在内部最多 12px 羽化，以 PNG 避免框外二次有损压缩。自然融合质量仍依赖所选模型，选区应为主体衔接留出空间。
+- 局部编辑各阶段共享 AbortController；视觉请求另有 120 秒上限。所有生成任务写完输出文件后再次检查取消，再用无异步间隙的 SQLite 事务写版本、输入关系、图片记录、结果消息、任务状态和项目指针，避免取消时发布成功版本。文件写入失败 / 取消可能留下未被数据库引用的输出文件，但不会发布部分成功记录或覆盖原图。
 - `recognize-text` 首次成功识别某张图片后，将分段结果持久化至 `text_recognitions`；再次打开“编辑文字”时，若工作台所选视觉模型 ID 和其 provider / API 格式 / Base URL / 模型名均未变化，则直接复用缓存，不再发送识别请求。切换视觉模型会读取该模型自己的缓存或重新识别；缓存会随项目复制、导出导入和完整备份保留。
 - `outpaint` 直接构建保留原图、仅扩展新增区域的提示词；`enhance` 直接构建提升清晰度、但不改变原图内容的改图提示词。
 - `remove_watermark` 先让视觉模型判断并定位水印；若未发现水印则拒绝提交编辑。
@@ -183,6 +189,7 @@ work/                       临时工作目录（被 Git 忽略）
 - 视觉模型以独立的 `apiFormat` 字段选择 `anthropic_messages`、`chat_completions` 或 `responses`。该字段缺失的旧配置不会被重写：`askdiandian.com` 自动沿用 Anthropic Messages，其余配置沿用 Chat Completions；旧 `provider` 字段继续原样保留，视觉请求根据 Base URL 识别 SenseNova 专用端点，避免隐藏的旧提供商值干扰用户修改后的地址。
 - 项目工作台发起的视觉请求可携带 `visionModelId`。`visionModelOrThrow()` 优先严格解析该 ID；未携带时才沿用全局 `active_vision_model`，以兼容旧前端和其他调用方。请求的模型已删除时返回 400，不得静默切换到另一个模型。
 - `visionEndpoint()` 根据 Base URL 和 API 格式补全 `/v1/messages`、`/chat/completions` 或 `/responses`；若用户已填写完整端点则不会重复拼接。
+- `callVision()` 同时接受单张图片或按顺序排列的图片数组；Anthropic Messages、Chat Completions（含 SenseNova 两条兼容路径）、Responses 均按各自协议发送多张图片。局部替换固定图1为原图、图2为参考图；不支持多图理解的模型会使该任务失败，不降级为只看一张。
 - SenseNova 视觉模型有两条不同的兼容路径：旧融合模态服务 `api.sensenova.cn/v1` 使用 `/llm/chat-completions` 和 `max_new_tokens`；Token Plan 的 `sensenova-6.8-flash-lite` 等模型使用 `token.sensenova.cn/v1/chat/completions`、标准 `max_tokens` 与 OpenAI Vision 图片块。不得仅按 `sensenova.cn` 域名笼统选择旧路径。
 - `normalizeBaseUrl()` 会移除末尾的 `images/generations` 或 `images/edits`，避免重复拼接路径。
 - 不要读取、输出、提交或写入示例真实 API Key；`config/` 和 `data/` 已被 Git 忽略。
@@ -200,7 +207,9 @@ work/                       临时工作目录（被 Git 忽略）
 | `/api/projects/:id/images` | POST | 上传 PNG/JPEG/WebP（最大 10MB） |
 | `/api/projects/:id/generate` | POST | 文生图、图生图、提示词改图 |
 | `/api/projects/:id/{recognize-text,edit-text,local-edit,outpaint,enhance,remove-watermark,extract-asset}` | POST | 专项图片操作；使用视觉能力的请求可传 `visionModelId` |
+| `/api/projects/:id/local-edit` | POST | `imageId`、`modelId`、`visionModelId?`、百分比 `rect`、`instruction`、`params?`；可附 `reference: { data, mimeType, name? }`，有参考图时 instruction 可为空；校验后即返回 202，后台规划与合成 |
 | `/api/projects/:id/tasks`、`/tasks/:taskId`、`/tasks/:taskId/cancel` | GET / GET / POST | 查询和取消生成任务 |
+| `/api/projects/:id/tasks/:taskId` | GET | 单任务响应含可选 `stage: planning / compositing / generating / preserving`，旧任务为 null |
 | `/api/projects/:id/versions/:versionId` | DELETE | 软删除版本，可加 `?force=1` |
 | `/api/projects/:id/duplicate`、`/export` | POST / GET | 深复制项目、导出项目 ZIP |
 | `/api/projects/import` | POST | 导入项目 ZIP（base64 请求体） |

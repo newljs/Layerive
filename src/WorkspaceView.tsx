@@ -5,7 +5,7 @@ import { PromptGalleryModal } from './PromptGalleryModal';
 import { sizesForProvider, defaultSizeForProvider, closestSizeForDimensions, isValidSizeForProvider, OUTPUT_FORMATS, type OutputFormat } from './sizes';
 import { useTheme } from './theme';
 import type { GalleryEntry } from './gallery';
-import type { ModelConfig, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
+import type { GenerationTask, LocalEditReference, ModelConfig, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
 
 type Props = {
   projectId: string;
@@ -18,6 +18,7 @@ type Props = {
   notify: (message: string, kind?: 'success' | 'error') => void;
 };
 type TaskKind = 'generate' | 'text-edit' | 'local-edit' | 'outpaint' | 'enhance' | 'remove-watermark' | 'extract-asset';
+const localEditStages = { planning: '视觉模型正在理解选区与修改意图、定位主体…', compositing: '正在裁剪参考主体并合成到目标位置…', generating: '图片模型正在完成局部修改与自然融合…', preserving: '正在还原框外原图并保存结果…' };
 
 const operationLabels: Record<string, string> = { auto: '自动识别', upload: '上传原图', text_to_image: '文生图', image_to_image: '图生图', edit_prompt: '提示词改图', edit_text: '文字编辑', local_edit: '局部修改', outpaint: '扩图', enhance: '变清晰', remove_watermark: '去水印', extract_asset: '提取素材' };
 const formatTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
@@ -250,7 +251,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [count, setCount] = useState(1);
   const [currentImageId, setCurrentImageId] = useState<string | null>(null);
   const [inputImageId, setInputImageId] = useState<string | null>(null);
-  const [activeTask, setActiveTask] = useState<{ id: string | null; kind: TaskKind } | null>(null);
+  const [activeTask, setActiveTask] = useState<{ id: string | null; kind: TaskKind; stage?: GenerationTask['stage'] } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'failed'>('saved');
   const [compareOpen, setCompareOpen] = useState(false);
@@ -272,6 +273,10 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [localEditRect, setLocalEditRect] = useState<TextSegment['rect'] | null>(null);
   const [localEditInstruction, setLocalEditInstruction] = useState('');
   const [localEditSubmitting, setLocalEditSubmitting] = useState(false);
+  const [localReference, setLocalReference] = useState<LocalEditReference | null>(null);
+  const [localReferenceLoading, setLocalReferenceLoading] = useState(false);
+  const localReferenceRevision = useRef(0);
+  const localReferenceFileRef = useRef<HTMLInputElement>(null);
   const [outpaintMode, setOutpaintMode] = useState(false);
   const [outpaintSize, setOutpaintSize] = useState('');
   const [outpaintSubmitting, setOutpaintSubmitting] = useState(false);
@@ -332,7 +337,10 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     pollTimer.current = window.setInterval(async () => {
       try {
         const task = await api.getTask(projectId, taskId);
-        if (task.status === 'generating') return;
+        if (task.status === 'generating') {
+          setActiveTask((current) => current?.id === taskId ? { ...current, stage: task.stage } : current);
+          return;
+        }
         stopPolling();
         setActiveTask(null);
         const data = await api.getProject(projectId);
@@ -346,6 +354,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           } else if (kind === 'text-edit') {
             notify(`文字已修改并保存为 V${data.versions[0]?.number}`, 'success');
           } else if (kind === 'local-edit') {
+            setLocalReference(null);
+            setLocalEditInstruction('');
+            setLocalEditRect(null);
             notify(`局部修改已保存为 V${data.versions[0]?.number}`, 'success');
           } else if (kind === 'enhance') {
             notify(`高清增强已保存为 V${data.versions[0]?.number}`, 'success');
@@ -357,8 +368,10 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
             notify(`扩图已保存为 V${data.versions[0]?.number}`, 'success');
           }
         } else if (task.status === 'canceled') {
+          if (kind === 'local-edit') setLocalEditMode(true);
           notify('已取消本次生成，输入已保留。', 'error');
         } else {
+          if (kind === 'local-edit') setLocalEditMode(true);
           notify(task.error || '生成失败，请重试。', 'error');
         }
         onProjectChanged();
@@ -452,6 +465,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   // 切换画布图片时，针对旧图片的圈选与截图预览全部失效，一并清理。
   useEffect(() => {
     setLocalEditRect(null);
+    localReferenceRevision.current++;
+    setLocalReference(null);
+    setLocalReferenceLoading(false);
     closeExtract();
   }, [currentImageId]);
 
@@ -547,7 +563,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   }
 
   function onCanvasSelectionStart(event: React.PointerEvent<HTMLDivElement>) {
-    if ((!localEditMode && !extractMode) || event.button !== 0) return;
+    if ((!localEditMode && !extractMode) || event.button !== 0 || generating || localEditSubmitting) return;
     const target = event.target as Element;
     if (target.closest('.local-edit-panel, .extract-panel')) return;
     const point = canvasPointerRatio(event);
@@ -622,9 +638,13 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setLocalEditMode(true);
     setLocalEditRect(null);
     setLocalEditInstruction('');
+    setLocalReference(null);
   }
 
   function closeLocalEdit() {
+    localReferenceRevision.current++;
+    setLocalReference(null);
+    setLocalReferenceLoading(false);
     localBoxStart.current = null;
     setLocalEditMode(false);
     setLocalEditRect(null);
@@ -632,9 +652,32 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setLocalDragging(false);
   }
 
+  async function selectLocalReference(file?: File) {
+    if (!file || localEditSubmitting || generating) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 10 * 1024 * 1024) {
+      notify('请上传不超过 10MB 的 PNG、JPEG 或 WebP 参考图', 'error');
+      return;
+    }
+    const revision = ++localReferenceRevision.current;
+    setLocalReferenceLoading(true);
+    try {
+      const data = await readFileAsDataUrl(file);
+      const preview = new Image();
+      preview.src = data;
+      await preview.decode();
+      if (preview.naturalWidth * preview.naturalHeight > 40_000_000) throw new Error('参考图像素过大，请缩小到 4000 万像素以内');
+      if (revision === localReferenceRevision.current) setLocalReference({ data, mimeType: file.type, name: file.name });
+    } catch (error) {
+      if (revision === localReferenceRevision.current) notify(`参考图读取失败：${(error as Error).message}`, 'error');
+    } finally {
+      if (revision === localReferenceRevision.current) setLocalReferenceLoading(false);
+    }
+  }
+
   async function submitLocalEdit() {
-    if (!currentImage || !localEditRect || !localEditInstruction.trim() || localEditSubmitting || generating) return;
+    if (!currentImage || !localEditRect || (!localEditInstruction.trim() && !localReference) || localReferenceLoading || localEditSubmitting || generating) return;
     setLocalEditSubmitting(true);
+    setActiveTask({ id: null, kind: 'local-edit', stage: 'planning' });
     try {
       const result = await api.localEdit(projectId, {
         imageId: currentImage.id,
@@ -642,12 +685,13 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         visionModelId,
         parentVersionId: currentVersion?.id || null,
         instruction: localEditInstruction.trim(),
+        reference: localReference || undefined,
         rect: localEditRect,
-        params: { size, count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: transparentBg },
+        params: { size: closestSizeForDimensions(provider, currentImage.width, currentImage.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: localReference ? 'png' : outputFormat, transparent: localReference ? false : transparentBg },
       });
-      closeLocalEdit();
+      setLocalEditMode(false);
       startPolling(result.taskId, 'local-edit');
-    } catch (error) { notify((error as Error).message, 'error'); }
+    } catch (error) { setActiveTask(null); notify((error as Error).message, 'error'); }
     finally { setLocalEditSubmitting(false); }
   }
 
@@ -838,6 +882,10 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     const file = pickPasteFile(event);
     if (!file) return;
     event.preventDefault();
+    if (localEditMode && localEditRect) {
+      void selectLocalReference(file);
+      return;
+    }
     void upload(file);
   }
 
@@ -962,7 +1010,22 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
             {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined} onContextMenu={(event) => openImageContextMenu(event, currentImage.id)}>{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={`扩图预览${currentVersion ? `版本 V${currentVersion.number}` : ''}`} /><span>新增画布区域</span></div> : <img src={currentImage.url} alt={`项目图片${currentVersion ? `版本 V${currentVersion.number}` : ''}`} />}{(localEditMode || localEditRect) && <div className="local-edit-surface">{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>修改区域</em></span>}</div>}{(extractMode || extractRect) && <div className="extract-surface">{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>提取区域</em></span>}</div>}<span className="image-chip">{outpaintMode ? `目标 ${outpaintSize}` : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
               <div className="canvas-empty"><div className="empty-visual"><span /><span /><span /></div><h2>开始你的第一张作品</h2><p>在右侧输入创作描述，或者上传 / 直接 Ctrl+V 粘贴一张图片进行修改。</p><button className="button secondary" onClick={() => fileRef.current?.click()}>上传初始图片</button></div>
             )}
-            {(localEditMode || localEditRect) && !localDragging && currentImage && <section className="local-edit-panel"><div className="local-edit-panel-head"><div><strong>局部修改</strong><span>{localEditRect ? '描述改动，系统将只修改框选区域' : '可从图片内外起拖，框选需要修改的位置'}</span></div><button className="local-edit-exit" onClick={closeLocalEdit}><Icon name="close" size={13} /> 退出</button></div>{localEditRect && <><textarea value={localEditInstruction} onChange={(event) => setLocalEditInstruction(event.target.value)} placeholder="例如：将桌上的咖啡杯替换成透明玻璃花瓶，保留光影和画面风格" rows={2} /><div className="local-edit-panel-actions"><button className="button secondary" onClick={() => setLocalEditRect(null)}>重新框选</button><button className="button primary" disabled={!localEditInstruction.trim() || localEditSubmitting || generating} onClick={() => void submitLocalEdit()}>{localEditSubmitting ? '正在组装提示词…' : '应用局部修改'}</button></div></>}</section>}
+            {localEditMode && !localDragging && currentImage && <section className="local-edit-panel" role="dialog" aria-label="局部修改">
+              <div className="local-edit-panel-head"><div><strong>局部修改</strong><span>{localEditRect ? '描述改动，或上传参考图替换选中的主体' : '可从图片内外起拖，框选需要修改的位置'}</span></div><button className="local-edit-exit" disabled={localEditSubmitting} onClick={closeLocalEdit}><Icon name="close" size={13} /> 退出</button></div>
+              {localEditRect && <>
+                <input ref={localReferenceFileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; void selectLocalReference(file); }} />
+                <div className="local-reference">
+                  {localReference && <img src={localReference.data} alt="局部替换参考图" />}
+                  <div><strong>{localReference ? localReference.name || '已选择参考图' : '参考图片（可选）'}</strong><span>{localReference ? '将识别参考图中的主体并融合到框选位置' : '例如：框选人头，上传狗的照片，自动完成换头'}</span>
+                    <div className="local-reference-actions"><button className="button secondary" disabled={localReferenceLoading || localEditSubmitting || generating} onClick={() => localReferenceFileRef.current?.click()}>{localReferenceLoading ? '正在读取…' : localReference ? '更换图片' : '上传参考图'}</button>{localReference && <button className="button secondary" disabled={localReferenceLoading || localEditSubmitting || generating} onClick={() => { localReferenceRevision.current++; setLocalReference(null); }}>移除</button>}</div>
+                    <small>PNG / JPEG / WebP，最大 10MB，也可 Ctrl+V 粘贴</small>
+                  </div>
+                </div>
+                <textarea aria-label="局部修改要求" disabled={localEditSubmitting} value={localEditInstruction} onChange={(event) => setLocalEditInstruction(event.target.value)} placeholder={localReference ? '可不填写，由模型推断意图。也可补充：只替换头部，保留耳朵，保持原图的姿态与光影' : '例如：将桌上的咖啡杯替换成透明玻璃花瓶，保留光影和画面风格'} rows={2} />
+                {localReference && <p className="local-reference-note">智能定位 → 裁剪合成 → 自然融合。请为衔接处留出选区空间；框外保留原图，结果按原图尺寸保存为 PNG。</p>}
+                <div className="local-edit-panel-actions"><button className="button secondary" disabled={localEditSubmitting || generating} onClick={() => setLocalEditRect(null)}>重新框选</button><button className="button primary" disabled={(!localEditInstruction.trim() && !localReference) || localReferenceLoading || localEditSubmitting || generating} onClick={() => void submitLocalEdit()}>{localEditSubmitting ? '正在提交…' : localReference ? '智能替换并融合' : '应用局部修改'}</button></div>
+              </>}
+            </section>}
             {outpaintMode && currentImage && <section className="outpaint-panel"><div className="outpaint-panel-head"><div><strong>扩图</strong><span>选择当前模型支持的目标画布比例</span></div><button className="outpaint-exit" onClick={closeOutpaint}><Icon name="close" size={13} /> 退出</button></div><div className="outpaint-size-list">{sizesForProvider(provider).map((option) => <button key={option.value} className={option.value === outpaintSize ? 'active' : ''} onClick={() => setOutpaintSize(option.value)}><strong>{option.ratio}</strong><span>{option.value}</span></button>)}</div><p className="outpaint-summary">原图将居中保留，绿色虚线框内的新增区域会由模型自然延展补全。</p><div className="outpaint-panel-actions"><button className="button secondary" onClick={closeOutpaint}>取消</button><button className="button primary" disabled={!outpaintSize || outpaintSubmitting || generating} onClick={() => void submitOutpaint()}>{outpaintSubmitting ? '正在创建扩图任务…' : '确认扩图'}</button></div></section>}
             {(extractMode || extractRect) && !extractDragging && currentImage && <section className="extract-panel"><div className="extract-panel-head"><div><strong>提取素材</strong><span>{extractRect ? '识别模型会聚焦框选主体，并剔除圈入的边缘干扰' : '可从图片内外起拖，框选想提取的内容'}</span></div><button className="extract-exit" onClick={closeExtract}><Icon name="close" size={13} /> 退出</button></div>{extractRect && <><div className="extract-preview">{extractPreview ? <img src={extractPreview.dataUrl} alt="提取区域截图预览" /> : <span className="extract-preview-loading"><span className="spinner" />正在生成截图…</span>}{extractPreview && <small>{extractPreview.padded ? '已自动补边 · ' : ''}{extractPreview.width} × {extractPreview.height}</small>}</div><textarea value={extractHint} onChange={(event) => setExtractHint(event.target.value)} placeholder="可选补充说明，例如：只要中间的银幕，去掉两侧的座椅" rows={2} /><div className="extract-panel-actions"><button className="button secondary" onClick={() => { setExtractRect(null); setExtractPreview(null); }}>重新框选</button><button className="button primary" disabled={!extractPreview || extractSubmitting || generating} onClick={() => void submitExtract()}>{extractSubmitting ? '正在识别与规划…' : '提取为独立素材'}</button></div></>}</section>}
           </div>
@@ -983,7 +1046,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
               const outputs = (message.content.outputImageIds || []).map((id) => imageMap.get(id)).filter(Boolean) as ProjectImage[];
               return <article className="message assistant-message" key={message.id}><div className="message-meta"><strong>Layerive</strong><span>V{message.content.versionNumber} · {formatTime(message.createdAt)}</span></div><p>已完成生成，得到 {outputs.length} 张候选图片。</p><div className={`message-gallery count-${outputs.length}`}>{outputs.map((image) => <button key={image.id} title="查看并使用这张候选图继续创作" onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt="生成结果" loading="lazy" /></button>)}</div><div className="message-actions"><button onClick={() => { const first = outputs[0]; if (first) useImage(first); }}>使用此轮继续</button><button onClick={() => setPrompt(message.content.prompt || '')}>复用提示词</button></div></article>;
             })}
-            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? '正在生成' : '正在准备'}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind === 'text-edit' && !activeTask.id ? '视觉模型正在整理文字修改要求，随后将自动开始改图。' : `${selectedModel?.name || '图片模型'} 正在创作 ${count} 张图片，完成后会自动保存为同一版本的候选图。`}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>取消任务</button>}</article>}
+            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? '正在生成' : '正在准备'}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind === 'local-edit' ? localEditStages[activeTask.stage || 'planning'] : activeTask?.kind === 'text-edit' && !activeTask.id ? '视觉模型正在整理文字修改要求，随后将自动开始改图。' : `${selectedModel?.name || '图片模型'} 正在创作 ${count} 张图片，完成后会自动保存为同一版本的候选图。`}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>取消任务</button>}</article>}
             <div ref={messagesEnd} />
           </div>
 

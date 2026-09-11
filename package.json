@@ -16,22 +16,24 @@
     "build": "node node_modules/typescript/bin/tsc --noEmit && node node_modules/vite/bin/vite.js build",
     "start": "node server/index.mjs",
     "lint": "node node_modules/typescript/bin/tsc --noEmit",
+    "test:local-edit": "node --test server/local-edit.test.mjs",
     "desktop:dev": "npm run build && electron .",
     "desktop:dir": "npm run build && electron-builder --dir",
     "desktop:dist": "npm run build && electron-builder"
   },
   "dependencies": {
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "sharp": "0.34.5"
   },
   "devDependencies": {
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "typescript": "5.9.3",
-    "vite": "5.4.21",
     "electron": "44.2.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "typescript": "5.9.3",
+    "vite": "5.4.21"
   },
   "type": "module",
   "main": "electron/main.cjs",
@@ -54,7 +56,13 @@
       },
       {
         "from": "server",
-        "to": "app/server"
+        "to": "app/server",
+        "filter": ["**/*", "!**/*.test.mjs"]
+      },
+      {
+        "from": "node_modules",
+        "to": "app/node_modules",
+        "filter": ["sharp/**/*", "@img/**/*", "detect-libc/**/*", "semver/**/*"]
       }
     ],
     "win": {

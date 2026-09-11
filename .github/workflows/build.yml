@@ -13,7 +13,15 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            arch: x64
+          - os: macos-latest
+            arch: arm64
+          - os: macos-latest
+            arch: x64
+          - os: ubuntu-latest
+            arch: x64
       fail-fast: false
     runs-on: ${{ matrix.os }}
     steps:
@@ -24,7 +32,8 @@ jobs:
           node-version: '22.13'
           cache: npm
 
-      - run: npm ci
+      # sharp is native: install optional binaries for the target architecture.
+      - run: npm ci --cpu=${{ matrix.arch }}
 
       - run: npm run build
 
@@ -33,12 +42,12 @@ jobs:
       - name: Build desktop packages
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --publish never
+        run: npx electron-builder --${{ matrix.arch }} --publish never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: layerive-${{ matrix.os }}
+          name: layerive-${{ matrix.os }}-${{ matrix.arch }}
           if-no-files-found: error
           path: |
             release/*.exe

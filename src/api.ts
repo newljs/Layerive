@@ -1,4 +1,4 @@
-import type { GenerateResult, GenerationTask, GalleryEntryItem, ModelConfig, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
+import type { GenerateResult, GenerationTask, GalleryEntryItem, LocalEditReference, ModelConfig, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -54,7 +54,7 @@ export const api = {
     request<{ segments: TextSegment[]; modelName: string; cached: boolean }>(`/api/projects/${id}/recognize-text`, { method: 'POST', body: JSON.stringify({ imageId, visionModelId }) }),
   editText: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; segments: TextSegment[]; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/edit-text`, { method: 'POST', body: JSON.stringify(input) }),
-  localEdit: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; instruction: string; rect: { x: number; y: number; width: number; height: number }; params?: Record<string, unknown> }) =>
+  localEdit: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; instruction: string; reference?: LocalEditReference; rect: { x: number; y: number; width: number; height: number }; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/local-edit`, { method: 'POST', body: JSON.stringify(input) }),
   outpaint: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; size: string; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/outpaint`, { method: 'POST', body: JSON.stringify(input) }),

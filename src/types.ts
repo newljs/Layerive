@@ -34,7 +34,7 @@ export type ProjectImage = {
   projectId: string;
   versionId: string | null;
   taskId: string | null;
-  sourceType: 'upload' | 'generated' | 'edited' | 'mask' | 'extract';
+  sourceType: 'upload' | 'generated' | 'edited' | 'mask' | 'extract' | 'local_reference' | 'local_composite';
   url: string;
   mimeType: string;
   width: number | null;
@@ -96,10 +96,13 @@ export type GenerationTask = {
   id: string;
   status: 'generating' | 'success' | 'failed' | 'canceled';
   operationType?: string;
+  stage?: 'planning' | 'compositing' | 'generating' | 'preserving' | null;
   error: string | null;
   createdAt: string;
   finishedAt: string | null;
 };
+
+export type LocalEditReference = { data: string; mimeType: string; name?: string };
 
 export type GenerateResult = { taskId: string; status: string; userMessageId: string };
 
