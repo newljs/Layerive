@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
-import { composeLocalReference, normalizeLocalImage, pixelRect, preserveOutsideRegion, referenceBytes, validatePlacement, validateRect } from './local-edit.mjs';
+import { composeLocalReference, normalizeLocalImage, normalizeSenseNovaInput, pixelRect, preserveOutsideRegion, referenceBytes, validatePlacement, validateRect } from './local-edit.mjs';
 
 const rect = { x: 25, y: 20, width: 50, height: 60 };
 const plan = { intent: '将目标替换为参考主体', target_rect: { x: 30, y: 25, width: 30, height: 40 }, reference_rect: { x: 20, y: 10, width: 60, height: 70 }, edit_prompt: '自然融合参考主体，修复边缘与光影，保留框外内容。' };
@@ -56,6 +56,20 @@ test('PNG/JPEG/WebP decoding, orientation, crop placement and original outside p
   assert.equal(output.width, 120);
   assert.equal(output.height, 90);
   assertOutside(await raw(source.buffer), await raw(output.bytes), 120, 90, rect);
+});
+
+test('SenseNova provider copies use a valid 32px-aligned canvas without changing the original', async () => {
+  const source = await solid(450, 450, '#f4d35e');
+  const preferred = await normalizeSenseNovaInput(source, '1024x1024');
+  assert.equal(preferred.mime_type, 'image/png');
+  assert.deepEqual(await sharp(preferred.buffer).metadata().then(({ width, height }) => ({ width, height })), { width: 1024, height: 1024 });
+  assert.deepEqual(await sharp(source).metadata().then(({ width, height }) => ({ width, height })), { width: 450, height: 450 });
+
+  const automatic = await normalizeSenseNovaInput(await solid(120, 90, '#264560'));
+  assert.equal(automatic.width % 32, 0);
+  assert.equal(automatic.height % 32, 0);
+  assert.ok(automatic.width >= 512 && automatic.height >= 512);
+  assert.ok(Math.max(automatic.width / automatic.height, automatic.height / automatic.width) <= 3);
 });
 
 test('local edit API: all vision formats, composed provider input, history, failures and cancellation', { timeout: 60000 }, async (t) => {

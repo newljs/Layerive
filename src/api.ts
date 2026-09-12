@@ -45,6 +45,8 @@ export const api = {
   },
   deleteVersion: (projectId: string, versionId: string, force = false) =>
     request<ProjectBundle>(`/api/projects/${projectId}/versions/${versionId}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
+  downloadVersionImages: (projectId: string, versionId: string) =>
+    downloadFile(`/api/projects/${projectId}/versions/${versionId}/download`),
   generate: (id: string, input: Record<string, unknown>) =>
     request<GenerateResult>(`/api/projects/${id}/generate`, { method: 'POST', body: JSON.stringify(input) }),
   listGeneratingTasks: (id: string) => request<{ tasks: GenerationTask[] }>(`/api/projects/${id}/tasks`),

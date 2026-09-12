@@ -2,6 +2,79 @@ import sharp from 'sharp';
 
 const decodeOptions = { limitInputPixels: 40_000_000, failOn: 'error' };
 const invalid = (message) => Object.assign(new Error(message), { status: 400 });
+const SENSENOVA_MIN_SIDE = 512;
+const SENSENOVA_MAX_SIDE = 4096;
+const SENSENOVA_SIZE_STEP = 32;
+const SENSENOVA_MAX_RATIO = 3;
+const SENSENOVA_MAX_INPUT_BYTES = 10 * 1024 * 1024;
+
+const roundUp = (value, step) => Math.ceil(value / step) * step;
+
+function senseNovaCanvas(width, height, preferredSize) {
+  const match = String(preferredSize || '').match(/^(\d{3,4})x(\d{3,4})$/);
+  if (match) {
+    const preferredWidth = Number(match[1]);
+    const preferredHeight = Number(match[2]);
+    const ratio = preferredWidth / preferredHeight;
+    if (preferredWidth >= SENSENOVA_MIN_SIDE && preferredHeight >= SENSENOVA_MIN_SIDE
+      && preferredWidth <= SENSENOVA_MAX_SIDE && preferredHeight <= SENSENOVA_MAX_SIDE
+      && preferredWidth % SENSENOVA_SIZE_STEP === 0 && preferredHeight % SENSENOVA_SIZE_STEP === 0
+      && ratio <= SENSENOVA_MAX_RATIO && ratio >= 1 / SENSENOVA_MAX_RATIO) {
+      return { width: preferredWidth, height: preferredHeight };
+    }
+  }
+
+  let scale = Math.min(1, SENSENOVA_MAX_SIDE / Math.max(width, height));
+  let contentWidth = Math.max(1, Math.round(width * scale));
+  let contentHeight = Math.max(1, Math.round(height * scale));
+  const enlarge = Math.max(SENSENOVA_MIN_SIDE / contentWidth, SENSENOVA_MIN_SIDE / contentHeight, 1);
+  if (contentWidth * enlarge <= SENSENOVA_MAX_SIDE && contentHeight * enlarge <= SENSENOVA_MAX_SIDE) {
+    scale *= enlarge;
+    contentWidth = Math.max(1, Math.round(width * scale));
+    contentHeight = Math.max(1, Math.round(height * scale));
+  }
+  let canvasWidth = Math.max(SENSENOVA_MIN_SIDE, roundUp(contentWidth, SENSENOVA_SIZE_STEP));
+  let canvasHeight = Math.max(SENSENOVA_MIN_SIDE, roundUp(contentHeight, SENSENOVA_SIZE_STEP));
+  if (canvasWidth / canvasHeight > SENSENOVA_MAX_RATIO) canvasHeight = roundUp(canvasWidth / SENSENOVA_MAX_RATIO, SENSENOVA_SIZE_STEP);
+  if (canvasHeight / canvasWidth > SENSENOVA_MAX_RATIO) canvasWidth = roundUp(canvasHeight / SENSENOVA_MAX_RATIO, SENSENOVA_SIZE_STEP);
+  return { width: Math.min(SENSENOVA_MAX_SIDE, canvasWidth), height: Math.min(SENSENOVA_MAX_SIDE, canvasHeight) };
+}
+
+// SenseNova U1.5 Lite validates reference images more strictly than the local
+// upload endpoint. Re-encode only the provider-bound copy: project originals
+// stay untouched, while the request image uses a supported canvas and colour
+// space. Edge-copy padding preserves the composition without cropping it.
+export async function normalizeSenseNovaInput(bytes, preferredSize) {
+  const metadata = await sharp(bytes, decodeOptions).metadata();
+  if (!['png', 'jpeg', 'webp'].includes(metadata.format) || (metadata.pages || 1) > 1) {
+    throw invalid('日日新参考图仅支持静态 PNG、JPEG、WebP 图片');
+  }
+  const orientedWidth = metadata.autoOrient?.width || metadata.width;
+  const orientedHeight = metadata.autoOrient?.height || metadata.height;
+  if (!orientedWidth || !orientedHeight) throw invalid('无法读取日日新参考图尺寸');
+  const canvas = senseNovaCanvas(orientedWidth, orientedHeight, preferredSize);
+  const scale = Math.min(canvas.width / orientedWidth, canvas.height / orientedHeight);
+  const resizedWidth = Math.max(1, Math.min(canvas.width, Math.round(orientedWidth * scale)));
+  const resizedHeight = Math.max(1, Math.min(canvas.height, Math.round(orientedHeight * scale)));
+  const left = Math.floor((canvas.width - resizedWidth) / 2);
+  const top = Math.floor((canvas.height - resizedHeight) / 2);
+  const prepared = sharp(bytes, decodeOptions).autoOrient().toColourspace('srgb')
+    .resize(resizedWidth, resizedHeight, { fit: 'fill' })
+    .extend({
+      left,
+      right: canvas.width - resizedWidth - left,
+      top,
+      bottom: canvas.height - resizedHeight - top,
+      extendWith: 'copy',
+    });
+  const png = await prepared.clone().png({ compressionLevel: 9 }).toBuffer();
+  if (png.length <= SENSENOVA_MAX_INPUT_BYTES) {
+    return { buffer: png, mime_type: 'image/png', width: canvas.width, height: canvas.height };
+  }
+  const jpeg = await prepared.clone().flatten({ background: '#ffffff' }).jpeg({ quality: 92, mozjpeg: true }).toBuffer();
+  if (jpeg.length > SENSENOVA_MAX_INPUT_BYTES) throw invalid('日日新参考图规范化后仍超过 10MB，请先缩小图片后重试');
+  return { buffer: jpeg, mime_type: 'image/jpeg', width: canvas.width, height: canvas.height };
+}
 
 export function validateRect(value, label = '框选区域') {
   if (!value || !['x', 'y', 'width', 'height'].every((key) => typeof value[key] === 'number' && Number.isFinite(value[key]))) {

@@ -3,7 +3,7 @@
 > **维护契约（必须遵守）**：只要改动了项目的功能、架构、数据结构、API、模型适配、运行方式、文件位置或重要约束，必须在同一次改动中更新本文件。先核对相关实现，再更新受影响章节；不要仅凭 README 推断。纯格式调整且不改变行为时可不更新。  
 > 更新时请同步修改本文的“最后核对”日期和相应内容；若现有描述不再可信，优先修正文档而不是保留过期说明。
 
-**最后核对**：2026-09-10
+**最后核对**：2026-09-12
 **项目定位**：Layerive 是一个仅本地运行的、以“项目 + 图片版本树”为中心的 AI 图片创作工作台。它将文生图、基于图片的编辑、文字编辑、局部编辑、扩图、去水印、对话记录和项目备份统一保存到本机。
 
 ## 1. 运行与边界
@@ -14,7 +14,7 @@
 - 生产：先 `npm run build`，再 `npm start`。后端从 `dist/` 托管前端，同时提供 API 和本地图片文件。
 - 桌面开发：`npm run desktop:dev` 先构建相同的前端，再由 Electron 启动本地服务和原生窗口；`npm run desktop:dist` 构建安装包。Electron 专属代码只在 `electron/main.cjs`，不得复制 `src/`、`server/` 或 `public/` 到另一个桌面项目。
 - CI 发布：推送 `v*` tag 触发 `.github/workflows/build.yml`，矩阵包含 Windows x64、macOS arm64 / x64、Ubuntu x64；各任务执行 `npm ci --cpu=<arch>` → `npm run build` → `electron-builder --<arch> --publish never`，按目标架构安装 Sharp 原生依赖。独立 release 任务发布非草稿 GitHub Release，三端均未签名。桌面服务位于资源目录 `app/server`，所需 Sharp、`@img`、`detect-libc`、`semver` 由 `extraResources` 放在同级 `app/node_modules`；新增或升级图像依赖时必须核对该运行时依赖清单，不能只依赖 `app.asar` 内的模块。
-- 检查：`npm run lint`（TypeScript no-emit）；`npm run build`（先类型检查再构建）；`npm run test:local-edit` 使用 Node 内置测试和本地模拟模型验证图片处理、三种视觉协议、局部编辑任务及取消。测试仅使用生成的图片和 `work/local-edit-test-*` 内的独立数据/配置，不读取真实用户数据或调用真实模型；测试文件不打入桌面服务资源。
+- 检查：`npm run lint`（TypeScript no-emit）；`npm run build`（先类型检查再构建）；`npm run test` 使用 Node 内置测试和本地模拟模型运行全部服务端测试（也可单独运行 `npm run test:local-edit` / `npm run test:generate`）：前者验证图片处理、日日新输入图规范化、三种视觉协议、局部编辑任务及取消，后者验证批量生成的并发上限、限流退避重试、多图意图自动判断与提示词拆分、日日新编辑请求及多图版本 ZIP 下载。测试仅使用生成的图片和 `work/*-test-*` 内的独立数据/配置，不读取真实用户数据或调用真实模型；测试文件不打入桌面服务资源。
 - Windows 双击启动入口：`Layerive.bat`。该文件使用固定的工作目录，移动仓库后需要同步更新。
 - 项目不依赖登录、云端数据库或第三方后端。模型请求会发送给用户配置的模型服务；其他项目数据留在本机。
 - 许可：项目以 LGPL-3.0-or-later 发布，根目录 `LICENSE` 为 GNU LGPL v3.0 全文（参考 Wei-Shaw/sub2api 的做法）；`package.json` 的 `license` 字段与之保持一致。对外分发或商用前应遵守该许可条款。
@@ -33,7 +33,7 @@
 
 ### 图片创作与编辑
 
-- 文生图：以提示词生成图片；可配置尺寸、1–4 张数量、质量、PNG/JPEG/WebP 输出和透明背景（格式 / 提供商能力受限）。多张结果作为同一版本的候选图保存和展示。
+- 文生图：以提示词生成图片；可配置尺寸、1–4 张数量、质量、PNG/JPEG/WebP 输出和透明背景（格式 / 提供商能力受限）。多张结果作为同一版本的候选图保存和展示，不再提供「每张不同」开关：数量大于 1 且提示词非空时，工作台所选视觉模型自动判断用户是要同提示词的多个普通候选，还是明确要求分别生成不同内容；仅后一种情况拆成互不相同的子提示词逐张生成，消息中按序记录各图提示词。
 - 图生图 / 提示词改图：选择上传图或历史图片作为输入，以文本继续生成或修改。
 - 项目风格提示词：只自动叠加到无输入图的文生图请求。
 - 图片改字：视觉模型识别图片文字为分段内容；用户可修改、删除或框选区域手动新增文字，再由视觉模型规划图片编辑提示词。点击“提交并改图”后立即关闭编辑弹窗并回到项目对话，从视觉规划阶段开始展示等待状态；创建失败时自动恢复弹窗和编辑内容。
@@ -48,7 +48,7 @@
 ### 版本、对话与任务
 
 - 版本树：上传图首次编辑时补建起始版本；每次成功生成 / 编辑均产生可分支的版本节点与输出图片。
-- 历史操作：选择历史版本查看、从历史版本继续创作、查看可缩放 / 可平移的完整版本树。
+- 历史操作：选择历史版本查看、从历史版本继续创作、查看可缩放 / 可平移的完整版本树。历史列表中的多图版本以候选缩略图拼图、数量角标和“多图 · N 张”标签区分；可从版本卡片或当前画布工具栏把该版本全部输出图下载为 ZIP，包内按 `V<版本号>-<两位序号>.<扩展名>` 命名。
 - 对比：提供并排和滑块式前后图片对比。
 - 版本删除：软删除版本；有子版本时需确认强制删除，后代会连接至被删节点的父节点。
 - 对话记录：保存用户提示词、模型名、参数、生成结果、系统事件、失败与取消信息。
@@ -82,7 +82,7 @@ server/
   db.mjs                    SQLite 初始化、目录常量、DTO 转换
   models.mjs                config/models.json 的读写、脱敏与模型规范化
   png.mjs                   演示图和缩略图的 PNG 工具
-  local-edit.mjs            Sharp 图片规范化、坐标校验、参考主体裁剪合成、框外像素保留
+  local-edit.mjs            Sharp 图片规范化（含日日新请求副本）、坐标校验、参考主体裁剪合成、框外像素保留
   local-edit.test.mjs       局部编辑的隔离图片处理与 HTTP 集成回归测试
   zip.mjs                   无额外依赖的 ZIP 读写
 electron/
@@ -143,7 +143,7 @@ work/                       临时工作目录（被 Git 忽略）
 - 上传图片先作为未版本化素材保存；服务端用 `readImageDimensions()` 读取 PNG/JPEG/WebP 的宽高并写入 `images.width` / `images.height`。第一次拿它编辑时，`ensureUploadVersion()` 会补建 `upload` 起始版本。
 - 局部替换参考图和初步合成图保存在项目 `local-edits/`，`images.source_type` 分别为 `local_reference` / `local_composite`，保持未版本化并带所属 `task_id`。成功版本的 `version_inputs` 同时关联原图、参考图和合成图，父节点始终来自原图；中间图不成为画布当前版本。它们作为普通项目图片随复制、导出导入及备份保留，失败任务已保存的参考素材也会留存。`generation_tasks.input_json` 可附加 `stage`、`localEdit`（选区、意图、双图百分比坐标、规范化尺寸及视觉模型 ID）和 `effectivePrompt`，不存 API Key；不新增表或列，旧数据库兼容。
 - 每个成功生成任务都会创建一个版本、写入所有输出图片、选第一张作为 `selected_image_id`，并更新项目的当前图片/版本/封面。前端点击候选条或消息画廊中的任意候选图时，同时更新 `currentImageId` 和 `inputImageId`，确保画布所见候选就是下一次继续创作的输入。
-- 所有图片生成和编辑任务都把 `params.count` 规范为 1–4。OpenAI / Grok 等优先使用原生 `n` 批量请求；SenseNova / Gemini 等单图接口由 `callImageProviderBatch()` 并发拆成多次 `count=1` 请求；兼容接口若忽略或拒绝 `n`，会按缺口补发单图请求。成功返回的图片统一写入同一版本，前端候选条与对话画廊展示全部结果；单图接口的多张生成意味着多次计费请求。
+- 所有图片生成和编辑任务都把 `params.count` 规范为 1–4。`callImageProviderBatch()` 以提示词数组为输入：单提示词时 OpenAI / Grok 优先使用原生 `n` 批量请求，兼容接口若忽略或拒绝 `n`，会按缺口补发单图请求（首波全部为限流错误时不再补发）；多提示词（拆分模式）一律逐条发 `count=1` 请求，输出顺序与提示词一一对应。所有扇出经 `mapWithConcurrency()` 限制为并发 2，单个请求对 429 / 限流类错误最多退避重试 2 次（约 1.5s / 4s，优先响应 `Retry-After`）。成功返回的图片统一写入同一版本，前端候选条与对话画廊展示全部结果；单图接口的多张生成意味着多次计费请求。
 - 项目 Bundle 会隐藏软删除版本所属的图片，未版本化上传图片仍可见。
 - 删除版本只软删除记录，**不会删除图片文件**。如被后续版本引用，须显式强制删除，后代会重新连接到被删节点的父节点。
 - 服务重启时所有仍为 `generating` 的任务会被标为失败，不能尝试恢复执行。
@@ -156,7 +156,7 @@ work/                       临时工作目录（被 Git 忽略）
 前端 POST 操作
   → 校验项目、模型能力、输入图片与参数
   → 写 user message + generation_tasks(generating)
-  → 异步调用供应商（常规总超时 120 秒；局部编辑含规划与图像处理总超时 300 秒）
+  → 异步调用供应商（常规总超时 120 秒 + 每多一张 +30 秒、多图意图判断另 +60 秒；局部编辑含规划与图像处理总超时 300 秒）
   → 成功：写 image_versions、images、assistant result、更新项目指针
   → 失败/取消：只更新 task 并写 assistant error/canceled message
 前端轮询 GET /tasks/:taskId，完成后重新 GET 项目 Bundle
@@ -164,7 +164,9 @@ work/                       临时工作目录（被 Git 忽略）
 
 - `operation: auto`：有输入图时为 `edit_prompt`，否则为 `text_to_image`。
 - 选择上传图片作为改图输入时，前端通过 `closestSizeForDimensions()` 把生成尺寸切换为当前提供商允许的最接近宽高比；固定尺寸模型只能保证比例尽量一致，不能保证输出像素值与原图完全相同。
+- 日日新 U1.5 Lite 的所有带图编辑在发往平台前会由 Sharp 生成临时请求副本：按 EXIF 方向转正并转为 sRGB，以工作台选中的合法尺寸作为画布（无合法尺寸时自动限制到 512–4096px、32px 整倍数及最大 3:1），等比缩放并用边缘像素补边，不改写项目原图；PNG 超过 10MB 时回退高质量 JPEG。`/images/edits` 固定传 `size: "auto"`，由规范化参考图决定输出比例。平台仍拒绝输入时，任务错误会保留经过截断与空白清理的原始平台信息，不能再用旧的统一尺寸文案覆盖具体原因。
 - 项目风格提示词只追加到无输入图的文生图，避免重绘已有图片的风格。
+- `/generate` 的多图意图判断在 `runGenerationTask()` 内使用工作台所选视觉模型（`visionModelId`，缺省回退全局识别默认模型）：数量大于 1 且提示词非空时把任务 `stage` 置为 `planning`，要求模型返回 `different` 与恰好 N 条可选子提示词。仅当 `different=true`、条数正确且互不重复时进入 `different` 模式并逐条生成；普通候选、含糊判断、条数不足或重复提示词均保守回退 `same` 模式，继续按原提示词生成 N 张。判断结果写入 `generation_tasks.input_json.promptMode`，成功消息写 `promptMode`，仅 `different` 模式的 `prompts` 与 `outputImageIds` 按序对齐。单张或空提示词不调用视觉模型；多图请求提交时即校验视觉模型存在，视觉请求硬失败则任务失败。旧消息的 `splitPrompts` 仅为历史展示兼容，新请求忽略该字段。
 - `edit_text` 与 `local_edit` 先调用视觉模型生成严格 JSON 的编辑提示词，再调用图片生成模型。文字编辑允许替换、清空删除及手动框选新增；文字编辑和局部修改提交时按源图片宽高匹配当前图片模型最接近的支持比例，不能回落到模型默认的 1:1。
 - `local_edit` 在校验后立即返回 202，视觉规划移入 `runGenerationTask()`。带 `reference: { data, mimeType, name? }` 时，后台用 Sharp 按 EXIF 方向规范化两图，最多解码 4000 万像素；参考图等比缩小至最长边不超过 4096px。视觉模型看到的图片与坐标计算使用同一份规范化数据，返回 `intent` / `target_rect` / `reference_rect` / `edit_prompt`。坐标必须有限且处于各自全图 0–100% 内，目标至少 80% 位于选区内，再限制为交集，否则终止。裁剪主体等比放入目标框，矩形裁剪残留背景交由模型在选区内修复。生成后将结果缩放回原图尺寸，只拷贝选区像素并在内部最多 12px 羽化，以 PNG 避免框外二次有损压缩。自然融合质量仍依赖所选模型，选区应为主体衔接留出空间。
 - 局部编辑各阶段共享 AbortController；视觉请求另有 120 秒上限。所有生成任务写完输出文件后再次检查取消，再用无异步间隙的 SQLite 事务写版本、输入关系、图片记录、结果消息、任务状态和项目指针，避免取消时发布成功版本。文件写入失败 / 取消可能留下未被数据库引用的输出文件，但不会发布部分成功记录或覆盖原图。
@@ -181,7 +183,7 @@ work/                       临时工作目录（被 Git 忽略）
 | 提供商 | 图像适配实现 | 备注 |
 | --- | --- | --- |
 | `openai` | Images `generations` / `edits` | 编辑走 multipart；文生图走 JSON |
-| `sensenova` | 复用 OpenAI 适配的专用 JSON 分支 | 图像生成默认 `watermark: false`、`prompt_extend: true` |
+| `sensenova` | 复用 OpenAI 适配的专用 JSON 分支 | 生成默认 `watermark: false`、`prompt_extend: true`；编辑输入自动规范化并使用 `size: auto` |
 | `gemini` | `/interactions` | 尺寸映射为 aspect ratio，返回图片块 |
 | `grok` | Images `generations` / `edits` | 输入图以 data URL 放入 JSON |
 | `mock` | 本地演示 PNG | 仅服务端兼容路径；配置 UI 的常规提供商集合不包含它 |
@@ -205,12 +207,13 @@ work/                       临时工作目录（被 Git 忽略）
 | `/api/projects` | GET / POST | 项目列表、创建 |
 | `/api/projects/:id` | GET / PATCH / DELETE | Bundle 查询、项目/草稿更新、项目软删除 |
 | `/api/projects/:id/images` | POST | 上传 PNG/JPEG/WebP（最大 10MB） |
-| `/api/projects/:id/generate` | POST | 文生图、图生图、提示词改图 |
+| `/api/projects/:id/generate` | POST | 文生图、图生图、提示词改图；数量大于 1 且提示词非空时可传 `visionModelId`，服务端自动判断普通候选或分别生成 |
 | `/api/projects/:id/{recognize-text,edit-text,local-edit,outpaint,enhance,remove-watermark,extract-asset}` | POST | 专项图片操作；使用视觉能力的请求可传 `visionModelId` |
 | `/api/projects/:id/local-edit` | POST | `imageId`、`modelId`、`visionModelId?`、百分比 `rect`、`instruction`、`params?`；可附 `reference: { data, mimeType, name? }`，有参考图时 instruction 可为空；校验后即返回 202，后台规划与合成 |
 | `/api/projects/:id/tasks`、`/tasks/:taskId`、`/tasks/:taskId/cancel` | GET / GET / POST | 查询和取消生成任务 |
 | `/api/projects/:id/tasks/:taskId` | GET | 单任务响应含可选 `stage: planning / compositing / generating / preserving`，旧任务为 null |
 | `/api/projects/:id/versions/:versionId` | DELETE | 软删除版本，可加 `?force=1` |
+| `/api/projects/:id/versions/:versionId/download` | GET | 将未软删除的多图版本全部现存输出图片打包为 ZIP；单图版本返回 400 |
 | `/api/projects/:id/duplicate`、`/export` | POST / GET | 深复制项目、导出项目 ZIP |
 | `/api/projects/import` | POST | 导入项目 ZIP（base64 请求体） |
 | `/api/backup`、`/api/backup/restore` | GET / POST | 完整备份、恢复并重启服务 |

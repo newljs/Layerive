@@ -38,8 +38,8 @@ The work stays in one project. Each generation or edit creates a version that ca
 
 ### Image creation and editing
 
-- **Text to image** — generate 1–4 images from one prompt. Multiple results belong to the same version, and any candidate can be selected for further editing. Providers that return one image per call are split into multiple requests and may bill each request separately.
-- **Image to image and prompt-based editing** — start from an uploaded, pasted, or historical image and describe the next change. The app chooses the supported output size closest to the source aspect ratio.
+- **Text to image** — generate 1–4 images from one prompt. Multiple results belong to the same version, and any candidate can be selected for further editing. Providers that return one image per call are split into multiple requests and may bill each request separately; rate-limited requests retry automatically with backoff. No separate “distinct per image” switch is needed: for multi-image requests, the vision model automatically decides whether the prompt asks for normal same-content candidates or explicit per-image variants such as different emotions or concepts.
+- **Image to image and prompt-based editing** — start from an uploaded, pasted, or historical image and describe the next change. The app chooses the supported output size closest to the source aspect ratio. SenseNova U1.5 Lite requests use a temporary provider-compliant copy without altering the local original.
 - **Image enhancement** — ask the image model to improve clarity and detail while keeping the subject, text, composition, and style as stable as possible.
 - **Regional editing** — drag a selection from inside or outside the image, even beyond the workspace edge. Describe a change, or upload/paste a reference image in the selection panel (PNG/JPEG/WebP, up to 10MB). For example, select a person's head and upload a dog photo: the vision model infers the replacement intent and locates both subjects, the backend crops and places the reference subject, and the image model blends it naturally. Instructions are optional with a reference. Reference edits restore original pixels outside the selection and save a PNG at the source dimensions. Leave room inside the selection for connecting edges; blend quality depends on the model. Progress and cancellation cover planning, compositing, generation and saving. Text-only regional editing remains available.
 - **Asset extraction** — start inside or outside the image and drag beyond its edge to select content (e.g. a cinema screen). The app screenshots the selection's valid intersection with the source image, a vision model focuses on the intended subject and ignores accidentally included edges (like nearby seats), then the image editor produces a faithful standalone asset. An optional hint can clarify your intent.
@@ -54,7 +54,7 @@ The work stays in one project. Each generation or edit creates a version that ca
 ### Versions, conversation, and comparison
 
 - Every generation, edit, image-enhancement, regional-edit, and outpaint operation creates a new version. You can upload additional images even after a project already has images, then use each new upload as the input for later edits.
-- Open the complete version tree, zoom and pan it, select a node to jump to it on the canvas, and branch from any version.
+- Open the complete version tree, zoom and pan it, select a node to jump to it on the canvas, and branch from any version. Multi-image versions are marked with a thumbnail mosaic and image count in history, and all candidates can be downloaded together as a ZIP.
 - The workspace keeps the prompt, selected model, version number, and output images for every turn. Prompts can be reused, and any result can become the next input.
 - Compare images side by side or with a before/after slider, including against a selected historical image.
 
@@ -66,7 +66,7 @@ The workspace header lets you choose image-generation and vision-recognition mod
 
 | Provider | Integration | Typical use |
 | --- | --- | --- |
-| SenseNova | Dedicated request adapter | Text-to-image, image-to-image, prompt editing; official watermark output is disabled by default |
+| SenseNova | Dedicated request adapter | Text-to-image, image-to-image, prompt editing; official watermark output is disabled by default, and edit inputs are normalized automatically with automatic output sizing |
 | OpenAI-compatible | Images API or compatible gateway | Text-to-image, image-to-image, and prompt editing; exact support depends on the upstream model |
 | Gemini | Native Gemini image API | Gemini Nano Banana and other supported image models |
 | Grok | Native xAI image API | Grok Imagine image models |

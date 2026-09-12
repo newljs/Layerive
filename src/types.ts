@@ -50,6 +50,10 @@ export type Message = {
   content: {
     text?: string;
     prompt?: string;
+    prompts?: string[];
+    /** Legacy messages created by the removed manual toggle. */
+    splitPrompts?: boolean;
+    promptMode?: 'auto' | 'same' | 'different';
     operation?: string;
     inputImageId?: string | null;
     outputImageIds?: string[];

@@ -7,7 +7,7 @@ import { APP_ROOT, CONFIG_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs,
 import { makeDemoPng, makeThumbnailPng, readImageDimensions } from './png.mjs';
 import { isSenseNovaLegacyVisionEndpoint, isSenseNovaTokenChatEndpoint, normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, visionApiFormat, visionEndpoint, writeModels } from './models.mjs';
 import { createZip, readZip } from './zip.mjs';
-import { composeLocalReference, normalizeLocalImage, preserveOutsideRegion, referenceBytes, validatePlacement, validateRect } from './local-edit.mjs';
+import { composeLocalReference, normalizeLocalImage, normalizeSenseNovaInput, preserveOutsideRegion, referenceBytes, validatePlacement, validateRect } from './local-edit.mjs';
 
 const PORT = Number(process.env.PIXELFLOW_API_PORT || 8788);
 const HOST = '127.0.0.1';
@@ -151,7 +151,7 @@ function friendlyModelMessage(raw) {
   const message = String(raw || '');
   if (/sensitive/i.test(message)) return '模型平台安全审核未通过（sensitive image）：请更换输入图片或调整提示词后重试。含有中国地图、省份分布、人物肖像等元素的画面更容易被拦截。';
   if (/rps exhausted|rate.?limit/i.test(message)) return '模型平台请求频率超限，请等待几秒后重试。';
-  if (/image should be/i.test(message)) return '输入图片不符合平台要求：支持 PNG/JPEG/WebP，大小不超过 10MB，宽高需在 256–4096px 之间，且宽高比不超过 2:1。请裁剪或缩小后重试。';
+  if (/image should be/i.test(message)) return `输入图片被模型平台拒绝。平台原始信息：${message.replace(/\s+/g, ' ').trim().slice(0, 500)}`;
   if (/quota|insufficient/i.test(message)) return '模型平台额度不足或配额已用完，请检查账户余额。';
   return message;
 }
@@ -177,9 +177,10 @@ async function callOpenAi(model, prompt, params, inputImage, signal) {
   const background = params.transparent && outputFormat !== 'jpeg' ? 'transparent' : 'opaque';
   if (inputImage && isSenseNova) {
     const absolute = path.join(PROJECTS_ROOT, inputImage.project_id, inputImage.file_path);
-    const encoded = (await readFile(absolute)).toString('base64');
+    const normalized = await normalizeSenseNovaInput(await readFile(absolute), size);
+    const encoded = normalized.buffer.toString('base64');
     headers['Content-Type'] = 'application/json';
-    requestBody = JSON.stringify({ model: model.model, prompt, n: 1, size, images: [{ image_url: `data:${inputImage.mime_type};base64,${encoded}` }], response_format: 'b64_json', output_format: 'png', prompt_extend: true, watermark: false });
+    requestBody = JSON.stringify({ model: model.model, prompt, n: 1, size: 'auto', images: [{ image_url: `data:${normalized.mime_type};base64,${encoded}` }], response_format: 'b64_json', output_format: 'png', prompt_extend: true, watermark: false });
   } else if (inputImage) {
     const absolute = path.join(PROJECTS_ROOT, inputImage.project_id, inputImage.file_path);
     const form = new FormData();
@@ -202,7 +203,7 @@ async function callOpenAi(model, prompt, params, inputImage, signal) {
   }
   const response = await fetch(`${model.baseUrl}/${endpoint}`, { method: 'POST', headers, body: requestBody, signal });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error?.message || `模型请求失败（${response.status}）`);
+  if (!response.ok) throw providerHttpError(response, payload?.error?.message || `模型请求失败（${response.status}）`);
   const outputs = [];
   const outputMime = outputFormat === 'jpeg' ? 'image/jpeg' : outputFormat === 'webp' ? 'image/webp' : 'image/png';
   for (const item of payload.data || []) {
@@ -246,7 +247,7 @@ async function callGemini(model, prompt, params, inputImage, signal) {
     signal,
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error?.message || payload?.message || `Gemini 图片请求失败（${response.status}）`);
+  if (!response.ok) throw providerHttpError(response, payload?.error?.message || payload?.message || `Gemini 图片请求失败（${response.status}）`);
   const imageBlocks = [payload.output_image, ...(Array.isArray(payload.output_images) ? payload.output_images : []), ...(Array.isArray(payload.steps) ? payload.steps.flatMap((step) => Array.isArray(step.content) ? step.content.filter((item) => item?.type === 'image') : []) : [])].filter(Boolean);
   const outputs = imageBlocks.map((item) => item?.data ? ({ bytes: Buffer.from(item.data, 'base64'), mimeType: item.mime_type || item.mimeType || outputMimeType(outputFormat) }) : null).filter(Boolean);
   if (!outputs.length) throw new Error('Gemini 没有返回图片，请确认所选模型支持 Nano Banana 图片生成');
@@ -277,7 +278,7 @@ async function callGrok(model, prompt, params, inputImage, signal) {
     signal,
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error?.message || payload?.message || `Grok 图片请求失败（${response.status}）`);
+  if (!response.ok) throw providerHttpError(response, payload?.error?.message || payload?.message || `Grok 图片请求失败（${response.status}）`);
   const outputs = [];
   for (const item of payload.data || []) {
     if (item.b64_json) outputs.push({ bytes: Buffer.from(item.b64_json, 'base64'), mimeType: item.mime_type || 'image/jpeg' });
@@ -299,25 +300,104 @@ async function callImageProvider(model, prompt, params, inputImage, signal) {
       : callOpenAi(model, prompt, params, inputImage, signal);
 }
 
+// Rate-limited platforms answer with HTTP 429 or terse English strings; keep
+// the status (and Retry-After when present) on the error so the batch layer
+// can back off and retry instead of failing the whole task.
+function providerHttpError(response, message) {
+  const retryAfterSeconds = Number(response.headers.get('retry-after'));
+  return Object.assign(new Error(message), {
+    status: response.status,
+    retryAfterMs: Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : null,
+  });
+}
+
+const IMAGE_BATCH_CONCURRENCY = 2;
+const RATE_LIMIT_ERROR = /rps exhausted|rate.?limit|too many requests/i;
+
+const isRateLimitError = (error) => error?.status === 429 || RATE_LIMIT_ERROR.test(String(error?.message || ''));
+
+// Promise-based delay that unblocks immediately when the task is canceled.
+function abortableDelay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason || new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason || new DOMException('Aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+// Two retries with a short backoff absorb transient RPS limits without
+// pushing a 4-image task past its count-scaled total timeout.
+async function callImageWithRetry(model, prompt, params, inputImage, signal) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await callImageProvider(model, prompt, params, inputImage, signal);
+    } catch (error) {
+      if (!isRateLimitError(error) || attempt >= 2 || signal.aborted) throw error;
+      await abortableDelay(error.retryAfterMs || [1500, 4000][attempt], signal);
+    }
+  }
+}
+
+// Promise.allSettled under a concurrency cap; results keep the input order so
+// batch outputs stay aligned with their prompts.
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      try {
+        results[index] = { status: 'fulfilled', value: await worker(items[index], index) };
+      } catch (error) {
+        results[index] = { status: 'rejected', reason: error };
+      }
+    }
+  }));
+  return results;
+}
+
 // Some providers accept only one image per request, while some compatible
 // gateways silently ignore `n`. Always fulfill the workspace count when
-// possible: known single-image providers fan out immediately; other providers
-// get one normal batch request followed by count=1 requests for any shortfall.
-async function callImageProviderBatch(model, prompt, params, inputImage, signal) {
-  const desired = requestedImageCount(params);
-  const onePerRequest = model.provider === 'gemini' || isSenseNovaImageModel(model);
-  const firstBatchSize = onePerRequest ? desired : 1;
-  const settled = await Promise.allSettled(Array.from({ length: firstBatchSize }, () =>
-    callImageProvider(model, prompt, onePerRequest ? { ...params, count: 1 } : params, inputImage, signal)));
+// possible: one normal n=count request for providers with native batching,
+// otherwise count=1 requests fanned out per prompt under a concurrency cap
+// (fanning out all at once trips platform RPS limits). Distinct prompts from
+// automatic per-image planning always fan out per prompt, because `n` cannot vary the prompt
+// per image. Partial failures keep whatever came back, as before.
+async function callImageProviderBatch(model, prompts, params, inputImage, signal) {
+  const distinctPrompts = prompts.length > 1;
+  const nativeBatch = !distinctPrompts && model.provider !== 'gemini' && !isSenseNovaImageModel(model);
+  const requestPrompts = nativeBatch
+    ? [prompts[0]]
+    : distinctPrompts ? prompts : Array.from({ length: requestedImageCount(params) }, () => prompts[0]);
+  // A single prompt rides one n=count request; distinct mode fans out exactly
+  // one request per prompt, so the target count comes from the prompt array.
+  const desired = distinctPrompts ? prompts.length : requestedImageCount(params);
+  const settled = await mapWithConcurrency(requestPrompts, IMAGE_BATCH_CONCURRENCY, (prompt) =>
+    callImageWithRetry(model, prompt, nativeBatch ? params : { ...params, count: 1 }, inputImage, signal));
   if (signal.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
 
   const outputs = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
   const errors = settled.filter((result) => result.status === 'rejected').map((result) => result.reason);
 
   const missing = desired - outputs.length;
-  if (!onePerRequest && missing > 0) {
-    const supplements = await Promise.allSettled(Array.from({ length: missing }, () =>
-      callImageProvider(model, prompt, { ...params, count: 1 }, inputImage, signal)));
+  // When every first-wave request was rate-limited (each already backed off
+  // twice), a supplement wave would just hammer the platform again. Gateways
+  // that rejected the batch for other reasons still get the count=1 retry.
+  const allRateLimited = errors.length > 0 && errors.every(isRateLimitError);
+  if (nativeBatch && missing > 0 && !allRateLimited) {
+    const supplements = await mapWithConcurrency(Array.from({ length: missing }, () => prompts[0]), IMAGE_BATCH_CONCURRENCY, (prompt) =>
+      callImageWithRetry(model, prompt, { ...params, count: 1 }, inputImage, signal));
     if (signal.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
     outputs.push(...supplements.flatMap((result) => result.status === 'fulfilled' ? result.value : []));
     errors.push(...supplements.filter((result) => result.status === 'rejected').map((result) => result.reason));
@@ -772,6 +852,26 @@ function deleteGalleryEntry(id) {
   return { ok: true };
 }
 
+// Multi-image requests are intent-aware. The selected vision model decides
+// whether the count means "more candidates of the same prompt" or "one image
+// per requested variant". Ambiguous or malformed decisions stay in candidate
+// mode so the app never invents differences the user did not ask for.
+async function planGenerationPrompts(inputImage, prompt, count, visionModel, signal) {
+  const instruction = `你是多图生图意图判断助手。用户选择生成 ${count} 张图片，提示词是：“${prompt}”。请判断用户是否明确要求这 ${count} 张图在内容上分别不同。
+判断规则：仅仅选择多张、想多出几个候选、同一描述抽多次，different 必须为 false；只有提示词明确要求“每张不同、分别生成、不同方案/风格/角度/动作/表情”，列举了多个需要分别出图的项目（例如喜怒哀乐），或语义上明确要求一项对应一张时，different 才为 true。含糊时一律为 false。
+若 different 为 true，把提示词拆成恰好 ${count} 条可独立生图、彼此明显不同但忠于原意的完整中文提示词；若为 false，prompts 返回空数组。${inputImage ? '同时参考输入图片判断用户指的是基于同一图片生成多个普通候选，还是分别完成多个明确变化。' : ''}
+返回严格 JSON：{"different":true或false,"prompts":["提示词1",...] }。不要返回 Markdown，不要解释。`;
+  const planned = parseVisionJson(await callVision(visionModel, inputImage || [], instruction, signal));
+  const entries = (Array.isArray(planned) ? planned : Array.isArray(planned.prompts) ? planned.prompts : [])
+    .filter((item) => typeof item === 'string' || typeof item === 'number')
+    .map((item) => String(item).trim())
+    .filter(Boolean);
+  const different = planned?.different === true || /^(?:true|yes|different|不同)$/i.test(String(planned?.different || '').trim());
+  const prompts = entries.slice(0, count);
+  if (!different || prompts.length !== count || new Set(prompts).size !== count) return { mode: 'same', prompts: [prompt] };
+  return { mode: 'different', prompts };
+}
+
 function startGeneration(projectId, input, localEdit = null) {
   projectOrThrow(projectId);
   const config = readModels();
@@ -791,18 +891,24 @@ function startGeneration(projectId, input, localEdit = null) {
   }
   const params = { ...model.defaultParams, ...(input.params || {}) };
   params.count = requestedImageCount(params);
+  // Only the general /generate route opts into automatic multi-image intent
+  // planning. Specialized edit operations keep their existing batch meaning.
+  const autoPromptMode = Boolean(input.autoPromptMode) && params.count > 1 && Boolean(prompt);
+  const promptVisionModel = autoPromptMode ? visionModelOrThrow(config, input.visionModelId) : null;
   const userMessageId = uid();
   const taskId = uid();
   const createdAt = now();
-  db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(userMessageId, projectId, 'user', 'prompt', JSON.stringify({ prompt, operation, inputImageId: inputImage?.id || null, params, modelName: model.name }), createdAt);
+  db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(userMessageId, projectId, 'user', 'prompt', JSON.stringify({ prompt, operation, inputImageId: inputImage?.id || null, params, modelName: model.name, promptMode: autoPromptMode ? 'auto' : undefined }), createdAt);
   db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, started_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generating', ?, ?)`)
-    .run(taskId, projectId, userMessageId, operation, model.id, JSON.stringify({ ...model, apiKey: undefined }), JSON.stringify(params), JSON.stringify({ inputImageId: inputImage?.id || null, ...(localEdit ? { stage: 'planning', localEdit: { rect: localEdit.rect, hasReference: Boolean(localEdit.reference), visionModelId: localEdit.visionModel.id } } : {}) }), createdAt, createdAt);
+    .run(taskId, projectId, userMessageId, operation, model.id, JSON.stringify({ ...model, apiKey: undefined }), JSON.stringify(params), JSON.stringify({ inputImageId: inputImage?.id || null, ...(localEdit ? { stage: 'planning', localEdit: { rect: localEdit.rect, hasReference: Boolean(localEdit.reference), visionModelId: localEdit.visionModel.id } } : autoPromptMode ? { stage: 'planning', promptMode: 'auto', visionModelId: promptVisionModel.id } : {}) }), createdAt, createdAt);
 
   const controller = new AbortController();
   runningTasks.set(taskId, controller);
-  const timer = setTimeout(() => controller.abort(new Error('timeout')), localEdit ? 300000 : 120000);
-  void runGenerationTask(projectId, taskId, { model, prompt, operation, params, inputImage, parentVersionId: input.parentVersionId || null, controller, localEdit }).finally(() => {
+  // Batches fan out under a concurrency cap and may absorb rate-limit backoff,
+  // so the total budget grows with the requested image count.
+  const timer = setTimeout(() => controller.abort(new Error('timeout')), localEdit ? 300000 : 120000 + (params.count - 1) * 30000 + (autoPromptMode ? 60000 : 0));
+  void runGenerationTask(projectId, taskId, { model, prompt, operation, params, inputImage, parentVersionId: input.parentVersionId || null, controller, localEdit, autoPromptMode, promptVisionModel }).finally(() => {
     clearTimeout(timer);
     runningTasks.delete(taskId);
     canceledTasks.delete(taskId);
@@ -831,6 +937,21 @@ async function runGenerationTask(projectId, taskId, context) {
       const stylePrompt = String(parseJson(db.prepare('SELECT draft_json FROM projects WHERE id = ?').get(projectId)?.draft_json)?.stylePrompt || '').trim();
       if (stylePrompt) effectivePrompt = prompt ? `${prompt}，${stylePrompt}` : stylePrompt;
     }
+    // Split only when the vision model finds an explicit per-image variation
+    // request; otherwise retain the normal same-prompt candidate behaviour.
+    let batchPrompts = [effectivePrompt];
+    let promptMode = 'same';
+    if (context.autoPromptMode) {
+      updateTaskInput(taskId, { stage: 'planning' });
+      const decision = await planGenerationPrompts(context.inputImage, prompt, requestedImageCount(params), context.promptVisionModel, controller.signal);
+      promptMode = decision.mode;
+      if (decision.mode === 'different') {
+        const stylePrompt = !inputImage ? String(parseJson(db.prepare('SELECT draft_json FROM projects WHERE id = ?').get(projectId)?.draft_json)?.stylePrompt || '').trim() : '';
+        batchPrompts = decision.prompts.map((item) => stylePrompt ? `${item}，${stylePrompt}` : item);
+      }
+      updateTaskInput(taskId, { promptMode, prompts: promptMode === 'different' ? batchPrompts : null, stage: 'generating' });
+      controller.signal.throwIfAborted();
+    }
     let generated;
     // The offline demo model renders placeholder art pixel by pixel, so cap its
     // canvas at a comfortable size while preserving the requested aspect ratio;
@@ -844,10 +965,10 @@ async function runGenerationTask(projectId, taskId, context) {
       outputWidth = Math.round(width * scale);
       outputHeight = Math.round(height * scale);
       await new Promise((resolve) => setTimeout(resolve, 650));
-      generated = Array.from({ length: count }, (_, index) => ({ bytes: makeDemoPng(effectivePrompt || '基于图片继续创作', outputWidth, outputHeight, index), mimeType: 'image/png', width: outputWidth, height: outputHeight }));
+      generated = Array.from({ length: count }, (_, index) => ({ bytes: makeDemoPng(batchPrompts[index] || effectivePrompt || '基于图片继续创作', outputWidth, outputHeight, index), mimeType: 'image/png', width: outputWidth, height: outputHeight }));
     } else {
       if (!model.apiKey) throw new Error('模型尚未配置 API Key');
-      generated = await callImageProviderBatch(model, effectivePrompt, params, providerImage, controller.signal);
+      generated = await callImageProviderBatch(model, batchPrompts, params, providerImage, controller.signal);
     }
 
     controller.signal.throwIfAborted();
@@ -894,7 +1015,7 @@ async function runGenerationTask(projectId, taskId, context) {
           VALUES (?, ?, ?, ?, 'generated', ?, ?, ?, ?, ?, ?)`)
           .run(imageId, projectId, versionId, taskId, relative, output.mimeType, output.width || width, output.height || height, output.bytes.length, finishedAt);
       }
-      db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'result', JSON.stringify({ prompt, operation, outputImageIds: outputIds, versionId, versionNumber, taskId, modelName: model.name }), finishedAt);
+      db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'result', JSON.stringify({ prompt, operation, outputImageIds: outputIds, versionId, versionNumber, taskId, modelName: model.name, ...(context.autoPromptMode ? { promptMode } : {}), ...(promptMode === 'different' ? { prompts: batchPrompts } : {}) }), finishedAt);
       db.prepare('UPDATE generation_tasks SET status = ?, finished_at = ? WHERE id = ?').run('success', finishedAt, taskId);
       db.prepare('UPDATE projects SET current_version_id = ?, current_image_id = ?, cover_image_id = ?, updated_at = ? WHERE id = ?')
         .run(versionId, outputIds[0], outputIds[0], finishedAt, projectId);
@@ -933,6 +1054,24 @@ function deleteVersion(projectId, versionId, force) {
       .run(project.current_version_id === versionId ? latest?.id || null : project.current_version_id, project.current_version_id === versionId ? latest?.selected_image_id || null : project.current_image_id, latest?.selected_image_id || null, now(), projectId);
   }
   return bundle(projectId);
+}
+
+async function exportVersionImagesZip(projectId, versionId) {
+  projectOrThrow(projectId);
+  const version = db.prepare('SELECT * FROM image_versions WHERE id = ? AND project_id = ? AND deleted_at IS NULL').get(versionId, projectId);
+  if (!version) throw Object.assign(new Error('版本不存在'), { status: 404 });
+  const images = db.prepare('SELECT * FROM images WHERE project_id = ? AND version_id = ? ORDER BY created_at, rowid').all(projectId, versionId);
+  if (images.length < 2) throw Object.assign(new Error('该版本不是多图版本，无需批量下载'), { status: 400 });
+  const projectRoot = path.resolve(PROJECTS_ROOT, projectId);
+  const entries = [];
+  for (const [index, image] of images.entries()) {
+    const absolute = path.resolve(projectRoot, image.file_path);
+    if (!absolute.startsWith(projectRoot + path.sep) || !existsSync(absolute)) continue;
+    const extension = image.mime_type === 'image/jpeg' ? 'jpg' : image.mime_type === 'image/webp' ? 'webp' : 'png';
+    entries.push({ name: `V${version.version_number}-${String(index + 1).padStart(2, '0')}.${extension}`, data: await readFile(absolute) });
+  }
+  if (!entries.length) throw Object.assign(new Error('该版本的图片文件均不存在，无法下载'), { status: 404 });
+  return { buffer: createZip(entries), versionNumber: version.version_number, imageCount: entries.length };
 }
 
 function listGeneratingTasks(projectId) {
@@ -1373,7 +1512,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     const generateMatch = pathname.match(/^\/api\/projects\/([^/]+)\/generate$/);
-    if (generateMatch && req.method === 'POST') return json(res, 202, startGeneration(generateMatch[1], await body(req)));
+    if (generateMatch && req.method === 'POST') return json(res, 202, startGeneration(generateMatch[1], { ...await body(req), autoPromptMode: true }));
     const recognizeTextMatch = pathname.match(/^\/api\/projects\/([^/]+)\/recognize-text$/);
     if (recognizeTextMatch && req.method === 'POST') return json(res, 200, await recognizeImageText(recognizeTextMatch[1], await body(req)));
     const editTextMatch = pathname.match(/^\/api\/projects\/([^/]+)\/edit-text$/);
@@ -1411,6 +1550,11 @@ const server = http.createServer(async (req, res) => {
     if (versionMatch && req.method === 'DELETE') {
       const force = url.searchParams.get('force') === '1';
       return json(res, 200, deleteVersion(versionMatch[1], versionMatch[2], force));
+    }
+    const versionDownloadMatch = pathname.match(/^\/api\/projects\/([^/]+)\/versions\/([^/]+)\/download$/);
+    if (versionDownloadMatch && req.method === 'GET') {
+      const exported = await exportVersionImagesZip(versionDownloadMatch[1], versionDownloadMatch[2]);
+      return zipResponse(res, exported.buffer, `layerive-V${exported.versionNumber}-${exported.imageCount}-images.zip`);
     }
 
     if (pathname === '/api/models' && req.method === 'GET') {
