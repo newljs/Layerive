@@ -32,6 +32,9 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
   const [creating, setCreating] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
   const restoreRef = useRef<HTMLInputElement>(null);
+  const [renameTarget, setRenameTarget] = useState<Project | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renaming, setRenaming] = useState(false);
 
   const visible = useMemo(() => {
     const list = projects.filter((project) => {
@@ -52,6 +55,27 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
       notify(project.isFavorite ? '已取消收藏' : '已收藏项目');
       await onRefreshProjects();
     } catch (error) { notify((error as Error).message, 'error'); }
+  }
+
+  // The workspace header already renames the project that is open. The library
+  // needs its own entry so renaming does not require entering a project first.
+  function openRename(project: Project) {
+    setRenameTarget(project);
+    setRenameValue(project.name);
+  }
+
+  async function submitRename() {
+    const next = renameValue.trim();
+    if (!renameTarget || !next || renaming) return;
+    if (next === renameTarget.name) { setRenameTarget(null); return; }
+    setRenaming(true);
+    try {
+      await api.updateProject(renameTarget.id, { name: next });
+      setRenameTarget(null);
+      notify('项目已重命名');
+      await onRefreshProjects();
+    } catch (error) { notify((error as Error).message, 'error'); }
+    finally { setRenaming(false); }
   }
 
   async function submit() {
@@ -148,6 +172,7 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
                   <div><h2>{project.name}</h2><p>{project.versionCount} 个版本 · {formatUpdated(project.updatedAt)}</p></div>
                   <div className="project-actions">
                     <button className={`star-button ${project.isFavorite ? 'active' : ''}`} title={project.isFavorite ? '取消收藏' : '收藏项目'} onClick={() => void toggleFavorite(project)}><Icon name={project.isFavorite ? 'starFilled' : 'star'} size={16} /></button>
+                    <button className="action-button" title="重命名项目" aria-label={`重命名${project.name}`} onClick={() => openRename(project)}><Icon name="edit" size={15} /></button>
                     <button className="action-button" title="复制项目" onClick={() => void onDuplicate(project.id)}><Icon name="duplicate" size={15} /></button>
                     <button className="action-button" title="导出项目（含图片）" onClick={() => api.exportProject(project.id)}><Icon name="export" size={15} /></button>
                     <button className="more-button danger-hover" aria-label={`删除${project.name}`} title="删除项目" onClick={() => { if (window.confirm(`确定删除“${project.name}”吗？项目将被移入本地回收状态。`)) void onDelete(project.id); }}><Icon name="close" size={15} /></button>
@@ -170,6 +195,7 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
                 <span>{formatUpdated(project.updatedAt)}</span>
                 <span className="project-actions">
                   <button className={`star-button ${project.isFavorite ? 'active' : ''}`} title={project.isFavorite ? '取消收藏' : '收藏项目'} onClick={() => void toggleFavorite(project)}><Icon name={project.isFavorite ? 'starFilled' : 'star'} size={16} /></button>
+                  <button className="action-button" title="重命名项目" aria-label={`重命名${project.name}`} onClick={() => openRename(project)}><Icon name="edit" size={15} /></button>
                   <button className="action-button" title="复制项目" onClick={() => void onDuplicate(project.id)}><Icon name="duplicate" size={15} /></button>
                   <button className="action-button" title="导出项目（含图片）" onClick={() => api.exportProject(project.id)}><Icon name="export" size={15} /></button>
                   <button className="more-button danger-hover" aria-label={`删除${project.name}`} title="删除项目" onClick={() => { if (window.confirm(`确定删除“${project.name}”吗？项目将被移入本地回收状态。`)) void onDelete(project.id); }}><Icon name="close" size={15} /></button>
@@ -200,6 +226,17 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
             <label className="field"><span>项目描述</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="简单说明这个项目要完成什么" rows={3} /></label>
             <div className="create-hint"><span>自动保存</span><p>项目创建后，对话、图片和历史版本都会保存在本机。</p></div>
             <div className="modal-actions"><button className="button secondary" onClick={() => setCreateOpen(false)}>取消</button><button className="button primary" disabled={!name.trim() || creating} onClick={() => void submit()}>{creating ? '正在创建…' : '创建并进入'}</button></div>
+          </section>
+        </div>
+      )}
+
+      {renameTarget && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setRenameTarget(null)}>
+          <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+            <div className="modal-heading"><div><p className="eyebrow">RENAME</p><h2 id="rename-title">重命名项目</h2></div><button className="icon-button" onClick={() => setRenameTarget(null)}><Icon name="close" size={16} /></button></div>
+            <label className="field"><span>项目名称 *</span><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} placeholder="输入新的项目名称" onKeyDown={(event) => { if (event.key === 'Enter') void submitRename(); if (event.key === 'Escape') setRenameTarget(null); }} /></label>
+            <div className="create-hint"><span>仅改名称</span><p>项目的图片、对话和历史版本都不会受到影响。</p></div>
+            <div className="modal-actions"><button className="button secondary" onClick={() => setRenameTarget(null)}>取消</button><button className="button primary" disabled={!renameValue.trim() || renaming} onClick={() => void submitRename()}>{renaming ? '正在保存…' : '保存新名称'}</button></div>
           </section>
         </div>
       )}
