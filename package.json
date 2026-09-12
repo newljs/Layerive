@@ -18,6 +18,7 @@
     "lint": "node node_modules/typescript/bin/tsc --noEmit",
     "test:local-edit": "node --test server/local-edit.test.mjs",
     "test:generate": "node --test server/generation.test.mjs",
+    "test:request-guard": "node --test server/request-guard.test.mjs",
     "test": "node --test \"server/*.test.mjs\"",
     "desktop:dev": "npm run build && electron .",
     "desktop:dir": "npm run build && electron-builder --dir",

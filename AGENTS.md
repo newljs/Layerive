@@ -14,7 +14,7 @@
 - 生产：先 `npm run build`，再 `npm start`。后端从 `dist/` 托管前端，同时提供 API 和本地图片文件。
 - 桌面开发：`npm run desktop:dev` 先构建相同的前端，再由 Electron 启动本地服务和原生窗口；`npm run desktop:dist` 构建安装包。Electron 专属代码只在 `electron/main.cjs`，不得复制 `src/`、`server/` 或 `public/` 到另一个桌面项目。
 - CI 发布：推送 `v*` tag 触发 `.github/workflows/build.yml`，矩阵包含 Windows x64、macOS arm64 / x64、Ubuntu x64；各任务执行 `npm ci --cpu=<arch>` → `npm run build` → `electron-builder --<arch> --publish never`，按目标架构安装 Sharp 原生依赖。独立 release 任务发布非草稿 GitHub Release，三端均未签名。桌面服务位于资源目录 `app/server`，所需 Sharp、`@img`、`detect-libc`、`semver` 由 `extraResources` 放在同级 `app/node_modules`；新增或升级图像依赖时必须核对该运行时依赖清单，不能只依赖 `app.asar` 内的模块。
-- 检查：`npm run lint`（TypeScript no-emit）；`npm run build`（先类型检查再构建）；`npm run test` 使用 Node 内置测试和本地模拟模型运行全部服务端测试（也可单独运行 `npm run test:local-edit` / `npm run test:generate`）：前者验证图片处理、日日新输入图规范化、三种视觉协议、局部编辑任务及取消，后者验证批量生成的并发上限、限流退避重试、多图意图自动判断与提示词拆分、日日新编辑请求及多图版本 ZIP 下载。测试仅使用生成的图片和 `work/*-test-*` 内的独立数据/配置，不读取真实用户数据或调用真实模型；测试文件不打入桌面服务资源。
+- 检查：`npm run lint`（TypeScript no-emit）；`npm run build`（先类型检查再构建）；`npm run test` 使用 Node 内置测试和本地模拟模型运行全部服务端测试（也可单独运行 `npm run test:local-edit` / `npm run test:generate` / `npm run test:request-guard`）：前者验证图片处理、日日新输入图规范化、三种视觉协议、局部编辑任务及取消，后者验证批量生成的并发上限、限流退避重试、多图意图自动判断与提示词拆分、日日新编辑请求及多图版本 ZIP 下载，`test:request-guard` 验证本机访问限制（跨站调用被拒、响应不带 CORS 授权、Vite 代理与非浏览器调用仍可用）。测试仅使用生成的图片和 `work/*-test-*` 内的独立数据/配置，不读取真实用户数据或调用真实模型；测试文件不打入桌面服务资源。
 - Windows 双击启动入口：`Layerive.bat`。该文件使用固定的工作目录，移动仓库后需要同步更新。
 - 项目不依赖登录、云端数据库或第三方后端。模型请求会发送给用户配置的模型服务；其他项目数据留在本机。
 - 许可：项目以 LGPL-3.0-or-later 发布，根目录 `LICENSE` 为 GNU LGPL v3.0 全文（参考 Wei-Shaw/sub2api 的做法）；`package.json` 的 `license` 字段与之保持一致。对外分发或商用前应遵守该许可条款。
@@ -178,7 +178,9 @@ work/                       临时工作目录（被 Git 忽略）
 
 ## 7. 模型适配和安全注意事项
 
-模型配置在 `config/models.json`（或 `LAYERIVE_CONFIG_ROOT/models.json`），由 `server/models.mjs` 管理。常规模型列表向前端返回时使用 `publicModel()`，API Key 显示为掩码；保存掩码值时保留原 Key。用户点击显隐按钮时，前端才通过 `POST /api/models/:id/api-key` 按需读取该模型的真实 Key；响应禁止缓存，并拒绝来源不是本机页面的跨站请求，不得把真实 Key 加回常规模型列表响应。
+模型配置在 `config/models.json`（或 `LAYERIVE_CONFIG_ROOT/models.json`），由 `server/models.mjs` 管理。常规模型列表向前端返回时使用 `publicModel()`，API Key 显示为掩码；保存掩码值时保留原 Key。用户点击显隐按钮时，前端才通过 `POST /api/models/:id/api-key` 按需读取该模型的真实 Key；响应禁止缓存，不得把真实 Key 加回常规模型列表响应。
+
+**本机访问限制（不要放宽）**：服务只监听 `127.0.0.1`，这挡得住局域网，挡不住浏览器——用户打开的任意网页都能请求 `127.0.0.1`。因此 `/api/`、`/files/`、`/gallery-files/` 一律先过 `assertLocalUiRequest()`：`Sec-Fetch-Site` 为 `cross-site` 的请求、Origin 主机名不是 `127.0.0.1` / `localhost` / `[::1]` 的请求，以及 Host 不是本机名的请求（DNS rebinding）都返回 403；不带浏览器 fetch 元数据的调用（curl、测试、Electron 健康检查）没有环境凭据，继续放行。所有响应都不再发送 `Access-Control-Allow-Origin`，跨源页面即使发出请求也读不到响应体。前端全部使用同源相对路径，`npm run dev` 经 Vite 代理到达，桌面版由本机页面发起，三种运行方式都不需要 CORS 授权。放宽任何一条都会让外部网页能够下载 `/api/backup`——那个 ZIP 里带着 `config/models.json` 和其中的 API Key。前端应用外壳（非 `/api/` 的 GET）不受此限制，以免从别处点链接打开应用时被拦。
 
 | 提供商 | 图像适配实现 | 备注 |
 | --- | --- | --- |

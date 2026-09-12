@@ -160,7 +160,7 @@ Open **Model configuration** from the home page or workspace:
 - No account or sign-in is required. In browser-local mode, project metadata is stored in `data/app.db`, and project images live in local directories under `data/`. The desktop app stores equivalent data in its operating-system user-data directory.
 - In browser-local mode, model configuration is stored in `config/models.json`; the desktop app stores it in its user-data directory. It may include API keys. Do not commit it to a public repository, and handle backups carefully.
 - Full backups include project data and configuration. Keep a backup before restoring another one.
-- The local API listens only on `127.0.0.1`; it is not directly exposed to your network or the internet.
+- The local API listens only on `127.0.0.1`; it is not directly exposed to your network or the internet. It also accepts requests only from the local application page, so other websites you visit cannot read your project data or download a backup.
 
 ## FAQ
 
