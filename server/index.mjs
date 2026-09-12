@@ -24,34 +24,42 @@ const runningTasks = new Map();
 const canceledTasks = new Set();
 
 function json(res, status, payload) {
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
-  });
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(payload));
 }
 
+const LOCAL_HOSTNAMES = ['127.0.0.1', 'localhost', '[::1]'];
+
+function isLocalHostname(value) {
+  const raw = String(value || '');
+  if (!raw) return false;
+  try { return LOCAL_HOSTNAMES.includes(new URL(raw.includes('://') ? raw : `http://${raw}`).hostname); }
+  catch { return false; }
+}
+
+// Every browser request the local UI makes is same-origin: `npm start` and the
+// Electron shell serve the page from this origin, and `npm run dev` reaches the
+// API through the Vite proxy. A cross-site request therefore means some other
+// page the user happens to have open is reaching into their machine — which
+// without this check can read /api/backup, a ZIP that packages
+// config/models.json and every API key in it. Requests that carry no browser
+// fetch metadata at all (curl, the test suite, the Electron health probe) send
+// no ambient credentials and stay allowed.
 function assertLocalUiRequest(req) {
+  const deny = () => { throw Object.assign(new Error('仅允许本机应用访问本地服务'), { status: 403 }); };
   const fetchSite = String(req.headers['sec-fetch-site'] || '');
-  if (fetchSite && !['same-origin', 'same-site', 'none'].includes(fetchSite)) {
-    throw Object.assign(new Error('仅允许本机应用读取已保存的 API Key'), { status: 403 });
-  }
+  if (fetchSite && !['same-origin', 'same-site', 'none'].includes(fetchSite)) deny();
   const origin = String(req.headers.origin || '');
-  if (!origin) return;
-  let hostname = '';
-  try { hostname = new URL(origin).hostname; } catch { /* handled below */ }
-  if (!['127.0.0.1', 'localhost', '[::1]'].includes(hostname)) {
-    throw Object.assign(new Error('仅允许本机应用读取已保存的 API Key'), { status: 403 });
-  }
+  if (origin && !isLocalHostname(origin)) deny();
+  // A page on attacker.example whose DNS answers 127.0.0.1 looks same-origin to
+  // the browser, but still arrives here carrying its own Host header.
+  if (!isLocalHostname(req.headers.host)) deny();
 }
 
 function zipResponse(res, buffer, downloadName) {
   res.writeHead(200, {
     'Content-Type': 'application/zip',
     'Content-Disposition': `attachment; filename="${downloadName}"`,
-    'Access-Control-Allow-Origin': '*',
   });
   res.end(buffer);
 }
@@ -1338,7 +1346,7 @@ async function serveFile(req, res, pathname, searchParams) {
       if (existsSync(cachePath)) payloadPath = cachePath;
     } catch { /* fall back to the original file */ }
   }
-  res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
+  res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
   res.end(await readFile(payloadPath));
 }
 
@@ -1348,7 +1356,7 @@ async function serveGalleryFile(res, pathname) {
   if (!absolute.startsWith(GALLERY_ROOT + path.sep) || !existsSync(absolute)) return json(res, 404, { error: '图片不存在' });
   const extension = path.extname(absolute).toLowerCase();
   const mime = GALLERY_MIME[extension.slice(1)] || 'application/octet-stream';
-  res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
+  res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
   res.end(await readFile(absolute));
 }
 
@@ -1418,6 +1426,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const pathname = url.pathname;
   try {
+    if (pathname.startsWith('/api/') || pathname.startsWith('/files/') || pathname.startsWith('/gallery-files/')) assertLocalUiRequest(req);
     if (pathname.startsWith('/files/') && req.method === 'GET') return await serveFile(req, res, pathname, url.searchParams);
     if (pathname.startsWith('/gallery-files/') && req.method === 'GET') return await serveGalleryFile(res, pathname);
     if (pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, storage: 'local-sqlite' });
@@ -1575,7 +1584,6 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/models/test-config' && req.method === 'POST') return json(res, 200, await testModelConnection(await body(req)));
     const modelApiKeyMatch = pathname.match(/^\/api\/models\/([^/]+)\/api-key$/);
     if (modelApiKeyMatch && req.method === 'POST') {
-      assertLocalUiRequest(req);
       const model = readModels().models.find((item) => item.id === modelApiKeyMatch[1]);
       if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
       res.setHeader('Cache-Control', 'no-store');
@@ -1609,7 +1617,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && !pathname.startsWith('/api/')) return await serveApp(res, pathname);
     return json(res, 404, { error: '接口不存在' });
   } catch (error) {
-    console.error(error);
+    // Deliberate 4xx answers stay one line — a refused cross-site caller can
+    // repeat itself at will, and a page of stacks would bury real faults.
+    const status = error.status || 500;
+    if (status >= 500) console.error(error);
+    else console.error(`${req.method} ${pathname} → ${status}: ${error.message}`);
     const payload = { error: error.status === 502 ? friendlyModelMessage(error.message) : error.message || '服务器内部错误' };
     if (error.affectedChildren !== undefined) payload.affectedChildren = error.affectedChildren;
     return json(res, error.status || 500, payload);
