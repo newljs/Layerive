@@ -62,7 +62,7 @@ export type Message = {
     versionNumber?: number;
     message?: string;
     params?: Record<string, unknown>;
-    batch?: { variableName?: string; variableNames?: string[]; values?: string[]; variables?: Array<{ name: string; values: string[] }>; completed?: number; failed?: number; canceled?: boolean };
+    batch?: { variableName?: string; variableNames?: string[]; values?: string[]; variables?: Array<{ name: string; values: string[] }>; prompts?: string[]; completed?: number; failed?: number; canceled?: boolean };
   };
   createdAt: string;
 };

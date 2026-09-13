@@ -283,7 +283,7 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
     assert.equal(bundle.versions.find((item) => item.operation === 'text_to_image').outputs.length, 2);
   }
 
-  // 10) 变量批量改图逐张入库：第一张完成时即可查询，最终归入同一个版本。
+  // 10) 变量批量处理逐张入库：第一张完成时即可查询，最终归入同一个版本。
   {
     const fixture = await fixtureProject();
     const mark = calls.length;
@@ -381,6 +381,41 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
     const canceledVersion = canceledBundle.versions.find((item) => item.operation === 'batch_edit');
     assert.equal(canceledVersion.status, 'partial');
     assert.equal(canceledVersion.outputs.length, canceledProgress.completed);
+
+    // 10b) 提示词列表模式（导入 txt）：每行一条完整提示词，按行数生成且不做变量包装。
+    {
+      const listFixture = await fixtureProject();
+      const listMark = calls.length;
+      const listStarted = await request(`/projects/${listFixture.projectId}/batch-edit`, {
+        imageId: listFixture.imageId,
+        modelId: 'sensenova',
+        prompts: ['给主体戴上红色贝雷帽，保持背景不变', '把背景替换成雪夜街道，主体保持一致'],
+        params: { size: '2048x2048' },
+      }, 202);
+      let listFinal;
+      await waitUntil(async () => {
+        listFinal = await request(`/projects/${listFixture.projectId}/batch-edits/${listStarted.taskId}`);
+        return listFinal.status !== 'generating';
+      });
+      assert.equal(listFinal.status, 'success', listFinal.error);
+      assert.equal(listFinal.total, 2);
+      assert.deepEqual(listFinal.items.map((item) => item.values), [
+        { 提示词: '给主体戴上红色贝雷帽，保持背景不变' },
+        { 提示词: '把背景替换成雪夜街道，主体保持一致' },
+      ]);
+      const listBodies = imageBodiesSince(listMark);
+      assert.equal(listBodies.length, 2);
+      assert.equal(listBodies[0].prompt, '给主体戴上红色贝雷帽，保持背景不变');
+      assert.equal(listBodies[1].prompt, '把背景替换成雪夜街道，主体保持一致');
+      assert.ok(listBodies.every((body) => body.n === 1));
+
+      const singlePrompt = await request(`/projects/${listFixture.projectId}/batch-edit`, {
+        imageId: listFixture.imageId,
+        modelId: 'sensenova',
+        prompts: ['只有一条提示词'],
+      }, 400);
+      assert.match(singlePrompt.error, /2–50/);
+    }
 
     const invalid = await request(`/projects/${fixture.projectId}/batch-edit`, {
       imageId: fixture.imageId,

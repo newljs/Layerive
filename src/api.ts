@@ -49,7 +49,7 @@ export const api = {
     downloadFile(`/api/projects/${projectId}/versions/${versionId}/download`),
   generate: (id: string, input: Record<string, unknown>) =>
     request<GenerateResult>(`/api/projects/${id}/generate`, { method: 'POST', body: JSON.stringify(input) }),
-  startBatchEdit: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; template: string; quantity: number; variables: Array<{ name: string; values: string[] }>; params?: Record<string, unknown> }) =>
+  startBatchEdit: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; template?: string; quantity?: number; variables?: Array<{ name: string; values: string[] }>; prompts?: string[]; params?: Record<string, unknown> }) =>
     request<BatchEditResult>(`/api/projects/${id}/batch-edit`, { method: 'POST', body: JSON.stringify(input) }),
   getBatchEdit: (id: string, taskId: string) => request<BatchEditProgress>(`/api/projects/${id}/batch-edits/${taskId}`),
   listGeneratingTasks: (id: string) => request<{ tasks: GenerationTask[] }>(`/api/projects/${id}/tasks`),

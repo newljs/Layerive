@@ -1045,8 +1045,19 @@ async function runGenerationTask(projectId, taskId, context) {
 // ---- Incremental variable batch editing ------------------------------------
 
 function validateBatchEditInput(input) {
+  const rawPrompts = Array.isArray(input.prompts)
+    ? input.prompts.map((value) => String(value ?? '').trim()).filter(Boolean)
+    : null;
+  if (rawPrompts) {
+    if (rawPrompts.length < 2 || rawPrompts.length > BATCH_EDIT_MAX_ITEMS) {
+      throw Object.assign(new Error(`提示词数量需在 2–${BATCH_EDIT_MAX_ITEMS} 条之间`), { status: 400 });
+    }
+    const tooLongIndex = rawPrompts.findIndex((value) => value.length > 1000);
+    if (tooLongIndex >= 0) throw Object.assign(new Error(`第 ${tooLongIndex + 1} 条提示词不能超过 1000 个字符`), { status: 400 });
+    return { prompts: rawPrompts, template: '', variableNames: [], quantity: rawPrompts.length, variables: [] };
+  }
   const template = String(input.template || '').trim();
-  if (!template) throw Object.assign(new Error('请输入批量改图提示词模板'), { status: 400 });
+  if (!template) throw Object.assign(new Error('请输入批量处理提示词模板'), { status: 400 });
   if (template.length > 4000) throw Object.assign(new Error('提示词模板不能超过 4000 个字符'), { status: 400 });
   const placeholders = [...template.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map((match) => match[1].trim()).filter(Boolean);
   if (!placeholders.length) throw Object.assign(new Error('请在提示词中用 {{变量名}} 标记需要替换的位置'), { status: 400 });
@@ -1087,10 +1098,31 @@ function batchItemPrompt(template, variableNames, values, index, total) {
   return `以输入参考图为唯一视觉基准，生成同一批次系列图的第 ${index + 1}/${total} 张。所有批次输出必须保持参考图的画风、构图、主体身体、姿势、背景、镜头、光影、色彩和变量以外的区域一致。只执行以下变量替换：${replacements}；不得联动修改其他内容。当前完整要求：${resolved}`;
 }
 
+// 提示词列表模式（导入 txt）：每行即一条完整提示词，逐张以画布图片为输入生成。
+function batchItemsFor(validated) {
+  return Array.from({ length: validated.quantity }, (_, index) => ({
+    index,
+    values: validated.prompts ? { 提示词: validated.prompts[index] } : Object.fromEntries(validated.variables.map((variable) => [variable.name, variable.values[index]])),
+    status: 'pending',
+  }));
+}
+
+function batchPromptSummary(validated) {
+  return validated.prompts
+    ? `批量提示词生成：共 ${validated.prompts.length} 条独立提示词，每行一条，逐张生成。`
+    : validated.template;
+}
+
+function batchMessageBatch(validated, extras) {
+  return validated.prompts
+    ? { prompts: validated.prompts, ...extras }
+    : { variableNames: validated.variableNames, variables: validated.variables, ...extras };
+}
+
 function batchEditProgress(projectId, taskId) {
   projectOrThrow(projectId);
   const task = db.prepare("SELECT * FROM generation_tasks WHERE id = ? AND project_id = ? AND operation_type = 'batch_edit'").get(taskId, projectId);
-  if (!task) throw Object.assign(new Error('批量改图任务不存在'), { status: 404 });
+  if (!task) throw Object.assign(new Error('批量处理任务不存在'), { status: 404 });
   const input = parseJson(task.input_json);
   const batch = input.batch || {};
   const rows = input.versionId
@@ -1149,11 +1181,11 @@ function startBatchEdit(projectId, input) {
   const versionId = uid();
   const createdAt = now();
   const versionNumber = Number(db.prepare('SELECT COALESCE(MAX(version_number), 0) + 1 AS next FROM image_versions WHERE project_id = ?').get(projectId).next);
-  const items = Array.from({ length: validated.quantity }, (_, index) => ({ index, values: Object.fromEntries(validated.variables.map((variable) => [variable.name, variable.values[index]])), status: 'pending' }));
-  const taskInput = { inputImageId: source.id, versionId, versionNumber, batch: { template: validated.template, variableNames: validated.variableNames, total: validated.quantity, currentIndex: null, items } };
+  const items = batchItemsFor(validated);
+  const taskInput = { inputImageId: source.id, versionId, versionNumber, batch: { template: validated.template, prompts: validated.prompts, variableNames: validated.variableNames, total: validated.quantity, currentIndex: null, items } };
   db.exec('BEGIN');
   try {
-    db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(userMessageId, projectId, 'user', 'prompt', JSON.stringify({ prompt: validated.template, operation: 'batch_edit', inputImageId: source.id, params: { ...params, quantity: validated.quantity }, modelName: model.name, batch: { variableNames: validated.variableNames, variables: validated.variables } }), createdAt);
+    db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(userMessageId, projectId, 'user', 'prompt', JSON.stringify({ prompt: batchPromptSummary(validated), operation: 'batch_edit', inputImageId: source.id, params: { ...params, quantity: validated.quantity }, modelName: model.name, batch: batchMessageBatch(validated, {}) }), createdAt);
     db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, started_at, created_at)
       VALUES (?, ?, ?, 'batch_edit', ?, ?, ?, ?, 'generating', ?, ?)`)
       .run(taskId, projectId, userMessageId, model.id, JSON.stringify({ ...model, apiKey: undefined }), JSON.stringify(params), JSON.stringify(taskInput), createdAt, createdAt);
@@ -1178,11 +1210,11 @@ function startBatchEdit(projectId, input) {
 
 async function runBatchEditTask(projectId, taskId, context) {
   const { model, source, params, versionId, versionNumber, validated, controller } = context;
-  const items = Array.from({ length: validated.quantity }, (_, index) => ({ index, values: Object.fromEntries(validated.variables.map((variable) => [variable.name, variable.values[index]])), status: 'pending' }));
+  const items = batchItemsFor(validated);
   const successful = [];
   const taskInput = () => {
     const activeIndex = items.findIndex((item) => item.status === 'generating');
-    return { inputImageId: source.id, versionId, versionNumber, batch: { template: validated.template, variableNames: validated.variableNames, total: validated.quantity, currentIndex: activeIndex >= 0 ? activeIndex : null, items } };
+    return { inputImageId: source.id, versionId, versionNumber, batch: { template: validated.template, prompts: validated.prompts, variableNames: validated.variableNames, total: validated.quantity, currentIndex: activeIndex >= 0 ? activeIndex : null, items } };
   };
   try {
     if (!model.apiKey && model.provider !== 'mock') throw new Error('模型尚未配置 API Key');
@@ -1193,7 +1225,7 @@ async function runBatchEditTask(projectId, taskId, context) {
       item.status = 'generating';
       item.startedAt = new Date(startedAt).toISOString();
       db.prepare('UPDATE generation_tasks SET input_json = ? WHERE id = ?').run(JSON.stringify(taskInput()), taskId);
-      const prompt = batchItemPrompt(validated.template, validated.variableNames, item.values, index, items.length);
+      const prompt = validated.prompts ? validated.prompts[index] : batchItemPrompt(validated.template, validated.variableNames, item.values, index, items.length);
       try {
         let output;
         if (model.provider === 'mock') {
@@ -1248,8 +1280,8 @@ async function runBatchEditTask(projectId, taskId, context) {
     const failures = items.filter((item) => item.status === 'failed').length;
     const status = successful.length ? (failures ? 'partial' : 'success') : 'failed';
     const message = successful.length
-      ? `批量改图已完成 ${successful.length}/${items.length} 张${failures ? `，${failures} 张失败` : ''}。`
-      : '批量改图未生成可用图片。';
+      ? `批量处理已完成 ${successful.length}/${items.length} 张${failures ? `，${failures} 张失败` : ''}。`
+      : '批量处理未生成可用图片。';
     db.exec('BEGIN');
     try {
       db.prepare('UPDATE generation_tasks SET status = ?, input_json = ?, error_json = ?, finished_at = ? WHERE id = ?')
@@ -1257,16 +1289,16 @@ async function runBatchEditTask(projectId, taskId, context) {
       db.prepare('UPDATE image_versions SET status = ?, deleted_at = ? WHERE id = ?')
         .run(status, successful.length ? null : finishedAt, versionId);
       if (successful.length) {
-        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'result', JSON.stringify({ prompt: validated.template, operation: 'batch_edit', outputImageIds: successful.map((item) => item.imageId), prompts: successful.map((item) => item.prompt), versionId, versionNumber, taskId, modelName: model.name, batch: { variableNames: validated.variableNames, variables: validated.variables, completed: successful.length, failed: failures } }), finishedAt);
+        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'result', JSON.stringify({ prompt: batchPromptSummary(validated), operation: 'batch_edit', outputImageIds: successful.map((item) => item.imageId), prompts: successful.map((item) => item.prompt), versionId, versionNumber, taskId, modelName: model.name, batch: batchMessageBatch(validated, { completed: successful.length, failed: failures }) }), finishedAt);
       } else {
-        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'error', JSON.stringify({ message, taskId, prompt: validated.template }), finishedAt);
+        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'error', JSON.stringify({ message, taskId, prompt: batchPromptSummary(validated) }), finishedAt);
       }
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   } catch (error) {
     const finishedAt = now();
     const canceled = canceledTasks.has(taskId) || (error.name === 'AbortError' && !controller.signal.reason?.message?.includes('timeout'));
-    const message = canceled ? '已取消批量改图，已生成的图片会继续保留。' : friendlyModelMessage(error.message);
+    const message = canceled ? '已取消批量处理，已生成的图片会继续保留。' : friendlyModelMessage(error.message);
     const activeItem = items.find((item) => item.status === 'generating');
     if (activeItem) {
       activeItem.status = canceled ? 'canceled' : 'failed';
@@ -1282,9 +1314,9 @@ async function runBatchEditTask(projectId, taskId, context) {
       db.prepare('UPDATE image_versions SET status = ?, deleted_at = ? WHERE id = ?')
         .run(successful.length ? 'partial' : status, successful.length ? null : finishedAt, versionId);
       if (successful.length) {
-        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'result', JSON.stringify({ prompt: validated.template, operation: 'batch_edit', outputImageIds: successful.map((item) => item.imageId), prompts: successful.map((item) => item.prompt), versionId, versionNumber, taskId, modelName: model.name, message, batch: { variableNames: validated.variableNames, variables: validated.variables, completed: successful.length, failed: items.filter((item) => item.status === 'failed').length, canceled } }), finishedAt);
+        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'result', JSON.stringify({ prompt: batchPromptSummary(validated), operation: 'batch_edit', outputImageIds: successful.map((item) => item.imageId), prompts: successful.map((item) => item.prompt), versionId, versionNumber, taskId, modelName: model.name, message, batch: batchMessageBatch(validated, { completed: successful.length, failed: items.filter((item) => item.status === 'failed').length, canceled }) }), finishedAt);
       } else {
-        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', canceled ? 'canceled' : 'error', JSON.stringify({ message, taskId, prompt: validated.template }), finishedAt);
+        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', canceled ? 'canceled' : 'error', JSON.stringify({ message, taskId, prompt: batchPromptSummary(validated) }), finishedAt);
       }
       db.exec('COMMIT');
     } catch (transactionError) { db.exec('ROLLBACK'); console.error(transactionError); }
