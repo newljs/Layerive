@@ -17,8 +17,18 @@ const MODELS_CONFIG_PATH = path.join(CONFIG_ROOT, 'models.json');
 // Tasks still marked `generating` when the server starts can never finish —
 // the request died with the previous process. Mark them instead of leaving
 // the workspace stuck on a phantom progress state.
+const startupRecoveryAt = now();
 db.prepare("UPDATE generation_tasks SET status = 'failed', error_json = ?, finished_at = ? WHERE status = 'generating'")
-  .run(JSON.stringify({ message: '应用重启，任务已中断，请重新发送。' }), now());
+  .run(JSON.stringify({ message: '应用重启，任务已中断，请重新发送。' }), startupRecoveryAt);
+// A batch-edit version is published incrementally. Preserve completed outputs
+// after a restart, but hide an empty placeholder version that never produced an
+// image before the process stopped.
+db.prepare(`
+  UPDATE image_versions
+  SET status = CASE WHEN EXISTS (SELECT 1 FROM images WHERE images.version_id = image_versions.id) THEN 'partial' ELSE 'failed' END,
+      deleted_at = CASE WHEN EXISTS (SELECT 1 FROM images WHERE images.version_id = image_versions.id) THEN deleted_at ELSE COALESCE(deleted_at, ?) END
+  WHERE operation_type = 'batch_edit' AND status = 'generating'
+`).run(startupRecoveryAt);
 
 const runningTasks = new Map();
 const canceledTasks = new Set();
@@ -312,6 +322,7 @@ function providerHttpError(response, message) {
 }
 
 const IMAGE_BATCH_CONCURRENCY = 2;
+const BATCH_EDIT_MAX_ITEMS = 50;
 const RATE_LIMIT_ERROR = /rps exhausted|rate.?limit|too many requests/i;
 
 const isRateLimitError = (error) => error?.status === 429 || RATE_LIMIT_ERROR.test(String(error?.message || ''));
@@ -1031,12 +1042,262 @@ async function runGenerationTask(projectId, taskId, context) {
   }
 }
 
+// ---- Incremental variable batch editing ------------------------------------
+
+function validateBatchEditInput(input) {
+  const template = String(input.template || '').trim();
+  if (!template) throw Object.assign(new Error('请输入批量改图提示词模板'), { status: 400 });
+  if (template.length > 4000) throw Object.assign(new Error('提示词模板不能超过 4000 个字符'), { status: 400 });
+  const placeholders = [...template.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map((match) => match[1].trim()).filter(Boolean);
+  if (!placeholders.length) throw Object.assign(new Error('请在提示词中用 {{变量名}} 标记需要替换的位置'), { status: 400 });
+  if (/\{\{|\}\}/.test(template.replace(/\{\{\s*[^{}]+?\s*\}\}/g, ''))) throw Object.assign(new Error('提示词中存在不完整的变量标签'), { status: 400 });
+  const variableNames = [...new Set(placeholders)];
+  if (variableNames.length > 10) throw Object.assign(new Error('一个模板最多支持 10 个变量'), { status: 400 });
+  if (variableNames.some((name) => name.length > 40)) throw Object.assign(new Error('变量名不能超过 40 个字符'), { status: 400 });
+  const quantity = Math.trunc(Number(input.quantity));
+  if (!Number.isFinite(quantity) || quantity < 2 || quantity > BATCH_EDIT_MAX_ITEMS) {
+    throw Object.assign(new Error(`批量数量需在 2–${BATCH_EDIT_MAX_ITEMS} 之间`), { status: 400 });
+  }
+  const rawVariables = Array.isArray(input.variables)
+    ? input.variables
+    : variableNames.length === 1 && Array.isArray(input.values)
+      ? [{ name: variableNames[0], values: input.values }]
+      : [];
+  const suppliedNames = rawVariables.map((variable) => String(variable?.name || '').trim());
+  if (new Set(suppliedNames).size !== suppliedNames.length) throw Object.assign(new Error('变量值列表中存在重复变量名'), { status: 400 });
+  if (suppliedNames.some((name) => !variableNames.includes(name))) throw Object.assign(new Error('变量值列表包含模板中不存在的变量'), { status: 400 });
+  const rawByName = new Map(rawVariables.map((variable) => [String(variable?.name || '').trim(), variable]));
+  const variables = variableNames.map((name) => {
+    const values = (Array.isArray(rawByName.get(name)?.values) ? rawByName.get(name).values : []).map((value) => String(value ?? '').trim());
+    const filled = values.filter(Boolean).length;
+    if (values.length !== quantity || filled !== quantity) throw Object.assign(new Error(`变量“${name}”需要录入 ${quantity} 个非空值，当前为 ${filled} 个`), { status: 400 });
+    if (values.some((value) => value.length > 200)) throw Object.assign(new Error('单个变量值不能超过 200 个字符'), { status: 400 });
+    return { name, values };
+  });
+  return { template, variableNames, quantity, variables };
+}
+
+function applyBatchVariables(template, values) {
+  return template.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_marker, name) => values[String(name).trim()] ?? '');
+}
+
+function batchItemPrompt(template, variableNames, values, index, total) {
+  const resolved = applyBatchVariables(template, values);
+  const replacements = variableNames.map((name) => `“${name}”替换为“${values[name]}”`).join('、');
+  return `以输入参考图为唯一视觉基准，生成同一批次系列图的第 ${index + 1}/${total} 张。所有批次输出必须保持参考图的画风、构图、主体身体、姿势、背景、镜头、光影、色彩和变量以外的区域一致。只执行以下变量替换：${replacements}；不得联动修改其他内容。当前完整要求：${resolved}`;
+}
+
+function batchEditProgress(projectId, taskId) {
+  projectOrThrow(projectId);
+  const task = db.prepare("SELECT * FROM generation_tasks WHERE id = ? AND project_id = ? AND operation_type = 'batch_edit'").get(taskId, projectId);
+  if (!task) throw Object.assign(new Error('批量改图任务不存在'), { status: 404 });
+  const input = parseJson(task.input_json);
+  const batch = input.batch || {};
+  const rows = input.versionId
+    ? db.prepare('SELECT * FROM images WHERE project_id = ? AND version_id = ? ORDER BY created_at, rowid').all(projectId, input.versionId)
+    : [];
+  const imageMap = new Map(rows.map((row) => [row.id, imageDto(row)]));
+  const legacyVariableName = String(batch.variableName || '');
+  const variableNames = Array.isArray(batch.variableNames) ? batch.variableNames.map(String) : legacyVariableName ? [legacyVariableName] : [];
+  const items = (Array.isArray(batch.items) ? batch.items : []).map((item) => ({
+    index: Number(item.index),
+    values: item.values && typeof item.values === 'object' ? Object.fromEntries(Object.entries(item.values).map(([name, value]) => [name, String(value || '')])) : legacyVariableName ? { [legacyVariableName]: String(item.value || '') } : {},
+    status: item.status || 'pending',
+    image: item.imageId ? imageMap.get(item.imageId) || null : null,
+    error: item.error || null,
+    durationMs: Number(item.durationMs) || null,
+  }));
+  const completed = items.filter((item) => item.status === 'success').length;
+  const failed = items.filter((item) => item.status === 'failed').length;
+  const processed = completed + failed;
+  const remaining = Math.max(0, Number(batch.total || items.length) - processed);
+  const durations = items.map((item) => item.durationMs).filter((value) => Number.isFinite(value) && value > 0);
+  const averageMs = durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : null;
+  return {
+    id: task.id,
+    status: task.status,
+    versionId: input.versionId || null,
+    versionNumber: Number(input.versionNumber) || null,
+    template: String(batch.template || ''),
+    variableNames,
+    total: Number(batch.total || items.length),
+    completed,
+    failed,
+    remaining,
+    currentIndex: Number.isInteger(batch.currentIndex) ? batch.currentIndex : null,
+    estimatedRemainingSeconds: averageMs == null || task.status !== 'generating' ? null : Math.max(1, Math.ceil((averageMs * remaining) / 1000)),
+    items,
+    error: parseJson(task.error_json, null)?.message || null,
+    createdAt: task.created_at,
+    startedAt: task.started_at,
+    finishedAt: task.finished_at,
+  };
+}
+
+function startBatchEdit(projectId, input) {
+  projectOrThrow(projectId);
+  const config = readModels();
+  const requestedModelId = String(input.modelId || '').trim();
+  const model = config.models.find((item) => item.id === (requestedModelId || config.active_model));
+  if (!model || model.type === 'vision') throw Object.assign(new Error('请选择有效的图片生成模型'), { status: 400 });
+  if (!model.capabilities.includes('edit_prompt')) throw Object.assign(new Error('当前模型不支持提示词改图'), { status: 400 });
+  const source = ensureUploadVersion(projectId, imageOrThrow(projectId, input.imageId));
+  const validated = validateBatchEditInput(input);
+  const params = { ...model.defaultParams, ...(input.params || {}), count: 1 };
+  const taskId = uid();
+  const userMessageId = uid();
+  const versionId = uid();
+  const createdAt = now();
+  const versionNumber = Number(db.prepare('SELECT COALESCE(MAX(version_number), 0) + 1 AS next FROM image_versions WHERE project_id = ?').get(projectId).next);
+  const items = Array.from({ length: validated.quantity }, (_, index) => ({ index, values: Object.fromEntries(validated.variables.map((variable) => [variable.name, variable.values[index]])), status: 'pending' }));
+  const taskInput = { inputImageId: source.id, versionId, versionNumber, batch: { template: validated.template, variableNames: validated.variableNames, total: validated.quantity, currentIndex: null, items } };
+  db.exec('BEGIN');
+  try {
+    db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(userMessageId, projectId, 'user', 'prompt', JSON.stringify({ prompt: validated.template, operation: 'batch_edit', inputImageId: source.id, params: { ...params, quantity: validated.quantity }, modelName: model.name, batch: { variableNames: validated.variableNames, variables: validated.variables } }), createdAt);
+    db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, started_at, created_at)
+      VALUES (?, ?, ?, 'batch_edit', ?, ?, ?, ?, 'generating', ?, ?)`)
+      .run(taskId, projectId, userMessageId, model.id, JSON.stringify({ ...model, apiKey: undefined }), JSON.stringify(params), JSON.stringify(taskInput), createdAt, createdAt);
+    db.prepare(`INSERT INTO image_versions (id, project_id, task_id, parent_version_id, version_number, operation_type, selected_image_id, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'batch_edit', NULL, 'generating', ?)`)
+      .run(versionId, projectId, taskId, input.parentVersionId || source.version_id || null, versionNumber, createdAt);
+    db.prepare('INSERT OR IGNORE INTO version_inputs VALUES (?, ?, ?)').run(versionId, source.id, 'source');
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+
+  const controller = new AbortController();
+  runningTasks.set(taskId, controller);
+  const timeoutMs = Math.min(3 * 60 * 60 * 1000, 120000 + validated.quantity * 180000);
+  const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
+  void runBatchEditTask(projectId, taskId, { model, source, params, versionId, versionNumber, validated, controller }).finally(() => {
+    clearTimeout(timer);
+    runningTasks.delete(taskId);
+    canceledTasks.delete(taskId);
+  });
+  return { taskId, versionId, status: 'generating', userMessageId };
+}
+
+async function runBatchEditTask(projectId, taskId, context) {
+  const { model, source, params, versionId, versionNumber, validated, controller } = context;
+  const items = Array.from({ length: validated.quantity }, (_, index) => ({ index, values: Object.fromEntries(validated.variables.map((variable) => [variable.name, variable.values[index]])), status: 'pending' }));
+  const successful = [];
+  const taskInput = () => {
+    const activeIndex = items.findIndex((item) => item.status === 'generating');
+    return { inputImageId: source.id, versionId, versionNumber, batch: { template: validated.template, variableNames: validated.variableNames, total: validated.quantity, currentIndex: activeIndex >= 0 ? activeIndex : null, items } };
+  };
+  try {
+    if (!model.apiKey && model.provider !== 'mock') throw new Error('模型尚未配置 API Key');
+    for (let index = 0; index < items.length; index += 1) {
+      controller.signal.throwIfAborted();
+      const item = items[index];
+      const startedAt = Date.now();
+      item.status = 'generating';
+      item.startedAt = new Date(startedAt).toISOString();
+      db.prepare('UPDATE generation_tasks SET input_json = ? WHERE id = ?').run(JSON.stringify(taskInput()), taskId);
+      const prompt = batchItemPrompt(validated.template, validated.variableNames, item.values, index, items.length);
+      try {
+        let output;
+        if (model.provider === 'mock') {
+          const { width, height } = parseSize(params.size);
+          const scale = Math.min(1, 1024 / Math.max(width, height));
+          const outputWidth = Math.round(width * scale);
+          const outputHeight = Math.round(height * scale);
+          await abortableDelay(300, controller.signal);
+          output = { bytes: makeDemoPng(prompt, outputWidth, outputHeight, index), mimeType: 'image/png', width: outputWidth, height: outputHeight };
+        } else {
+          [output] = await callImageWithRetry(model, prompt, { ...params, count: 1 }, source, controller.signal);
+        }
+        controller.signal.throwIfAborted();
+        const dimensions = readImageDimensions(output.bytes, output.mimeType) || parseSize(params.size);
+        const imageId = uid();
+        const extension = output.mimeType.includes('jpeg') ? 'jpg' : output.mimeType.includes('webp') ? 'webp' : 'png';
+        const relative = path.join('generated', `${imageId}.${extension}`);
+        await writeFile(path.join(PROJECTS_ROOT, projectId, relative), output.bytes);
+        controller.signal.throwIfAborted();
+        item.status = 'success';
+        item.imageId = imageId;
+        item.prompt = prompt;
+        item.durationMs = Math.max(1, Date.now() - startedAt);
+        item.finishedAt = now();
+        successful.push({ imageId, prompt });
+        const firstOutput = successful.length === 1;
+        db.exec('BEGIN');
+        try {
+          db.prepare(`INSERT INTO images (id, project_id, version_id, task_id, source_type, file_path, mime_type, width, height, file_size, created_at)
+            VALUES (?, ?, ?, ?, 'generated', ?, ?, ?, ?, ?, ?)`)
+            .run(imageId, projectId, versionId, taskId, relative, output.mimeType, output.width || dimensions.width, output.height || dimensions.height, output.bytes.length, item.finishedAt);
+          if (firstOutput) db.prepare('UPDATE image_versions SET selected_image_id = ? WHERE id = ?').run(imageId, versionId);
+          db.prepare('UPDATE generation_tasks SET input_json = ? WHERE id = ?').run(JSON.stringify(taskInput()), taskId);
+          if (firstOutput) {
+            db.prepare('UPDATE projects SET current_version_id = ?, current_image_id = ?, cover_image_id = ?, updated_at = ? WHERE id = ?')
+              .run(versionId, imageId, imageId, item.finishedAt, projectId);
+          } else {
+            db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(item.finishedAt, projectId);
+          }
+          db.exec('COMMIT');
+        } catch (error) { db.exec('ROLLBACK'); throw error; }
+      } catch (error) {
+        if (controller.signal.aborted || error.name === 'AbortError') throw error;
+        item.status = 'failed';
+        item.error = friendlyModelMessage(error.message);
+        item.durationMs = Math.max(1, Date.now() - startedAt);
+        item.finishedAt = now();
+        db.prepare('UPDATE generation_tasks SET input_json = ? WHERE id = ?').run(JSON.stringify(taskInput()), taskId);
+      }
+    }
+    const finishedAt = now();
+    const failures = items.filter((item) => item.status === 'failed').length;
+    const status = successful.length ? (failures ? 'partial' : 'success') : 'failed';
+    const message = successful.length
+      ? `批量改图已完成 ${successful.length}/${items.length} 张${failures ? `，${failures} 张失败` : ''}。`
+      : '批量改图未生成可用图片。';
+    db.exec('BEGIN');
+    try {
+      db.prepare('UPDATE generation_tasks SET status = ?, input_json = ?, error_json = ?, finished_at = ? WHERE id = ?')
+        .run(status, JSON.stringify(taskInput()), failures ? JSON.stringify({ message }) : null, finishedAt, taskId);
+      db.prepare('UPDATE image_versions SET status = ?, deleted_at = ? WHERE id = ?')
+        .run(status, successful.length ? null : finishedAt, versionId);
+      if (successful.length) {
+        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'result', JSON.stringify({ prompt: validated.template, operation: 'batch_edit', outputImageIds: successful.map((item) => item.imageId), prompts: successful.map((item) => item.prompt), versionId, versionNumber, taskId, modelName: model.name, batch: { variableNames: validated.variableNames, variables: validated.variables, completed: successful.length, failed: failures } }), finishedAt);
+      } else {
+        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'error', JSON.stringify({ message, taskId, prompt: validated.template }), finishedAt);
+      }
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  } catch (error) {
+    const finishedAt = now();
+    const canceled = canceledTasks.has(taskId) || (error.name === 'AbortError' && !controller.signal.reason?.message?.includes('timeout'));
+    const message = canceled ? '已取消批量改图，已生成的图片会继续保留。' : friendlyModelMessage(error.message);
+    const activeItem = items.find((item) => item.status === 'generating');
+    if (activeItem) {
+      activeItem.status = canceled ? 'canceled' : 'failed';
+      activeItem.error = message;
+      activeItem.durationMs = activeItem.startedAt ? Math.max(1, Date.now() - Date.parse(activeItem.startedAt)) : null;
+      activeItem.finishedAt = finishedAt;
+    }
+    const status = canceled ? 'canceled' : successful.length ? 'partial' : 'failed';
+    db.exec('BEGIN');
+    try {
+      db.prepare('UPDATE generation_tasks SET status = ?, input_json = ?, error_json = ?, finished_at = ? WHERE id = ?')
+        .run(status, JSON.stringify(taskInput()), JSON.stringify({ message }), finishedAt, taskId);
+      db.prepare('UPDATE image_versions SET status = ?, deleted_at = ? WHERE id = ?')
+        .run(successful.length ? 'partial' : status, successful.length ? null : finishedAt, versionId);
+      if (successful.length) {
+        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'result', JSON.stringify({ prompt: validated.template, operation: 'batch_edit', outputImageIds: successful.map((item) => item.imageId), prompts: successful.map((item) => item.prompt), versionId, versionNumber, taskId, modelName: model.name, message, batch: { variableNames: validated.variableNames, variables: validated.variables, completed: successful.length, failed: items.filter((item) => item.status === 'failed').length, canceled } }), finishedAt);
+      } else {
+        db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', canceled ? 'canceled' : 'error', JSON.stringify({ message, taskId, prompt: validated.template }), finishedAt);
+      }
+      db.exec('COMMIT');
+    } catch (transactionError) { db.exec('ROLLBACK'); console.error(transactionError); }
+  }
+}
+
 // ---- Version deletion (soft, reference-aware) ------------------------------
 
 function deleteVersion(projectId, versionId, force) {
   projectOrThrow(projectId);
   const version = db.prepare('SELECT * FROM image_versions WHERE id = ? AND project_id = ? AND deleted_at IS NULL').get(versionId, projectId);
   if (!version) throw Object.assign(new Error('版本不存在'), { status: 404 });
+  if (version.status === 'generating') throw Object.assign(new Error('该版本仍在生成中，请先取消任务或等待完成'), { status: 409 });
   const children = db.prepare('SELECT COUNT(*) AS count FROM image_versions WHERE parent_version_id = ? AND deleted_at IS NULL').get(versionId).count;
   if (children > 0 && !force) {
     throw Object.assign(new Error(`该版本被 ${children} 个后续版本引用，删除会产生孤立分支。请先确认，或连同引用一起处理。`), { status: 409, affectedChildren: children });
@@ -1101,6 +1362,19 @@ function remapMessageContent(content, maps) {
   return next;
 }
 
+function remapTaskInputJson(value, maps) {
+  const next = parseJson(value, {});
+  if (next.inputImageId) next.inputImageId = maps.images.get(next.inputImageId) || next.inputImageId;
+  if (next.versionId) next.versionId = maps.versions.get(next.versionId) || next.versionId;
+  if (next.batch && Array.isArray(next.batch.items)) {
+    next.batch = {
+      ...next.batch,
+      items: next.batch.items.map((item) => item?.imageId ? { ...item, imageId: maps.images.get(item.imageId) || item.imageId } : item),
+    };
+  }
+  return JSON.stringify(next);
+}
+
 function buildIdMaps(rows) {
   const maps = { images: new Map(), versions: new Map(), messages: new Map(), tasks: new Map() };
   for (const row of rows.images || []) maps.images.set(row.id, uid());
@@ -1139,7 +1413,7 @@ async function duplicateProject(sourceId, nameSuffix = ' 副本') {
   for (const row of rows.tasks) {
     db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, error_json, started_at, finished_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(maps.tasks.get(row.id), newId, row.user_message_id ? maps.messages.get(row.user_message_id) : null, row.operation_type, row.model_id, row.model_snapshot_json, row.params_json, row.input_json, row.status, row.error_json, row.started_at, row.finished_at, row.created_at);
+      .run(maps.tasks.get(row.id), newId, row.user_message_id ? maps.messages.get(row.user_message_id) : null, row.operation_type, row.model_id, row.model_snapshot_json, row.params_json, remapTaskInputJson(row.input_json, maps), row.status, row.error_json, row.started_at, row.finished_at, row.created_at);
   }
   for (const row of rows.images) {
     db.prepare(`INSERT INTO images (id, project_id, version_id, task_id, source_type, file_path, mime_type, width, height, file_size, created_at)
@@ -1231,7 +1505,7 @@ async function importProjectZip(buffer) {
   for (const row of meta.tasks || []) {
     db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, error_json, started_at, finished_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(maps.tasks.get(row.id), newId, row.user_message_id ? maps.messages.get(row.user_message_id) : null, row.operation_type, row.model_id, row.model_snapshot_json, row.params_json, row.input_json, row.status, row.error_json, row.started_at, row.finished_at, row.created_at);
+      .run(maps.tasks.get(row.id), newId, row.user_message_id ? maps.messages.get(row.user_message_id) : null, row.operation_type, row.model_id, row.model_snapshot_json, row.params_json, remapTaskInputJson(row.input_json, maps), row.status, row.error_json, row.started_at, row.finished_at, row.created_at);
   }
   for (const row of meta.images || []) {
     const relative = row.file_path.replaceAll('\\', '/');
@@ -1527,6 +1801,10 @@ const server = http.createServer(async (req, res) => {
     if (removeWatermarkMatch && req.method === 'POST') return json(res, 202, await removeImageWatermark(removeWatermarkMatch[1], await body(req)));
     const extractMatch = pathname.match(/^\/api\/projects\/([^/]+)\/extract-asset$/);
     if (extractMatch && req.method === 'POST') return json(res, 202, await extractImageAsset(extractMatch[1], await body(req)));
+    const batchEditStartMatch = pathname.match(/^\/api\/projects\/([^/]+)\/batch-edit$/);
+    if (batchEditStartMatch && req.method === 'POST') return json(res, 202, startBatchEdit(batchEditStartMatch[1], await body(req)));
+    const batchEditProgressMatch = pathname.match(/^\/api\/projects\/([^/]+)\/batch-edits\/([^/]+)$/);
+    if (batchEditProgressMatch && req.method === 'GET') return json(res, 200, batchEditProgress(batchEditProgressMatch[1], batchEditProgressMatch[2]));
 
     const tasksMatch = pathname.match(/^\/api\/projects\/([^/]+)\/tasks$/);
     if (tasksMatch && req.method === 'GET') return json(res, 200, { tasks: listGeneratingTasks(tasksMatch[1]) });

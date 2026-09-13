@@ -27,6 +27,7 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
   let failNext429 = 0;
   let always429 = false;
   let nextImageError = null;
+  let imageDelayMs = 80;
   let inFlight = 0;
   let maxInFlight = 0;
   const stub = http.createServer(async (req, res) => {
@@ -40,7 +41,7 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
         maxInFlight = Math.max(maxInFlight, inFlight);
         try {
           // Hold each request briefly so overlapping fan-out is observable.
-          await pause(80);
+          await pause(imageDelayMs);
           if (always429 || failNext429 > 0) {
             if (!always429) failNext429 -= 1;
             res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '1' });
@@ -119,7 +120,7 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
     assert.equal(task.status, 'success', task.error);
     const bodies = imageBodiesSince(mark);
     assert.equal(bodies.length, 4);
-    assert.deepEqual(bodies.map((body) => body.prompt), visionPrompts);
+    assert.deepEqual(bodies.map((body) => body.prompt).sort(), [...visionPrompts].sort());
     assert.ok(bodies.every((body) => body.n === 1), 'different mode must request one image per prompt');
     assert.equal(maxInFlight, 2, 'image requests must respect the concurrency cap');
     const visionBody = JSON.parse(calls[mark].bytes);
@@ -221,7 +222,7 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
       .filter((item) => item.url.endsWith('/images/edits'))
       .map(async (item) => new Response(item.bytes, { headers: { 'Content-Type': item.contentType } }).formData()));
     assert.equal(forms.length, 4);
-    assert.deepEqual(forms.map((form) => form.get('prompt')), visionPrompts);
+    assert.deepEqual(forms.map((form) => form.get('prompt')).sort(), [...visionPrompts].sort());
     assert.ok(forms.every((form) => form.get('n') === '1' && form.get('image')));
     assert.equal(maxInFlight, 2);
     const bundle = await request(`/projects/${fixture.projectId}`);
@@ -280,6 +281,115 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
     const result = bundle.messages.find((message) => message.type === 'result');
     assert.equal(result.content.promptMode, 'same');
     assert.equal(bundle.versions.find((item) => item.operation === 'text_to_image').outputs.length, 2);
+  }
+
+  // 10) 变量批量改图逐张入库：第一张完成时即可查询，最终归入同一个版本。
+  {
+    const fixture = await fixtureProject();
+    const mark = calls.length;
+    const started = await request(`/projects/${fixture.projectId}/batch-edit`, {
+      imageId: fixture.imageId,
+      modelId: 'sensenova',
+      template: '生成一致的{{头部}}人身怪物，穿着{{服装}}，其他区域保持不变',
+      quantity: 3,
+      variables: [
+        { name: '头部', values: ['狗头', '驴头', '狮子头'] },
+        { name: '服装', values: ['红色夹克', '蓝色夹克', '绿色夹克'] },
+      ],
+      params: { size: '2048x2048' },
+    }, 202);
+    let incremental;
+    await waitUntil(async () => {
+      incremental = await request(`/projects/${fixture.projectId}/batch-edits/${started.taskId}`);
+      return incremental.status === 'generating' && incremental.completed >= 1 && incremental.completed < incremental.total;
+    });
+    assert.equal(incremental.remaining, incremental.total - incremental.completed - incremental.failed);
+    assert.ok(incremental.estimatedRemainingSeconds > 0);
+    assert.ok(incremental.items.find((item) => item.status === 'success')?.image?.url);
+
+    let finalProgress;
+    await waitUntil(async () => {
+      finalProgress = await request(`/projects/${fixture.projectId}/batch-edits/${started.taskId}`);
+      return finalProgress.status !== 'generating';
+    });
+    assert.equal(finalProgress.status, 'success', finalProgress.error);
+    assert.equal(finalProgress.completed, 3);
+    assert.equal(finalProgress.remaining, 0);
+    assert.deepEqual(finalProgress.variableNames, ['头部', '服装']);
+    assert.deepEqual(finalProgress.items.map((item) => item.values), [
+      { 头部: '狗头', 服装: '红色夹克' },
+      { 头部: '驴头', 服装: '蓝色夹克' },
+      { 头部: '狮子头', 服装: '绿色夹克' },
+    ]);
+    assert.ok(finalProgress.items.every((item) => item.status === 'success' && item.image));
+    const bodies = imageBodiesSince(mark);
+    assert.equal(bodies.length, 3);
+    assert.match(bodies[0].prompt, /“头部”替换为“狗头”.*“服装”替换为“红色夹克”/);
+    assert.match(bodies[1].prompt, /“头部”替换为“驴头”.*“服装”替换为“蓝色夹克”/);
+    assert.match(bodies[2].prompt, /“头部”替换为“狮子头”.*“服装”替换为“绿色夹克”/);
+    assert.ok(bodies.every((body) => body.n === 1 && /变量以外的区域一致/.test(body.prompt)));
+    const bundle = await request(`/projects/${fixture.projectId}`);
+    const version = bundle.versions.find((item) => item.operation === 'batch_edit');
+    assert.equal(version.status, 'success');
+    assert.equal(version.outputs.length, 3);
+    const result = bundle.messages.find((message) => message.type === 'result');
+    assert.equal(result.content.batch.completed, 3);
+    assert.equal(result.content.outputImageIds.length, 3);
+
+    const partialFixture = await fixtureProject();
+    nextImageError = 'temporary invalid item';
+    const partialStarted = await request(`/projects/${partialFixture.projectId}/batch-edit`, {
+      imageId: partialFixture.imageId,
+      modelId: 'sensenova',
+      template: '把{{头部}}放到相同身体上',
+      quantity: 3,
+      values: ['狼头', '熊头', '鹰头'],
+      params: { size: '2048x2048' },
+    }, 202);
+    let partialFinal;
+    await waitUntil(async () => {
+      partialFinal = await request(`/projects/${partialFixture.projectId}/batch-edits/${partialStarted.taskId}`);
+      return partialFinal.status !== 'generating';
+    });
+    assert.equal(partialFinal.status, 'partial');
+    assert.equal(partialFinal.completed, 2);
+    assert.equal(partialFinal.failed, 1);
+    assert.equal(partialFinal.items[0].status, 'failed');
+    assert.ok(partialFinal.items.slice(1).every((item) => item.status === 'success' && item.image));
+
+    const cancelFixture = await fixtureProject();
+    imageDelayMs = 250;
+    const cancelStarted = await request(`/projects/${cancelFixture.projectId}/batch-edit`, {
+      imageId: cancelFixture.imageId,
+      modelId: 'sensenova',
+      template: '保持其他区域一致，只改{{头部}}',
+      quantity: 4,
+      values: ['猫头', '狗头', '牛头', '鹿头'],
+      params: { size: '2048x2048' },
+    }, 202);
+    await waitUntil(async () => (await request(`/projects/${cancelFixture.projectId}/batch-edits/${cancelStarted.taskId}`)).completed >= 1);
+    await request(`/projects/${cancelFixture.projectId}/tasks/${cancelStarted.taskId}/cancel`, {});
+    let canceledProgress;
+    await waitUntil(async () => {
+      canceledProgress = await request(`/projects/${cancelFixture.projectId}/batch-edits/${cancelStarted.taskId}`);
+      return canceledProgress.status !== 'generating';
+    });
+    imageDelayMs = 80;
+    assert.equal(canceledProgress.status, 'canceled');
+    assert.ok(canceledProgress.completed >= 1 && canceledProgress.completed < canceledProgress.total);
+    const canceledBundle = await request(`/projects/${cancelFixture.projectId}`);
+    const canceledVersion = canceledBundle.versions.find((item) => item.operation === 'batch_edit');
+    assert.equal(canceledVersion.status, 'partial');
+    assert.equal(canceledVersion.outputs.length, canceledProgress.completed);
+
+    const invalid = await request(`/projects/${fixture.projectId}/batch-edit`, {
+      imageId: fixture.imageId,
+      modelId: 'sensenova',
+      template: '没有变量的普通提示词',
+      quantity: 2,
+      values: ['甲', '乙'],
+    }, 400);
+    assert.match(invalid.error, /\{\{变量名\}\}/);
   }
 });
 

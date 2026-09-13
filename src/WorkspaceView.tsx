@@ -5,7 +5,7 @@ import { PromptGalleryModal } from './PromptGalleryModal';
 import { sizesForProvider, defaultSizeForProvider, closestSizeForDimensions, isValidSizeForProvider, OUTPUT_FORMATS, type OutputFormat } from './sizes';
 import { useTheme } from './theme';
 import type { GalleryEntry } from './gallery';
-import type { GenerationTask, LocalEditReference, ModelConfig, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
+import type { BatchEditProgress, GenerationTask, LocalEditReference, ModelConfig, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
 
 type Props = {
   projectId: string;
@@ -17,11 +17,73 @@ type Props = {
   onProjectChanged: () => void;
   notify: (message: string, kind?: 'success' | 'error') => void;
 };
-type TaskKind = 'generate' | 'text-edit' | 'local-edit' | 'outpaint' | 'enhance' | 'remove-watermark' | 'extract-asset';
+type TaskKind = 'generate' | 'batch-edit' | 'text-edit' | 'local-edit' | 'outpaint' | 'enhance' | 'remove-watermark' | 'extract-asset';
 const localEditStages = { planning: '视觉模型正在理解选区与修改意图、定位主体…', compositing: '正在裁剪参考主体并合成到目标位置…', generating: '图片模型正在完成局部修改与自然融合…', preserving: '正在还原框外原图并保存结果…' };
 
-const operationLabels: Record<string, string> = { auto: '自动识别', upload: '上传原图', text_to_image: '文生图', image_to_image: '图生图', edit_prompt: '提示词改图', edit_text: '文字编辑', local_edit: '局部修改', outpaint: '扩图', enhance: '变清晰', remove_watermark: '去水印', extract_asset: '提取素材' };
+const operationLabels: Record<string, string> = { auto: '自动识别', upload: '上传原图', text_to_image: '文生图', image_to_image: '图生图', edit_prompt: '提示词改图', batch_edit: '批量改图', edit_text: '文字编辑', local_edit: '局部修改', outpaint: '扩图', enhance: '变清晰', remove_watermark: '去水印', extract_asset: '提取素材' };
 const formatTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+
+function batchVariableNames(template: string) {
+  return [...new Set([...template.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map((match) => match[1].trim()).filter(Boolean))];
+}
+
+function createBatchVariableToken(name: string) {
+  const token = document.createElement('span');
+  token.className = 'batch-variable-token';
+  token.contentEditable = 'false';
+  token.dataset.batchVariable = name;
+  token.append(document.createTextNode(name));
+  const remove = document.createElement('span');
+  remove.className = 'batch-variable-remove';
+  remove.dataset.removeBatchVariable = 'true';
+  remove.title = `移除${name}`;
+  remove.textContent = '×';
+  token.append(remove);
+  return token;
+}
+
+function renderBatchTemplateEditor(editor: HTMLDivElement, template: string) {
+  const fragment = document.createDocumentFragment();
+  const marker = /\{\{\s*([^{}]+?)\s*\}\}/g;
+  let offset = 0;
+  for (const match of template.matchAll(marker)) {
+    const index = match.index || 0;
+    if (index > offset) fragment.append(document.createTextNode(template.slice(offset, index)));
+    fragment.append(createBatchVariableToken(match[1].trim()));
+    offset = index + match[0].length;
+  }
+  if (offset < template.length) fragment.append(document.createTextNode(template.slice(offset)));
+  editor.replaceChildren(fragment);
+}
+
+function serializeBatchTemplateEditor(editor: HTMLDivElement) {
+  const read = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+    if (!(node instanceof HTMLElement)) return '';
+    if (node.dataset.batchVariable) return `{{${node.dataset.batchVariable}}}`;
+    if (node.tagName === 'BR') return '\n';
+    const content = [...node.childNodes].map(read).join('');
+    return ['DIV', 'P'].includes(node.tagName) ? `\n${content}` : content;
+  };
+  return [...editor.childNodes].map(read).join('').replaceAll('\u200b', '').replace(/^\n/, '');
+}
+
+function nextBatchVariableName(names: string[]) {
+  let index = 1;
+  while (names.includes(`变量${index}`)) index += 1;
+  return `变量${index}`;
+}
+
+function batchItemValueLabel(values: Record<string, string>) {
+  return Object.entries(values).map(([name, value]) => `${name}：${value}`).join(' · ');
+}
+
+function formatRemainingTime(seconds: number | null) {
+  if (seconds == null) return '正在估算…';
+  if (seconds < 60) return `约 ${seconds} 秒`;
+  const minutes = Math.ceil(seconds / 60);
+  return `约 ${minutes} 分钟`;
+}
 
 // 素材提取截图：把圈选区域按百分比换算为原图像素后用 canvas 截取。
 // 模型平台要求输入图宽高在 256–4096px 且宽高比不超过 2:1，因此截图上限
@@ -256,6 +318,12 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('png');
   const [transparentBg, setTransparentBg] = useState(false);
   const [count, setCount] = useState(1);
+  const [batchEditOpen, setBatchEditOpen] = useState(false);
+  const [batchTemplate, setBatchTemplate] = useState('');
+  const [batchQuantity, setBatchQuantity] = useState(10);
+  const [batchVariableValues, setBatchVariableValues] = useState<Record<string, string[]>>({});
+  const [batchSubmitting, setBatchSubmitting] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<BatchEditProgress | null>(null);
   const [currentImageId, setCurrentImageId] = useState<string | null>(null);
   const [inputImageId, setInputImageId] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<{ id: string | null; kind: TaskKind; stage?: GenerationTask['stage'] } | null>(null);
@@ -305,6 +373,8 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const messagesEnd = useRef<HTMLDivElement>(null);
   const initialized = useRef(false);
   const pollTimer = useRef<number | null>(null);
+  const batchProcessed = useRef(0);
+  const batchTemplateEditorRef = useRef<HTMLDivElement>(null);
   const boxStart = useRef<{ x: number; y: number } | null>(null);
   const localBoxStart = useRef<{ x: number; y: number } | null>(null);
   const extractBoxStart = useRef<{ x: number; y: number } | null>(null);
@@ -316,6 +386,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const inputImage = inputImageId ? imageMap.get(inputImageId) || null : null;
   const currentVersion = bundle?.versions.find((version) => version.outputs.some((image) => image.id === currentImageId));
   const selectedModel = imageModels.find((model) => model.id === modelId);
+  const batchEditSupported = Boolean(selectedModel?.capabilities.includes('edit_prompt'));
   const selectedVisionModel = visionModels.find((model) => model.id === visionModelId);
   const compareImage = compareImageId ? imageMap.get(compareImageId) || null : null;
   const textImage = textImageId ? imageMap.get(textImageId) || null : null;
@@ -323,6 +394,26 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const versionsByNumber = [...(bundle?.versions || [])].sort((left, right) => left.number - right.number);
   const versionById = new Map((bundle?.versions || []).map((version) => [version.id, version]));
   const inputVersion = inputImage?.versionId ? versionById.get(inputImage.versionId) : null;
+  const batchSourceImage = inputImage || currentImage;
+  const detectedBatchVariables = batchVariableNames(batchTemplate);
+  const batchRows = Array.from({ length: batchQuantity }, (_, index) => Object.fromEntries(
+    detectedBatchVariables.map((name) => [name, String(batchVariableValues[name]?.[index] || '').trim()]),
+  ));
+  const batchExpectedValueCount = batchQuantity * detectedBatchVariables.length;
+  const batchFilledCount = batchRows.reduce((count, row) => count + Object.values(row).filter(Boolean).length, 0);
+  const batchTemplateWithoutVariables = batchTemplate.replace(/\{\{\s*[^{}]+?\s*\}\}/g, '');
+  const batchTemplateHasInvalidVariables = /\{\{|\}\}/.test(batchTemplateWithoutVariables);
+  const batchValidationError = !batchTemplate.trim()
+    ? '请输入带变量的提示词模板'
+    : batchTemplateHasInvalidVariables
+      ? '变量标签格式不完整，请删除后重新插入'
+      : !detectedBatchVariables.length
+        ? '请在提示词中插入至少一个变量'
+        : detectedBatchVariables.length > 10
+          ? '一个模板最多支持 10 个变量'
+          : batchFilledCount !== batchExpectedValueCount
+            ? `需要填写 ${batchExpectedValueCount} 个变量值，当前已填写 ${batchFilledCount} 个`
+            : null;
   const parentImage = useMemo(() => {
     if (!bundle || !currentVersion?.parentVersionId) return null;
     const parent = versionById.get(currentVersion.parentVersionId);
@@ -343,6 +434,38 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setActiveTask({ id: taskId, kind });
     pollTimer.current = window.setInterval(async () => {
       try {
+        if (kind === 'batch-edit') {
+          const progress = await api.getBatchEdit(projectId, taskId);
+          const processed = progress.completed + progress.failed;
+          if (processed > batchProcessed.current) {
+            batchProcessed.current = processed;
+            const incremental = await api.getProject(projectId);
+            setBundle(incremental);
+            if (incremental.project.currentImageId) {
+              setCurrentImageId(incremental.project.currentImageId);
+              setInputImageId(incremental.project.currentImageId);
+            }
+          }
+          setBatchProgress(progress);
+          if (progress.status === 'generating') {
+            setActiveTask((current) => current?.id === taskId ? current : { id: taskId, kind });
+            return;
+          }
+          stopPolling();
+          setActiveTask(null);
+          const data = await api.getProject(projectId);
+          setBundle(data);
+          if (data.project.currentImageId) {
+            setCurrentImageId(data.project.currentImageId);
+            setInputImageId(data.project.currentImageId);
+          }
+          if (progress.status === 'success') notify(`批量改图已完成，共 ${progress.completed} 张。`, 'success');
+          else if (progress.status === 'partial') notify(`批量改图完成 ${progress.completed}/${progress.total} 张，${progress.failed} 张失败。`, 'error');
+          else if (progress.status === 'canceled') notify(`批量改图已取消，保留 ${progress.completed} 张结果。`, 'error');
+          else notify(progress.error || '批量改图失败，请重试。', 'error');
+          onProjectChanged();
+          return;
+        }
         const task = await api.getTask(projectId, taskId);
         if (task.status === 'generating') {
           setActiveTask((current) => current?.id === taskId ? { ...current, stage: task.stage } : current);
@@ -383,10 +506,15 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         }
         onProjectChanged();
       } catch { /* transient network error: keep polling */ }
-    }, 1500);
+    }, kind === 'batch-edit' ? 900 : 1500);
   }, [projectId, notify, onProjectChanged, stopPolling]);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
+
+  useEffect(() => {
+    if (!batchEditOpen || !batchTemplateEditorRef.current) return;
+    renderBatchTemplateEditor(batchTemplateEditorRef.current, batchTemplate);
+  }, [batchEditOpen]);
 
   useEffect(() => {
     setLoading(true);
@@ -407,7 +535,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       setInputImageId(String(draft.inputImageId || '') || null);
       initialized.current = true;
       const task = taskData.tasks[0];
-      if (task) startPolling(task.id, task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'outpaint' ? 'outpaint' : task.operationType === 'enhance' ? 'enhance' : task.operationType === 'remove_watermark' ? 'remove-watermark' : task.operationType === 'extract_asset' ? 'extract-asset' : 'generate');
+      if (task) startPolling(task.id, task.operationType === 'batch_edit' ? 'batch-edit' : task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'outpaint' ? 'outpaint' : task.operationType === 'enhance' ? 'enhance' : task.operationType === 'remove_watermark' ? 'remove-watermark' : task.operationType === 'extract_asset' ? 'extract-asset' : 'generate');
     }).catch((error) => notify(error.message, 'error')).finally(() => setLoading(false));
   }, [projectId, activeModel, activeVisionModel, startPolling, notify]);
 
@@ -916,6 +1044,115 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     }
   }
 
+  function openBatchEdit() {
+    if (!batchSourceImage || !batchEditSupported || generating) return;
+    setBatchTemplate((current) => current || prompt.trim());
+    setBatchEditOpen(true);
+  }
+
+  function syncBatchTemplateEditor() {
+    const editor = batchTemplateEditorRef.current;
+    if (editor) setBatchTemplate(serializeBatchTemplateEditor(editor));
+  }
+
+  function insertBatchVariable() {
+    const editor = batchTemplateEditorRef.current;
+    if (!editor || detectedBatchVariables.length >= 10) return;
+    editor.focus();
+    const currentTemplate = serializeBatchTemplateEditor(editor);
+    const name = nextBatchVariableName(batchVariableNames(currentTemplate));
+    const token = createBatchVariableToken(name);
+    const spacer = document.createTextNode('\u200b');
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : document.createRange();
+    if (!selection?.rangeCount || !editor.contains(range.commonAncestorContainer)) {
+      range.selectNodeContents(editor);
+      range.collapse(false);
+    }
+    range.deleteContents();
+    range.insertNode(token);
+    token.after(spacer);
+    range.setStartAfter(spacer);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    setBatchVariableValues((current) => ({
+      ...current,
+      [name]: current[name] || Array.from({ length: batchQuantity }, () => ''),
+    }));
+    syncBatchTemplateEditor();
+  }
+
+  function handleBatchTemplateClick(event: React.MouseEvent<HTMLDivElement>) {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const remove = target?.closest<HTMLElement>('[data-remove-batch-variable]');
+    const token = remove?.closest<HTMLElement>('[data-batch-variable]');
+    if (!token) return;
+    event.preventDefault();
+    token.remove();
+    syncBatchTemplateEditor();
+    batchTemplateEditorRef.current?.focus();
+  }
+
+  function handleBatchTemplatePaste(event: React.ClipboardEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const editor = batchTemplateEditorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection?.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) return;
+    const node = document.createTextNode(event.clipboardData.getData('text/plain'));
+    range.deleteContents();
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    syncBatchTemplateEditor();
+  }
+
+  function changeBatchQuantity(value: number) {
+    const next = Math.min(50, Math.max(2, Math.trunc(value || 2)));
+    setBatchQuantity(next);
+    setBatchVariableValues((current) => Object.fromEntries(Object.entries(current).map(([name, values]) => [
+      name,
+      values.length >= next ? values : [...values, ...Array.from({ length: next - values.length }, () => '')],
+    ])));
+  }
+
+  function updateBatchValue(name: string, index: number, value: string) {
+    setBatchVariableValues((current) => {
+      const values = [...(current[name] || Array.from({ length: batchQuantity }, () => ''))];
+      values[index] = value;
+      return { ...current, [name]: values };
+    });
+  }
+
+  async function submitBatchEdit() {
+    if (!batchSourceImage || !batchEditSupported || batchValidationError || batchSubmitting || generating) return;
+    setBatchSubmitting(true);
+    try {
+      const result = await api.startBatchEdit(projectId, {
+        imageId: batchSourceImage.id,
+        modelId,
+        parentVersionId: batchSourceImage.versionId,
+        template: batchTemplate.trim(),
+        quantity: batchQuantity,
+        variables: detectedBatchVariables.map((name) => ({ name, values: batchRows.map((row) => row[name]) })),
+        params: { size, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: transparentBg },
+      });
+      batchProcessed.current = 0;
+      setBatchProgress(null);
+      setBatchEditOpen(false);
+      startPolling(result.taskId, 'batch-edit');
+      notify('批量改图已开始，生成结果会逐张出现。', 'success');
+    } catch (error) {
+      notify((error as Error).message, 'error');
+    } finally {
+      setBatchSubmitting(false);
+    }
+  }
+
   async function cancelActiveTask() {
     if (!activeTask?.id) return;
     try { await api.cancelTask(projectId, activeTask.id); notify('正在取消…', 'success'); }
@@ -1003,7 +1240,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         <aside className="versions-panel">
           <div className="workspace-panel-title"><div><p className="eyebrow">VERSIONS</p><h2>历史版本</h2></div><span>{bundle.versions.length}</span></div>
           <div className="version-list">
-            {bundle.versions.map((version) => <VersionItem key={version.id} version={version} active={version.id === currentVersion?.id} onSelect={() => chooseVersion(version)} onEdit={() => editVersion(version)} onDownload={() => api.downloadVersionImages(projectId, version.id)} onDelete={() => void removeVersion(version)} />)}
+            {bundle.versions.map((version) => <VersionItem key={version.id} version={version} active={version.id === currentVersion?.id} onSelect={() => chooseVersion(version)} onEdit={() => editVersion(version)} onDownload={() => api.downloadVersionImages(projectId, version.id)} onDelete={() => version.status === 'generating' ? notify('该批量版本仍在生成，请先取消或等待完成。', 'error') : void removeVersion(version)} />)}
             {!bundle.versions.length && <div className="small-empty"><span><Icon name="image" size={22} /></span><p>生成第一张图片后，版本会出现在这里。</p></div>}
           </div>
           <button className="version-tree-button" disabled={!bundle.versions.length} onClick={() => setVersionTreeOpen(true)}><Icon name="tree" size={15} /> 查看版本关系</button>
@@ -1037,7 +1274,22 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
             {outpaintMode && currentImage && <section className="outpaint-panel"><div className="outpaint-panel-head"><div><strong>扩图</strong><span>选择当前模型支持的目标画布比例</span></div><button className="outpaint-exit" onClick={closeOutpaint}><Icon name="close" size={13} /> 退出</button></div><div className="outpaint-size-list">{sizesForProvider(provider).map((option) => <button key={option.value} className={option.value === outpaintSize ? 'active' : ''} onClick={() => setOutpaintSize(option.value)}><strong>{option.ratio}</strong><span>{option.value}</span></button>)}</div><p className="outpaint-summary">原图将居中保留，绿色虚线框内的新增区域会由模型自然延展补全。</p><div className="outpaint-panel-actions"><button className="button secondary" onClick={closeOutpaint}>取消</button><button className="button primary" disabled={!outpaintSize || outpaintSubmitting || generating} onClick={() => void submitOutpaint()}>{outpaintSubmitting ? '正在创建扩图任务…' : '确认扩图'}</button></div></section>}
             {(extractMode || extractRect) && !extractDragging && currentImage && <section className="extract-panel"><div className="extract-panel-head"><div><strong>提取素材</strong><span>{extractRect ? '识别模型会聚焦框选主体，并剔除圈入的边缘干扰' : '可从图片内外起拖，框选想提取的内容'}</span></div><button className="extract-exit" onClick={closeExtract}><Icon name="close" size={13} /> 退出</button></div>{extractRect && <><div className="extract-preview">{extractPreview ? <img src={extractPreview.dataUrl} alt="提取区域截图预览" /> : <span className="extract-preview-loading"><span className="spinner" />正在生成截图…</span>}{extractPreview && <small>{extractPreview.padded ? '已自动补边 · ' : ''}{extractPreview.width} × {extractPreview.height}</small>}</div><textarea value={extractHint} onChange={(event) => setExtractHint(event.target.value)} placeholder="可选补充说明，例如：只要中间的银幕，去掉两侧的座椅" rows={2} /><div className="extract-panel-actions"><button className="button secondary" onClick={() => { setExtractRect(null); setExtractPreview(null); }}>重新框选</button><button className="button primary" disabled={!extractPreview || extractSubmitting || generating} onClick={() => void submitExtract()}>{extractSubmitting ? '正在识别与规划…' : '提取为独立素材'}</button></div></>}</section>}
           </div>
-          {currentVersion && currentVersion.outputs.length > 1 && <div className="candidate-strip"><span>本轮候选</span>{currentVersion.outputs.map((image, index) => <button key={image.id} className={image.id === currentImageId ? 'active' : ''} title="查看并使用这张候选图继续创作" onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt={`候选结果 ${index + 1}`} loading="lazy" /></button>)}</div>}
+          {batchProgress && <section className={`batch-progress-panel ${batchProgress.status}`} aria-live="polite">
+            <div className="batch-progress-head">
+              <div><strong>批量改图 · {batchProgress.completed}/{batchProgress.total}</strong><span>{batchProgress.status === 'generating' ? `剩余 ${batchProgress.remaining} 张 · ${formatRemainingTime(batchProgress.estimatedRemainingSeconds)}` : batchProgress.status === 'success' ? '全部生成完成' : batchProgress.status === 'partial' ? `已结束 · ${batchProgress.failed} 张失败` : batchProgress.status === 'canceled' ? '已取消' : '生成失败'}</span></div>
+              {batchProgress.status === 'generating' ? <button className="button secondary" onClick={() => void cancelActiveTask()}>取消批次</button> : <button className="icon-button" title="收起批量结果" onClick={() => setBatchProgress(null)}><Icon name="close" size={14} /></button>}
+            </div>
+            <div className="batch-progress-track"><span style={{ width: `${Math.round(((batchProgress.completed + batchProgress.failed) / Math.max(1, batchProgress.total)) * 100)}%` }} /></div>
+            <div className="batch-result-list">
+              {batchProgress.items.map((item) => {
+                const valueLabel = batchItemValueLabel(item.values);
+                return item.image
+                  ? <button key={item.index} className="batch-result-item success" title={valueLabel} onClick={() => useImage(item.image!)}><img src={thumbUrl(item.image, 220)} alt={`${valueLabel} 批量结果`} /><span>{item.index + 1}. {valueLabel}</span></button>
+                  : <div key={item.index} className={`batch-result-item ${item.status}`} title={item.error || undefined}><span className="batch-result-placeholder">{item.status === 'generating' ? <span className="spinner" /> : item.status === 'failed' ? '!' : item.status === 'canceled' ? '×' : item.index + 1}</span><span>{item.index + 1}. {valueLabel}</span>{item.status === 'failed' && <small>失败</small>}{item.status === 'canceled' && <small>取消</small>}</div>;
+              })}
+            </div>
+          </section>}
+          {currentVersion && currentVersion.outputs.length > 1 && batchProgress?.versionId !== currentVersion.id && <div className="candidate-strip"><span>本轮候选</span>{currentVersion.outputs.map((image, index) => <button key={image.id} className={image.id === currentImageId ? 'active' : ''} title="查看并使用这张候选图继续创作" onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt={`候选结果 ${index + 1}`} loading="lazy" /></button>)}</div>}
         </section>
 
         <aside className="conversation-panel">
@@ -1047,14 +1299,14 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
               if (message.role === 'system') return <div className="system-message" key={message.id}>{message.content.text}</div>;
               if (message.role === 'user') {
                 const attached = message.content.inputImageId ? imageMap.get(message.content.inputImageId) : null;
-                return <article className="message user-message" key={message.id}><div className="message-meta"><strong>你</strong><span>{formatTime(message.createdAt)}</span></div>{attached && <img className="message-attachment" src={thumbUrl(attached)} alt="输入图片" loading="lazy" />}<p>{message.content.prompt || '基于所选图片继续创作'}</p><div className="message-params"><span>{operationLabels[message.content.operation || 'auto']}</span><span>{message.content.modelName}</span>{message.content.splitPrompts && <span>每张不同</span>}</div></article>;
+                return <article className="message user-message" key={message.id}><div className="message-meta"><strong>你</strong><span>{formatTime(message.createdAt)}</span></div>{attached && <img className="message-attachment" src={thumbUrl(attached)} alt="输入图片" loading="lazy" />}<p>{message.content.prompt || '基于所选图片继续创作'}</p><div className="message-params"><span>{operationLabels[message.content.operation || 'auto']}</span><span>{message.content.modelName}</span>{message.content.batch?.values && <span>{message.content.batch.values.length} 个变量值</span>}{message.content.splitPrompts && <span>每张不同</span>}</div></article>;
               }
               if (message.type === 'canceled') return <article className="message canceled-message" key={message.id}><div className="message-meta"><strong>已取消</strong><span>{formatTime(message.createdAt)}</span></div><p>{message.content.message}</p>{message.content.prompt && <button onClick={() => setPrompt(message.content.prompt || '')}>恢复提示词</button>}</article>;
               if (message.type === 'error') return <article className="message error-message" key={message.id}><div className="message-meta"><strong>生成失败</strong><span>{formatTime(message.createdAt)}</span></div><p>{message.content.message}</p><button onClick={() => setPrompt(message.content.prompt || '')}>恢复提示词</button></article>;
               const outputs = (message.content.outputImageIds || []).map((id) => imageMap.get(id)).filter(Boolean) as ProjectImage[];
-              return <article className="message assistant-message" key={message.id}><div className="message-meta"><strong>Layerive</strong><span>V{message.content.versionNumber} · {formatTime(message.createdAt)}</span></div><p>已完成生成，得到 {outputs.length} 张候选图片。</p><div className={`message-gallery count-${outputs.length}`}>{outputs.map((image, index) => <button key={image.id} title={message.content.prompts?.[index] ? `本张提示词：${message.content.prompts[index]}` : '查看并使用这张候选图继续创作'} onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt="生成结果" loading="lazy" /></button>)}</div><div className="message-actions"><button onClick={() => { const first = outputs[0]; if (first) useImage(first); }}>使用此轮继续</button><button onClick={() => setPrompt(message.content.prompt || '')}>复用提示词</button></div></article>;
+              return <article className="message assistant-message" key={message.id}><div className="message-meta"><strong>Layerive</strong><span>V{message.content.versionNumber} · {formatTime(message.createdAt)}</span></div><p>{message.content.operation === 'batch_edit' ? `批量改图已生成 ${outputs.length} 张${message.content.batch?.failed ? `，${message.content.batch.failed} 张失败` : ''}。` : `已完成生成，得到 ${outputs.length} 张候选图片。`}</p><div className={`message-gallery count-${outputs.length}`}>{outputs.map((image, index) => <button key={image.id} title={message.content.prompts?.[index] ? `本张提示词：${message.content.prompts[index]}` : '查看并使用这张候选图继续创作'} onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt="生成结果" loading="lazy" /></button>)}</div><div className="message-actions"><button onClick={() => { const first = outputs[0]; if (first) useImage(first); }}>使用此轮继续</button><button onClick={() => setPrompt(message.content.prompt || '')}>复用提示词</button></div></article>;
             })}
-            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? '正在生成' : '正在准备'}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind === 'local-edit' ? localEditStages[activeTask.stage || 'planning'] : activeTask?.kind === 'text-edit' && !activeTask.id ? '视觉模型正在整理文字修改要求，随后将自动开始改图。' : activeTask?.kind === 'generate' && activeTask.stage === 'planning' ? '视觉模型正在判断多图意图，随后会自动选择普通候选或分别生成。' : `${selectedModel?.name || '图片模型'} 正在创作 ${count} 张图片，完成后会自动保存为同一版本的候选图。`}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>取消任务</button>}</article>}
+            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? '正在生成' : '正在准备'}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind === 'batch-edit' ? `批量改图正在逐张处理${batchProgress ? `，已完成 ${batchProgress.completed}/${batchProgress.total} 张` : ''}。结果会实时显示在画布下方。` : activeTask?.kind === 'local-edit' ? localEditStages[activeTask.stage || 'planning'] : activeTask?.kind === 'text-edit' && !activeTask.id ? '视觉模型正在整理文字修改要求，随后将自动开始改图。' : activeTask?.kind === 'generate' && activeTask.stage === 'planning' ? '视觉模型正在判断多图意图，随后会自动选择普通候选或分别生成。' : `${selectedModel?.name || '图片模型'} 正在创作 ${count} 张图片，完成后会自动保存为同一版本的候选图。`}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>取消任务</button>}</article>}
             <div ref={messagesEnd} />
           </div>
 
@@ -1068,6 +1320,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
             <div className="composer-tools">
               <div className="composer-left">
                 <button className="attach-button" onClick={() => fileRef.current?.click()} disabled={uploading} aria-label="上传图片">{uploading ? '…' : <Icon name="plus" size={16} />}</button>
+                <button type="button" className="bg-toggle batch-edit-launch" disabled={!batchSourceImage || !batchEditSupported || generating} title={!batchSourceImage ? '请先上传或选择一张参考图' : !batchEditSupported ? '当前模型不支持提示词改图' : '用同一张参考图和变量词条逐张批量改图'} onClick={openBatchEdit}>批量改图</button>
                 <select value={operation} onChange={(event) => setOperation(event.target.value)}><option value="auto">自动识别</option><option value="text_to_image">文生图</option><option value="image_to_image">图生图</option><option value="edit_prompt">提示词改图</option></select>
                 <select value={size} onChange={(event) => setSize(event.target.value)} title="生成尺寸（宽高比）">
                   {sizesForProvider(provider).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}
@@ -1085,6 +1338,28 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           </div>
         </aside>
       </section>
+
+      {batchEditOpen && batchSourceImage && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !batchSubmitting && setBatchEditOpen(false)}>
+        <section className="batch-edit-modal" role="dialog" aria-modal="true" aria-labelledby="batch-edit-title">
+          <div className="modal-heading">
+            <div><p className="eyebrow">VARIABLE BATCH EDIT</p><h2 id="batch-edit-title">批量改图</h2><small>每张都以同一参考图为基准，仅替换变量内容，其他区域与风格保持一致。</small></div>
+            <button className="icon-button" disabled={batchSubmitting} onClick={() => setBatchEditOpen(false)}><Icon name="close" size={16} /></button>
+          </div>
+          <div className="batch-edit-source"><img src={thumbUrl(batchSourceImage)} alt="批量改图参考图" /><div><strong>统一参考图</strong><span>{batchSourceImage.width || '—'} × {batchSourceImage.height || '—'} · {selectedModel?.name || '当前图片模型'}</span></div></div>
+          <div className="field batch-template-field">
+            <div className="batch-field-heading"><span>提示词模板</span><button type="button" disabled={detectedBatchVariables.length >= 10} onMouseDown={(event) => event.preventDefault()} onClick={insertBatchVariable}><Icon name="plus" size={13} /> 插入变量</button></div>
+            <div ref={batchTemplateEditorRef} className="batch-template-editor" contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label="批量改图提示词模板" data-placeholder="例如：生成一致的怪物，头部为［变量］，服装为［变量］" onInput={syncBatchTemplateEditor} onClick={handleBatchTemplateClick} onPaste={handleBatchTemplatePaste} />
+            <small>在光标处可插入多个紫色变量标签；标签本身不可编辑，点击标签内的 × 可移除。</small>
+          </div>
+          <label className="field batch-quantity-field"><span>生成数量</span><input type="number" min="2" max="50" value={batchQuantity} onChange={(event) => changeBatchQuantity(Number(event.target.value))} /><small>支持 2–50 张；数量会同步增减下方输入框。</small></label>
+          <div className="field batch-values-field"><span>变量值</span>{detectedBatchVariables.length
+            ? <div className="batch-value-table"><div className="batch-value-row batch-value-header" style={{ gridTemplateColumns: `64px repeat(${detectedBatchVariables.length}, minmax(132px, 1fr))` }}><span>图片</span>{detectedBatchVariables.map((name) => <strong key={name}>{name}</strong>)}</div>{batchRows.map((row, index) => <div key={index} className="batch-value-row" style={{ gridTemplateColumns: `64px repeat(${detectedBatchVariables.length}, minmax(132px, 1fr))` }}><span>第 {index + 1} 张</span>{detectedBatchVariables.map((name) => <input key={name} className={row[name] ? 'filled' : ''} value={batchVariableValues[name]?.[index] || ''} onChange={(event) => updateBatchValue(name, index, event.target.value)} placeholder={index === 0 ? `输入${name}` : ''} aria-label={`第 ${index + 1} 张的${name}`} />)}</div>)}</div>
+            : <div className="batch-values-empty">插入变量后，这里会按“图片 × 变量”生成输入框。</div>}<small className={batchExpectedValueCount > 0 && batchFilledCount === batchExpectedValueCount ? 'valid' : ''}>已填写 {batchFilledCount} / {batchExpectedValueCount} 个输入框</small></div>
+          <div className="batch-edit-note"><Icon name="sparkle" size={15} /><span>任务会按词条顺序逐张生成。每完成一张就立即保存并展示，失败项不会阻断后续图片；每个词条都会独立调用一次模型，可能按张计费。</span></div>
+          {batchValidationError && <p className="batch-validation-error">{batchValidationError}</p>}
+          <div className="modal-actions"><button className="button secondary" disabled={batchSubmitting} onClick={() => setBatchEditOpen(false)}>取消</button><button className="button primary" disabled={Boolean(batchValidationError) || batchSubmitting} onClick={() => void submitBatchEdit()}>{batchSubmitting ? '正在创建批次…' : `开始生成 ${batchQuantity} 张`}</button></div>
+        </section>
+      </div>}
 
       {compareOpen && currentImage && compareImage && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setCompareOpen(false)}>
         <section className="compare-modal" role="dialog" aria-modal="true" aria-labelledby="compare-title">

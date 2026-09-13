@@ -1,4 +1,4 @@
-import type { GenerateResult, GenerationTask, GalleryEntryItem, LocalEditReference, ModelConfig, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
+import type { BatchEditProgress, BatchEditResult, GenerateResult, GenerationTask, GalleryEntryItem, LocalEditReference, ModelConfig, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -49,6 +49,9 @@ export const api = {
     downloadFile(`/api/projects/${projectId}/versions/${versionId}/download`),
   generate: (id: string, input: Record<string, unknown>) =>
     request<GenerateResult>(`/api/projects/${id}/generate`, { method: 'POST', body: JSON.stringify(input) }),
+  startBatchEdit: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; template: string; quantity: number; variables: Array<{ name: string; values: string[] }>; params?: Record<string, unknown> }) =>
+    request<BatchEditResult>(`/api/projects/${id}/batch-edit`, { method: 'POST', body: JSON.stringify(input) }),
+  getBatchEdit: (id: string, taskId: string) => request<BatchEditProgress>(`/api/projects/${id}/batch-edits/${taskId}`),
   listGeneratingTasks: (id: string) => request<{ tasks: GenerationTask[] }>(`/api/projects/${id}/tasks`),
   getTask: (id: string, taskId: string) => request<GenerationTask>(`/api/projects/${id}/tasks/${taskId}`),
   cancelTask: (id: string, taskId: string) => request<{ ok: boolean; status: string }>(`/api/projects/${id}/tasks/${taskId}/cancel`, { method: 'POST' }),

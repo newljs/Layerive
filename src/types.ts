@@ -62,6 +62,7 @@ export type Message = {
     versionNumber?: number;
     message?: string;
     params?: Record<string, unknown>;
+    batch?: { variableName?: string; variableNames?: string[]; values?: string[]; variables?: Array<{ name: string; values: string[] }>; completed?: number; failed?: number; canceled?: boolean };
   };
   createdAt: string;
 };
@@ -109,6 +110,37 @@ export type GenerationTask = {
 export type LocalEditReference = { data: string; mimeType: string; name?: string };
 
 export type GenerateResult = { taskId: string; status: string; userMessageId: string };
+
+export type BatchEditItem = {
+  index: number;
+  values: Record<string, string>;
+  status: 'pending' | 'generating' | 'success' | 'failed' | 'canceled';
+  image: ProjectImage | null;
+  error: string | null;
+  durationMs: number | null;
+};
+
+export type BatchEditProgress = {
+  id: string;
+  status: 'generating' | 'success' | 'partial' | 'failed' | 'canceled';
+  versionId: string | null;
+  versionNumber: number | null;
+  template: string;
+  variableNames: string[];
+  total: number;
+  completed: number;
+  failed: number;
+  remaining: number;
+  currentIndex: number | null;
+  estimatedRemainingSeconds: number | null;
+  items: BatchEditItem[];
+  error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+export type BatchEditResult = GenerateResult & { versionId: string };
 
 export type GalleryEntryItem = {
   id: string;
