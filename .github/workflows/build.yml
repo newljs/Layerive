@@ -39,6 +39,8 @@ jobs:
 
       - run: npm run build
 
+      - run: npm test
+
       # sharp is native: before packaging, reinstall with optional binaries
       # for the TARGET architecture so extraResources ships the right build.
       - run: npm ci --cpu=${{ matrix.arch }}

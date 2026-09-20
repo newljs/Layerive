@@ -87,11 +87,6 @@ export default function App() {
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
-  async function testModel(id: string) {
-    try { const result = await api.testModel(id); return `✓ ${result.message} · ${result.latency}ms`; }
-    catch (error) { return `连接失败：${(error as Error).message}`; }
-  }
-
   async function testModelConfig(model: Partial<ModelConfig>) {
     try { const result = await api.testModelConfig(model); return `✓ ${result.message} · ${result.latency}ms`; }
     catch (error) { return `连接失败：${(error as Error).message}`; }
@@ -105,7 +100,7 @@ export default function App() {
   return (
     <>
       {view.name === 'home' && <HomeView projects={projects} loading={loading} onOpen={(projectId) => setView({ name: 'workspace', projectId })} onCreate={createProject} onDelete={deleteProject} onDuplicate={duplicateProject} onImport={importProject} onRefreshProjects={refreshProjects} onModels={() => setView({ name: 'models' })} notify={notify} />}
-      {view.name === 'models' && <ModelConfigView models={models} activeModel={activeModel} activeVisionModel={activeVisionModel} onBack={() => view.backTo ? setView({ name: 'workspace', projectId: view.backTo }) : setView({ name: 'home' })} onSave={saveModel} onDelete={deleteModel} onActivate={activateModel} onActivateVision={activateVisionModel} onTest={testModel} onTestConfig={testModelConfig} onRevealApiKey={revealModelApiKey} />}
+      {view.name === 'models' && <ModelConfigView models={models} activeModel={activeModel} activeVisionModel={activeVisionModel} onBack={() => view.backTo ? setView({ name: 'workspace', projectId: view.backTo }) : setView({ name: 'home' })} onSave={saveModel} onDelete={deleteModel} onActivate={activateModel} onActivateVision={activateVisionModel} onTestConfig={testModelConfig} onRevealApiKey={revealModelApiKey} />}
       {view.name === 'workspace' && <WorkspaceView projectId={view.projectId} models={models} activeModel={activeModel} activeVisionModel={activeVisionModel} onBack={() => { setView({ name: 'home' }); void refreshProjects(); }} onModels={() => setView({ name: 'models', backTo: view.projectId })} onProjectChanged={handleProjectChanged} notify={notify} />}
       {toast && <div className={`toast ${toast.kind}`} role="status"><span>{toast.kind === 'success' ? '✓' : '!'}</span>{toast.message}</div>}
     </>

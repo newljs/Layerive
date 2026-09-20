@@ -387,6 +387,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const boxStart = useRef<{ x: number; y: number } | null>(null);
   const localBoxStart = useRef<{ x: number; y: number } | null>(null);
   const extractBoxStart = useRef<{ x: number; y: number } | null>(null);
+  const bundleRef = useRef<ProjectBundle | null>(null);
+  const draftSnapshot = useRef<Record<string, unknown>>({});
+  const draftCacheKey = `layerive-draft:${projectId}`;
 
   const generating = activeTask !== null;
   const visionBusy = generating || recognizingText || textEditSubmitting || localEditSubmitting || extractSubmitting || removingWatermark || savingToGallery;
@@ -404,6 +407,8 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const versionsByNumber = [...(bundle?.versions || [])].sort((left, right) => left.number - right.number);
   const versionById = new Map((bundle?.versions || []).map((version) => [version.id, version]));
   const inputVersion = inputImage?.versionId ? versionById.get(inputImage.versionId) : null;
+  bundleRef.current = bundle;
+  draftSnapshot.current = { draft: { prompt, stylePrompt, operation, modelId, visionModelId, size, outputFormat, transparentBg, count, inputImageId }, currentImageId, defaultModelId: modelId };
   const detectedBatchVariables = batchVariableNames(batchTemplate);
   const batchRows = Array.from({ length: batchQuantity }, (_, index) => Object.fromEntries(
     detectedBatchVariables.map((name) => [name, String(batchVariableValues[name]?.[index] || '').trim()]),
@@ -459,6 +464,21 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     }
   }, []);
 
+  const flushDraft = useCallback(async () => {
+    if (!initialized.current || !bundleRef.current) return true;
+    setSaveState('saving');
+    try {
+      const data = await api.updateProject(projectId, draftSnapshot.current);
+      setBundle((current) => current ? { ...current, project: data.project } : data);
+      localStorage.removeItem(draftCacheKey);
+      setSaveState('saved');
+      return true;
+    } catch {
+      setSaveState('failed');
+      return false;
+    }
+  }, [draftCacheKey, projectId]);
+
   const startPolling = useCallback((taskId: string, kind: TaskKind) => {
     stopPolling();
     setActiveTask({ id: taskId, kind });
@@ -506,10 +526,12 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         setActiveTask(null);
         const data = await api.getProject(projectId);
         setBundle(data);
-        if (task.status === 'success') {
+        if (task.status === 'success' || task.status === 'partial') {
           setCurrentImageId(data.project.currentImageId);
           setInputImageId(data.project.currentImageId);
-          if (kind === 'generate') {
+          if (task.status === 'partial') {
+            notify(task.error || '部分图片生成失败，已保留成功结果。', 'error');
+          } else if (kind === 'generate') {
             setPrompt('');
             notify(`已创建版本 V${data.versions[0]?.number}`, 'success');
           } else if (kind === 'text-edit') {
@@ -554,7 +576,13 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setLoading(true);
     Promise.all([api.getProject(projectId), api.listGeneratingTasks(projectId)]).then(([data, taskData]) => {
       setBundle(data);
-      const draft = data.project.draft || {};
+      let cached: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(localStorage.getItem(draftCacheKey) || '{}');
+        if (parsed && typeof parsed === 'object') cached = parsed as Record<string, unknown>;
+      } catch { localStorage.removeItem(draftCacheKey); }
+      const cachedDraft = cached.draft && typeof cached.draft === 'object' ? cached.draft as Record<string, unknown> : {};
+      const draft = { ...(data.project.draft || {}), ...cachedDraft };
       setPrompt(String(draft.prompt || ''));
       setStylePrompt(String(draft.stylePrompt || ''));
       setBatchStylePrompt(String(draft.stylePrompt || ''));
@@ -566,13 +594,15 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       setOutputFormat((draft.outputFormat as OutputFormat) || 'png');
       setTransparentBg(Boolean(draft.transparentBg));
       setCount(Number(draft.count || 1));
-      setCurrentImageId(data.project.currentImageId || data.versions[0]?.selectedImageId || data.images.at(-1)?.id || null);
-      setInputImageId(String(draft.inputImageId || '') || null);
+      const cachedCurrentImageId = typeof cached.currentImageId === 'string' && data.images.some((image) => image.id === cached.currentImageId) ? cached.currentImageId : null;
+      setCurrentImageId(cachedCurrentImageId || data.project.currentImageId || data.versions[0]?.selectedImageId || data.images.at(-1)?.id || null);
+      const cachedInputImageId = typeof draft.inputImageId === 'string' && data.images.some((image) => image.id === draft.inputImageId) ? draft.inputImageId : null;
+      setInputImageId(cachedInputImageId);
       initialized.current = true;
       const task = taskData.tasks[0];
       if (task) startPolling(task.id, task.operationType === 'batch_edit' || task.operationType === 'batch_generate' ? 'batch-edit' : task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'outpaint' ? 'outpaint' : task.operationType === 'enhance' ? 'enhance' : task.operationType === 'remove_watermark' ? 'remove-watermark' : task.operationType === 'extract_asset' ? 'extract-asset' : 'generate');
     }).catch((error) => notify(error.message, 'error')).finally(() => setLoading(false));
-  }, [projectId, activeModel, activeVisionModel, startPolling, notify]);
+  }, [projectId, activeModel, activeVisionModel, startPolling, notify, draftCacheKey]);
 
   useEffect(() => {
     setVisionModelId((current) => visionModels.some((model) => model.id === current) ? current : fallbackVisionModelId);
@@ -580,14 +610,20 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
 
   useEffect(() => {
     if (!initialized.current || !bundle) return;
+    try { localStorage.setItem(draftCacheKey, JSON.stringify(draftSnapshot.current)); } catch { /* local storage may be unavailable */ }
     setSaveState('saving');
-    const timer = window.setTimeout(() => {
-      api.updateProject(projectId, { draft: { prompt, stylePrompt, operation, modelId, visionModelId, size, outputFormat, transparentBg, count, inputImageId }, currentImageId, defaultModelId: modelId })
-        .then((data) => { setBundle((current) => current ? { ...current, project: data.project } : data); setSaveState('saved'); })
-        .catch(() => setSaveState('failed'));
-    }, 900);
+    const timer = window.setTimeout(() => { void flushDraft(); }, 900);
     return () => window.clearTimeout(timer);
-  }, [prompt, stylePrompt, operation, modelId, visionModelId, size, outputFormat, transparentBg, count, inputImageId, currentImageId]);
+  }, [prompt, stylePrompt, operation, modelId, visionModelId, size, outputFormat, transparentBg, count, inputImageId, currentImageId, flushDraft, draftCacheKey]);
+
+  useEffect(() => {
+    const persistDraft = () => {
+      if (!initialized.current) return;
+      try { localStorage.setItem(draftCacheKey, JSON.stringify(draftSnapshot.current)); } catch { /* local storage may be unavailable */ }
+    };
+    window.addEventListener('pagehide', persistDraft);
+    return () => window.removeEventListener('pagehide', persistDraft);
+  }, [draftCacheKey]);
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [bundle?.messages.length, generating]);
 
@@ -1263,6 +1299,14 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
+  async function leaveWorkspace(destination: () => void) {
+    if (!await flushDraft()) {
+      notify('草稿保存失败，请检查本地服务后重试。', 'error');
+      return;
+    }
+    destination();
+  }
+
   async function removeVersion(version: Version) {
     if (!bundle) return;
     const childCount = bundle.versions.filter((item) => item.parentVersionId === version.id).length;
@@ -1324,7 +1368,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     <main className="workspace-shell">
       <header className="workspace-topbar">
         <div className="workspace-title-group">
-          <button className="back-button compact" onClick={onBack}>← 项目列表</button>
+          <button className="back-button compact" onClick={() => void leaveWorkspace(onBack)}>← 项目列表</button>
           <span className="header-divider" />
           <span className="project-name-field">
             <input className="project-name-input" defaultValue={bundle.project.name} onBlur={(event) => void rename(event.target.value)} aria-label="项目名称" title="点击即可重命名项目" />
@@ -1340,7 +1384,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           </select>
           <button className="gallery-open-button" title="提示词画廊：把完整提示词填入对话或批量列表，或把风格设为项目 / 批量统一风格" aria-label="提示词画廊" onClick={() => setGalleryOpen(true)}><span className="gallery-open-icon"><Icon name="gallery" size={17} /><Icon name="sparkle" size={9} /></span><span className="gallery-open-copy"><strong>提示词画廊</strong><small>灵感 · 风格 · 模板</small></span></button>
           <button className="icon-button theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'} aria-label="切换配色模式"><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} /></button>
-          <button className="icon-button" title="模型配置" onClick={onModels}><Icon name="sliders" size={17} /></button>
+          <button className="icon-button" title="模型配置" onClick={() => void leaveWorkspace(onModels)}><Icon name="sliders" size={17} /></button>
         </div>
       </header>
 

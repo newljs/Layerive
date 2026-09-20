@@ -122,7 +122,7 @@ export function upsertModel(input, modelId) {
 export function removeModel(modelId) {
   const config = readModels();
   config.models = config.models.filter((item) => item.id !== modelId);
-  if (config.active_model === modelId) config.active_model = config.models[0]?.id ?? '';
+  if (config.active_model === modelId) config.active_model = config.models.find((item) => item.type === 'image')?.id ?? '';
   if (config.active_vision_model === modelId) config.active_vision_model = config.models.find((item) => item.type === 'vision')?.id ?? '';
   writeModels(config);
 }

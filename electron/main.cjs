@@ -7,6 +7,7 @@ const path = require('node:path');
 let mainWindow;
 let serverProcess;
 let serverUrl;
+let quitting = false;
 
 function desktopRoot() {
   return app.isPackaged ? path.join(process.resourcesPath, 'app') : path.resolve(__dirname, '..');
@@ -54,10 +55,17 @@ async function startServer() {
       LAYERIVE_APP_ROOT: root,
       LAYERIVE_DATA_ROOT: dataRoot,
       LAYERIVE_CONFIG_ROOT: configRoot,
+      LAYERIVE_ELECTRON: '1',
     },
     stdio: app.isPackaged ? 'ignore' : 'inherit',
   });
   serverProcess.once('exit', (code) => {
+    if (code === 75 && !quitting) {
+      void startServer().then(() => mainWindow?.loadURL(serverUrl)).catch((error) => {
+        if (mainWindow && !mainWindow.isDestroyed()) dialog.showErrorBox('Layerive 恢复后无法重启服务', error instanceof Error ? error.message : String(error));
+      });
+      return;
+    }
     if (code && mainWindow && !mainWindow.isDestroyed()) {
       dialog.showErrorBox('Layerive 本地服务已退出', `本地服务意外退出（代码 ${code}）。请重启应用。`);
     }
@@ -127,5 +135,6 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => {
+  quitting = true;
   if (serverProcess && !serverProcess.killed) serverProcess.kill();
 });

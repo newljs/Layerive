@@ -1,7 +1,8 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { APP_ROOT, CONFIG_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, GALLERY_ROOT, imageDto, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
 import { makeDemoPng, makeThumbnailPng, readImageDimensions } from './png.mjs';
@@ -22,16 +23,96 @@ db.prepare("UPDATE generation_tasks SET status = 'failed', error_json = ?, finis
   .run(JSON.stringify({ message: '应用重启，任务已中断，请重新发送。' }), startupRecoveryAt);
 // A batch version is published incrementally. Preserve completed outputs
 // after a restart, but hide an empty placeholder version that never produced an
-// image before the process stopped.
+// image before the process stopped. Local-edit batches use operation_type
+// `local_edit`, so recover every still-generating version tied to a failed task.
 db.prepare(`
   UPDATE image_versions
   SET status = CASE WHEN EXISTS (SELECT 1 FROM images WHERE images.version_id = image_versions.id) THEN 'partial' ELSE 'failed' END,
       deleted_at = CASE WHEN EXISTS (SELECT 1 FROM images WHERE images.version_id = image_versions.id) THEN deleted_at ELSE COALESCE(deleted_at, ?) END
-  WHERE operation_type IN ('batch_edit', 'batch_generate') AND status = 'generating'
+  WHERE status = 'generating'
+    AND EXISTS (SELECT 1 FROM generation_tasks t WHERE t.id = image_versions.task_id AND t.status = 'failed')
 `).run(startupRecoveryAt);
 
+// Backups contain files rather than directory entries. Recreate the standard
+// writable folders for every live project on startup so an empty project (or a
+// project that has only uploads) remains usable after restore.
+for (const project of db.prepare('SELECT id FROM projects WHERE deleted_at IS NULL').all()) {
+  ensureProjectDirs(project.id);
+}
+
 const runningTasks = new Map();
+const runningTaskCompletions = new Map();
 const canceledTasks = new Set();
+let restoreInProgress = false;
+const activeServiceRequests = new Set();
+let idleRequestResolvers = [];
+
+const BACKUP_REQUIRED_SCHEMA = {
+  projects: ['id', 'name', 'description', 'cover_image_id', 'default_model_id', 'current_version_id', 'current_image_id', 'draft_json', 'is_favorite', 'deleted_at', 'created_at', 'updated_at'],
+  messages: ['id', 'project_id', 'role', 'message_type', 'content_json', 'created_at'],
+  generation_tasks: ['id', 'project_id', 'user_message_id', 'operation_type', 'model_id', 'model_snapshot_json', 'params_json', 'input_json', 'status', 'error_json', 'started_at', 'finished_at', 'created_at'],
+  image_versions: ['id', 'project_id', 'task_id', 'parent_version_id', 'version_number', 'operation_type', 'selected_image_id', 'status', 'deleted_at', 'created_at'],
+  images: ['id', 'project_id', 'version_id', 'task_id', 'source_type', 'file_path', 'mime_type', 'width', 'height', 'file_size', 'created_at'],
+  version_inputs: ['version_id', 'image_id', 'input_role'],
+};
+// These tables were introduced after the core project/version schema. A
+// missing table is created by db.mjs after restore for backwards-compatible
+// backups, but a present table must still have the expected fields.
+const BACKUP_OPTIONAL_SCHEMA = {
+  text_recognitions: ['image_id', 'vision_model_id', 'vision_model_fingerprint', 'model_name', 'segments_json', 'created_at'],
+  gallery_entries: ['id', 'title', 'category', 'prompt', 'style_prompt', 'image_path', 'source', 'created_at', 'updated_at'],
+};
+
+function trackTask(taskId, controller, timer, work) {
+  runningTasks.set(taskId, controller);
+  const completion = Promise.resolve().then(work).catch((error) => {
+    // Task functions normally record their own failures. Keep an unexpected
+    // exception from becoming an unhandled rejection while preserving logs.
+    console.error(`任务 ${taskId} 未能正常收尾：`, error);
+  }).finally(() => {
+    clearTimeout(timer);
+    runningTasks.delete(taskId);
+    runningTaskCompletions.delete(taskId);
+    canceledTasks.delete(taskId);
+  });
+  runningTaskCompletions.set(taskId, completion);
+  void completion;
+}
+
+async function stopRunningTasksForRestore() {
+  const active = [...runningTasks.entries()];
+  for (const [taskId, controller] of active) {
+    canceledTasks.add(taskId);
+    controller.abort(new Error('restore'));
+  }
+  await Promise.allSettled([...runningTaskCompletions.values()]);
+}
+
+async function waitForActiveServiceRequests() {
+  if (!activeServiceRequests.size) return;
+  await new Promise((resolve, reject) => {
+    const resolver = () => { clearTimeout(timeout); resolve(); };
+    const timeout = setTimeout(() => {
+      idleRequestResolvers = idleRequestResolvers.filter((item) => item !== resolver);
+      reject(Object.assign(new Error('仍有请求正在写入或读取本地数据，请稍后重新恢复备份。'), { status: 503 }));
+    }, 30000);
+    idleRequestResolvers.push(resolver);
+  });
+}
+
+function finishServiceRequest(token) {
+  if (!token) return;
+  activeServiceRequests.delete(token);
+  if (!activeServiceRequests.size) {
+    const resolvers = idleRequestResolvers;
+    idleRequestResolvers = [];
+    for (const resolve of resolvers) resolve();
+  }
+}
+
+function restoringError() {
+  return Object.assign(new Error('正在恢复备份，服务暂时不可操作，请等待应用重新加载。'), { status: 503 });
+}
 
 function json(res, status, payload) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -74,6 +155,18 @@ function zipResponse(res, buffer, downloadName) {
   res.end(buffer);
 }
 
+function restartAfterResponse(res) {
+  res.once('finish', () => {
+    setTimeout(() => {
+      if (process.env.LAYERIVE_ELECTRON === '1') process.exit(75);
+      try {
+        spawn(process.execPath, [path.join(APP_ROOT, 'server', 'index.mjs')], { cwd: APP_ROOT, detached: true, stdio: 'ignore', env: process.env }).unref();
+      } catch { /* user can restart manually */ }
+      process.exit(0);
+    }, 300);
+  });
+}
+
 async function body(req, limit = 16 * 1024 * 1024) {
   const chunks = [];
   let size = 0;
@@ -85,6 +178,45 @@ async function body(req, limit = 16 * 1024 * 1024) {
   if (!chunks.length) return {};
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { throw Object.assign(new Error('请求格式不是有效 JSON'), { status: 400 }); }
+}
+
+function invalidArchive(message) {
+  return Object.assign(new Error(message), { status: 400 });
+}
+
+// Archive paths are attacker-controlled. Convert separators before validation
+// and require a non-empty relative path that cannot escape its assigned root.
+function safeArchiveRelative(value, label = '压缩包路径') {
+  const relative = String(value || '').replaceAll('\\', '/');
+  if (!relative || relative.includes('\0') || relative.startsWith('/') || /^[A-Za-z]:/i.test(relative)
+    || relative.split('/').some((part) => !part || part === '.' || part === '..')) {
+    throw invalidArchive(`${label}无效，不能包含绝对路径或 ..`);
+  }
+  return relative;
+}
+
+function archivePathWithin(root, relative, label) {
+  const base = path.resolve(root);
+  const absolute = path.resolve(base, ...safeArchiveRelative(relative, label).split('/'));
+  if (!absolute.startsWith(`${base}${path.sep}`)) throw invalidArchive(`${label}超出允许目录`);
+  return absolute;
+}
+
+function remapProjectDraft(value, maps) {
+  const draft = parseJson(value, {});
+  if (draft.inputImageId) draft.inputImageId = maps.images.get(draft.inputImageId) || null;
+  if (draft.currentImageId) draft.currentImageId = maps.images.get(draft.currentImageId) || null;
+  if (draft.currentVersionId) draft.currentVersionId = maps.versions.get(draft.currentVersionId) || null;
+  return JSON.stringify(draft);
+}
+
+function copiedTaskState(row, timestamp) {
+  if (row.status !== 'generating') return { status: row.status, errorJson: row.error_json, finishedAt: row.finished_at };
+  return {
+    status: 'failed',
+    errorJson: JSON.stringify({ message: '项目复制时未完成的任务已中断，请重新发送。' }),
+    finishedAt: timestamp,
+  };
 }
 
 function projectOrThrow(projectId) {
@@ -406,7 +538,9 @@ async function callImageProviderBatch(model, prompts, params, inputImage, signal
     callImageWithRetry(model, prompt, nativeBatch ? params : { ...params, count: 1 }, inputImage, signal));
   if (signal.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
 
-  const outputs = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+  const outputs = settled.flatMap((result, promptIndex) => result.status === 'fulfilled'
+    ? result.value.map((output) => ({ ...output, promptIndex: distinctPrompts ? promptIndex : 0 }))
+    : []);
   const errors = settled.filter((result) => result.status === 'rejected').map((result) => result.reason);
 
   const missing = desired - outputs.length;
@@ -418,11 +552,13 @@ async function callImageProviderBatch(model, prompts, params, inputImage, signal
     const supplements = await mapWithConcurrency(Array.from({ length: missing }, () => prompts[0]), IMAGE_BATCH_CONCURRENCY, (prompt) =>
       callImageWithRetry(model, prompt, { ...params, count: 1 }, inputImage, signal));
     if (signal.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
-    outputs.push(...supplements.flatMap((result) => result.status === 'fulfilled' ? result.value : []));
+    outputs.push(...supplements.flatMap((result) => result.status === 'fulfilled'
+      ? result.value.map((output) => ({ ...output, promptIndex: 0 })) : []));
     errors.push(...supplements.filter((result) => result.status === 'rejected').map((result) => result.reason));
   }
   if (!outputs.length) throw errors.at(-1) || new Error('模型没有返回图片');
-  return outputs.slice(0, desired);
+  const finalOutputs = outputs.slice(0, desired);
+  return { outputs: finalOutputs, errors, failedCount: Math.max(0, desired - finalOutputs.length) };
 }
 
 function parseVisionJson(value) {
@@ -435,14 +571,24 @@ function parseVisionJson(value) {
   }
 }
 
-function textSegments(value) {
+function textSegments(value, allowEmpty = false) {
   const parsed = parseVisionJson(value);
   const entries = Array.isArray(parsed) ? parsed : Array.isArray(parsed.segments) ? parsed.segments : [];
   const segments = entries.map((item, index) => {
     const text = String(item.text || item.content || '').trim();
-    return { id: String(item.id || `text-${index + 1}`), text, originalText: text, context: String(item.context || item.location || '图片中的文字区域').trim() };
+    const rawRect = item.rect;
+    const rect = rawRect && ['x', 'y', 'width', 'height'].every((key) => Number.isFinite(Number(rawRect[key])))
+      ? Object.fromEntries(['x', 'y', 'width', 'height'].map((key) => [key, Math.min(100, Math.max(0, Number(rawRect[key])))]))
+      : null;
+    return {
+      id: String(item.id || `text-${index + 1}`),
+      text,
+      originalText: text,
+      context: String(item.context || item.location || '图片中的文字区域').trim(),
+      ...(rect ? { rect } : {}),
+    };
   }).filter((item) => item.text);
-  if (!segments.length) throw new Error('未识别到可编辑文字，请确认图片内含有清晰文字');
+  if (!segments.length && !allowEmpty) throw new Error('未识别到可编辑文字，请确认图片内含有清晰文字');
   return segments;
 }
 
@@ -557,7 +703,10 @@ async function recognizeImageText(projectId, input) {
   `).get(image.id, visionModel.id, fingerprint);
   if (cached) {
     try {
-      return { modelName: cached.model_name, segments: textSegments(JSON.stringify({ segments: parseJson(cached.segments_json, []) })), cached: true };
+      // An inherited cache may intentionally be empty after the user removes
+      // every text segment. Treat that as a valid current-text snapshot rather
+      // than calling the vision model again.
+      return { modelName: cached.model_name, segments: textSegments(JSON.stringify({ segments: parseJson(cached.segments_json, []) }), true), cached: true };
     } catch {
       // A malformed cache must never block editing; replace it with a fresh
       // recognition result below.
@@ -607,7 +756,21 @@ async function editImageText(projectId, input) {
   const fallback = `仅修改以下图片文字，其他所有画面元素、文字、构图、人物、背景、色彩、风格与尺寸均保持不变。${changeList}`;
   const coordinateConstraints = changed.map((item) => rectDescription(item.rect)).filter(Boolean).join('；');
   const prompt = `${String(planned.edit_prompt || planned.prompt || fallback).trim()}${coordinateConstraints ? `\n精确区域约束：${coordinateConstraints}。框外内容不得改动。` : ''}`;
-  return startGeneration(projectId, { prompt, operation: 'edit_text', modelId: input.modelId, inputImageId: image.id, parentVersionId: input.parentVersionId || image.version_id || null, params: input.params || {} });
+  // The submitted list is the complete current text state, not just the
+  // changed rows. Persist its post-edit form so successful output images can
+  // open the editor without another vision-model recognition pass.
+  const resultSegments = textSegments(JSON.stringify({ segments: Array.isArray(input.segments) ? input.segments : [] }), true);
+  return startGeneration(
+    projectId,
+    { prompt, operation: 'edit_text', modelId: input.modelId, inputImageId: image.id, parentVersionId: input.parentVersionId || image.version_id || null, params: input.params || {} },
+    null,
+    {
+      visionModelId: visionModel.id,
+      visionModelFingerprint: visionModelFingerprint(visionModel),
+      modelName: visionModel.name,
+      segments: resultSegments,
+    },
+  );
 }
 
 async function editImageRegion(projectId, input) {
@@ -807,7 +970,10 @@ async function upsertGalleryEntry(input, existingId) {
     const current = db.prepare('SELECT * FROM gallery_entries WHERE id = ?').get(existingId);
     if (!current) throw Object.assign(new Error('画廊条目不存在'), { status: 404 });
     let imagePath = current.image_path;
-    if (input.image?.data) {
+    if (input.image === null) {
+      removeGalleryImage(current.image_path);
+      imagePath = null;
+    } else if (input.image?.data) {
       imagePath = (await saveGalleryImage(input.image.data, String(input.image.mimeType || 'image/png'))).relative;
       removeGalleryImage(current.image_path);
     }
@@ -891,15 +1057,18 @@ async function planGenerationPrompts(inputImage, prompt, count, visionModel, sig
   return { mode: 'different', prompts };
 }
 
-function startGeneration(projectId, input, localEdit = null) {
+function startGeneration(projectId, input, localEdit = null, textEdit = null) {
+  if (restoreInProgress) throw restoringError();
   projectOrThrow(projectId);
+  ensureProjectDirs(projectId);
   const config = readModels();
   const requestedModelId = String(input.modelId || '').trim();
   const model = config.models.find((item) => item.id === (requestedModelId || config.active_model));
   if (!model) throw Object.assign(new Error('请选择有效模型'), { status: 400 });
   if (model.type === 'vision') throw Object.assign(new Error('视觉识别模型不能用于图片生成，请在工作台选择图片生成模型'), { status: 400 });
   const prompt = String(input.prompt || '').trim();
-  let inputImage = input.inputImageId ? db.prepare('SELECT * FROM images WHERE id = ? AND project_id = ?').get(input.inputImageId, projectId) : null;
+  const requestedInputImageId = String(input.inputImageId || '').trim();
+  let inputImage = requestedInputImageId ? imageOrThrow(projectId, requestedInputImageId) : null;
   if (!prompt && !inputImage) throw Object.assign(new Error('请输入创作描述或选择输入图片'), { status: 400 });
   // An uploaded source picture being edited for the first time gets an
   // initial version so the original image is kept in the version history.
@@ -918,20 +1087,21 @@ function startGeneration(projectId, input, localEdit = null) {
   const taskId = uid();
   const createdAt = now();
   db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(userMessageId, projectId, 'user', 'prompt', JSON.stringify({ prompt, operation, inputImageId: inputImage?.id || null, params, modelName: model.name, promptMode: autoPromptMode ? 'auto' : undefined }), createdAt);
+  const taskInput = {
+    inputImageId: inputImage?.id || null,
+    ...(localEdit ? { stage: 'planning', localEdit: { rect: localEdit.rect, hasReference: Boolean(localEdit.reference), visionModelId: localEdit.visionModel.id } } : {}),
+    ...(!localEdit && autoPromptMode ? { stage: 'planning', promptMode: 'auto', visionModelId: promptVisionModel.id } : {}),
+    ...(textEdit ? { textEdit } : {}),
+  };
   db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, started_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generating', ?, ?)`)
-    .run(taskId, projectId, userMessageId, operation, model.id, JSON.stringify({ ...model, apiKey: undefined }), JSON.stringify(params), JSON.stringify({ inputImageId: inputImage?.id || null, ...(localEdit ? { stage: 'planning', localEdit: { rect: localEdit.rect, hasReference: Boolean(localEdit.reference), visionModelId: localEdit.visionModel.id } } : autoPromptMode ? { stage: 'planning', promptMode: 'auto', visionModelId: promptVisionModel.id } : {}) }), createdAt, createdAt);
+    .run(taskId, projectId, userMessageId, operation, model.id, JSON.stringify({ ...model, apiKey: undefined }), JSON.stringify(params), JSON.stringify(taskInput), createdAt, createdAt);
 
   const controller = new AbortController();
-  runningTasks.set(taskId, controller);
   // Batches fan out under a concurrency cap and may absorb rate-limit backoff,
   // so the total budget grows with the requested image count.
   const timer = setTimeout(() => controller.abort(new Error('timeout')), localEdit ? 300000 : 120000 + (params.count - 1) * 30000 + (autoPromptMode ? 60000 : 0));
-  void runGenerationTask(projectId, taskId, { model, prompt, operation, params, inputImage, parentVersionId: input.parentVersionId || null, controller, localEdit, autoPromptMode, promptVisionModel }).finally(() => {
-    clearTimeout(timer);
-    runningTasks.delete(taskId);
-    canceledTasks.delete(taskId);
-  });
+  trackTask(taskId, controller, timer, () => runGenerationTask(projectId, taskId, { model, prompt, operation, params, inputImage, parentVersionId: input.parentVersionId || null, controller, localEdit, textEdit, autoPromptMode, promptVisionModel }));
   return { taskId, status: 'generating', userMessageId };
 }
 
@@ -972,6 +1142,7 @@ async function runGenerationTask(projectId, taskId, context) {
       controller.signal.throwIfAborted();
     }
     let generated;
+    let generationErrors = [];
     // The offline demo model renders placeholder art pixel by pixel, so cap its
     // canvas at a comfortable size while preserving the requested aspect ratio;
     // real providers return true 2K output. The recorded dimensions below use
@@ -984,10 +1155,12 @@ async function runGenerationTask(projectId, taskId, context) {
       outputWidth = Math.round(width * scale);
       outputHeight = Math.round(height * scale);
       await new Promise((resolve) => setTimeout(resolve, 650));
-      generated = Array.from({ length: count }, (_, index) => ({ bytes: makeDemoPng(batchPrompts[index] || effectivePrompt || '基于图片继续创作', outputWidth, outputHeight, index), mimeType: 'image/png', width: outputWidth, height: outputHeight }));
+      generated = Array.from({ length: count }, (_, index) => ({ bytes: makeDemoPng(batchPrompts[index] || effectivePrompt || '基于图片继续创作', outputWidth, outputHeight, index), mimeType: 'image/png', width: outputWidth, height: outputHeight, promptIndex: context.autoPromptMode && promptMode === 'different' ? index : 0 }));
     } else {
       if (!model.apiKey) throw new Error('模型尚未配置 API Key');
-      generated = await callImageProviderBatch(model, batchPrompts, params, providerImage, controller.signal);
+      const providerResult = await callImageProviderBatch(model, batchPrompts, params, providerImage, controller.signal);
+      generated = providerResult.outputs;
+      generationErrors = providerResult.failedCount ? providerResult.errors.slice(-providerResult.failedCount) : [];
     }
 
     controller.signal.throwIfAborted();
@@ -995,7 +1168,7 @@ async function runGenerationTask(projectId, taskId, context) {
       updateTaskInput(taskId, { stage: 'preserving' });
       const preserved = [];
       for (const output of generated) {
-        preserved.push(await preserveOutsideRegion(localSource, output, context.localEdit.rect));
+        preserved.push({ ...await preserveOutsideRegion(localSource, output, context.localEdit.rect), promptIndex: output.promptIndex });
         controller.signal.throwIfAborted();
       }
       generated = preserved;
@@ -1010,19 +1183,25 @@ async function runGenerationTask(projectId, taskId, context) {
       const relative = path.join('generated', `${imageId}.${extension}`);
       const absolute = path.join(PROJECTS_ROOT, projectId, relative);
       await writeFile(absolute, output.bytes);
-      savedOutputs.push({ imageId, relative, output });
+      const dimensions = readImageDimensions(output.bytes, output.mimeType) || { width, height };
+      savedOutputs.push({ imageId, relative, output: { ...output, width: output.width || dimensions.width, height: output.height || dimensions.height } });
       controller.signal.throwIfAborted();
     }
     const versionId = uid();
     const versionNumber = Number(db.prepare('SELECT COALESCE(MAX(version_number), 0) + 1 AS next FROM image_versions WHERE project_id = ?').get(projectId).next);
     const parentVersionId = context.parentVersionId || inputImage?.version_id || null;
     const outputIds = savedOutputs.map((item) => item.imageId);
+    const outputPrompts = promptMode === 'different'
+      ? savedOutputs.map((item) => batchPrompts[item.output.promptIndex] || effectivePrompt)
+      : null;
+    const status = generationErrors.length ? 'partial' : 'success';
+    const completionMessage = generationErrors.length ? `已生成 ${outputIds.length} 张图片，${generationErrors.length} 张失败。` : null;
     const finishedAt = now();
     db.exec('BEGIN');
     try {
       db.prepare(`INSERT INTO image_versions (id, project_id, task_id, parent_version_id, version_number, operation_type, selected_image_id, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?)`)
-        .run(versionId, projectId, taskId, parentVersionId, versionNumber, operation, outputIds[0], finishedAt);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(versionId, projectId, taskId, parentVersionId, versionNumber, operation, outputIds[0], status, finishedAt);
       if (inputImage) db.prepare('INSERT OR IGNORE INTO version_inputs VALUES (?, ?, ?)').run(versionId, inputImage.id, 'source');
       if (context.localEdit) {
         for (const material of db.prepare("SELECT id, source_type FROM images WHERE task_id = ? AND source_type IN ('local_reference', 'local_composite')").all(taskId)) {
@@ -1032,10 +1211,25 @@ async function runGenerationTask(projectId, taskId, context) {
       for (const { imageId, relative, output } of savedOutputs) {
         db.prepare(`INSERT INTO images (id, project_id, version_id, task_id, source_type, file_path, mime_type, width, height, file_size, created_at)
           VALUES (?, ?, ?, ?, 'generated', ?, ?, ?, ?, ?, ?)`)
-          .run(imageId, projectId, versionId, taskId, relative, output.mimeType, output.width || width, output.height || height, output.bytes.length, finishedAt);
+          .run(imageId, projectId, versionId, taskId, relative, output.mimeType, output.width, output.height, output.bytes.length, finishedAt);
       }
-      db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'result', JSON.stringify({ prompt, operation, outputImageIds: outputIds, versionId, versionNumber, taskId, modelName: model.name, ...(context.autoPromptMode ? { promptMode } : {}), ...(promptMode === 'different' ? { prompts: batchPrompts } : {}) }), finishedAt);
-      db.prepare('UPDATE generation_tasks SET status = ?, finished_at = ? WHERE id = ?').run('success', finishedAt, taskId);
+      if (context.textEdit) {
+        const cacheRecognition = db.prepare(`
+          INSERT INTO text_recognitions (image_id, vision_model_id, vision_model_fingerprint, model_name, segments_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(image_id, vision_model_id) DO UPDATE SET
+            vision_model_fingerprint = excluded.vision_model_fingerprint,
+            model_name = excluded.model_name,
+            segments_json = excluded.segments_json,
+            created_at = excluded.created_at
+        `);
+        for (const imageId of outputIds) {
+          cacheRecognition.run(imageId, context.textEdit.visionModelId, context.textEdit.visionModelFingerprint,
+            context.textEdit.modelName, JSON.stringify(context.textEdit.segments), finishedAt);
+        }
+      }
+      db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), projectId, 'assistant', 'result', JSON.stringify({ prompt, operation, outputImageIds: outputIds, versionId, versionNumber, taskId, modelName: model.name, ...(context.autoPromptMode ? { promptMode } : {}), ...(outputPrompts ? { prompts: outputPrompts } : {}), ...(completionMessage ? { message: completionMessage } : {}) }), finishedAt);
+      db.prepare('UPDATE generation_tasks SET status = ?, error_json = ?, finished_at = ? WHERE id = ?').run(status, completionMessage ? JSON.stringify({ message: completionMessage }) : null, finishedAt, taskId);
       db.prepare('UPDATE projects SET current_version_id = ?, current_image_id = ?, cover_image_id = ?, updated_at = ? WHERE id = ?')
         .run(versionId, outputIds[0], outputIds[0], finishedAt, projectId);
       db.exec('COMMIT');
@@ -1177,7 +1371,9 @@ function batchEditProgress(projectId, taskId) {
 }
 
 function startBatchEdit(projectId, input) {
+  if (restoreInProgress) throw restoringError();
   projectOrThrow(projectId);
+  ensureProjectDirs(projectId);
   const config = readModels();
   const requestedModelId = String(input.modelId || '').trim();
   const model = config.models.find((item) => item.id === (requestedModelId || config.active_model));
@@ -1207,14 +1403,9 @@ function startBatchEdit(projectId, input) {
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 
   const controller = new AbortController();
-  runningTasks.set(taskId, controller);
   const timeoutMs = Math.min(3 * 60 * 60 * 1000, 120000 + validated.quantity * 180000);
   const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
-  void runBatchEditTask(projectId, taskId, { model, source, params, versionId, versionNumber, validated, controller }).finally(() => {
-    clearTimeout(timer);
-    runningTasks.delete(taskId);
-    canceledTasks.delete(taskId);
-  });
+  trackTask(taskId, controller, timer, () => runBatchEditTask(projectId, taskId, { model, source, params, versionId, versionNumber, validated, controller }));
   return { taskId, versionId, status: 'generating', userMessageId };
 }
 
@@ -1338,7 +1529,9 @@ async function runBatchEditTask(projectId, taskId, context) {
 // 逐行作为完整提示词，可选的统一风格提示词追加到每一条提示词末尾。
 
 function startBatchGenerate(projectId, input) {
+  if (restoreInProgress) throw restoringError();
   projectOrThrow(projectId);
+  ensureProjectDirs(projectId);
   const config = readModels();
   const requestedModelId = String(input.modelId || '').trim();
   const model = config.models.find((item) => item.id === (requestedModelId || config.active_model));
@@ -1374,14 +1567,9 @@ function startBatchGenerate(projectId, input) {
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 
   const controller = new AbortController();
-  runningTasks.set(taskId, controller);
   const timeoutMs = Math.min(3 * 60 * 60 * 1000, 120000 + validated.quantity * 180000);
   const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
-  void runBatchGenerateTask(projectId, taskId, { model, params, versionId, versionNumber, validated, stylePrompt, promptSummary, taskInput, controller }).finally(() => {
-    clearTimeout(timer);
-    runningTasks.delete(taskId);
-    canceledTasks.delete(taskId);
-  });
+  trackTask(taskId, controller, timer, () => runBatchGenerateTask(projectId, taskId, { model, params, versionId, versionNumber, validated, stylePrompt, promptSummary, taskInput, controller }));
   return { taskId, versionId, status: 'generating', userMessageId };
 }
 
@@ -1503,7 +1691,9 @@ async function runBatchGenerateTask(projectId, taskId, context) {
 // 视觉规划 →（有参考图时）合成 → 生成 → 框外像素保留，全部输出进入同一版本。
 
 function startLocalEditBatch(projectId, input) {
+  if (restoreInProgress) throw restoringError();
   projectOrThrow(projectId);
+  ensureProjectDirs(projectId);
   const config = readModels();
   const visionModel = visionModelOrThrow(config, input.visionModelId);
   if (!visionModel.apiKey) throw Object.assign(new Error('请先配置视觉识别模型的 API Key'), { status: 400 });
@@ -1545,14 +1735,9 @@ function startLocalEditBatch(projectId, input) {
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 
   const controller = new AbortController();
-  runningTasks.set(taskId, controller);
   const timeoutMs = Math.min(3 * 60 * 60 * 1000, 120000 + instructions.length * 240000);
   const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
-  void runLocalEditBatchTask(projectId, taskId, { model, source, params, versionId, versionNumber, rect, reference, visionModel, instructions, promptSummary, controller }).finally(() => {
-    clearTimeout(timer);
-    runningTasks.delete(taskId);
-    canceledTasks.delete(taskId);
-  });
+  trackTask(taskId, controller, timer, () => runLocalEditBatchTask(projectId, taskId, { model, source, params, versionId, versionNumber, rect, reference, visionModel, instructions, promptSummary, controller }));
   return { taskId, versionId, status: 'generating', userMessageId };
 }
 
@@ -1784,49 +1969,59 @@ async function duplicateProject(sourceId, nameSuffix = ' 副本') {
     versionInputs: db.prepare('SELECT vi.* FROM version_inputs vi JOIN image_versions v ON v.id = vi.version_id WHERE v.project_id = ?').all(sourceId),
     textRecognitions: db.prepare('SELECT tr.* FROM text_recognitions tr JOIN images i ON i.id = tr.image_id WHERE i.project_id = ?').all(sourceId),
   };
+  const targetRoot = path.join(PROJECTS_ROOT, newId);
   ensureProjectDirs(newId);
-  await new Promise((resolve, reject) => {
-    try { cpSync(path.join(PROJECTS_ROOT, sourceId), path.join(PROJECTS_ROOT, newId), { recursive: true }); resolve(); }
-    catch (error) { reject(error); }
-  });
+  try { cpSync(path.join(PROJECTS_ROOT, sourceId), targetRoot, { recursive: true, force: true }); }
+  catch (error) { rmSync(targetRoot, { recursive: true, force: true }); throw error; }
   const maps = buildIdMaps(rows);
   const timestamp = now();
-  const versionNumber = new Map();
-  let nextNumber = 1;
-  for (const row of [...rows.versions].sort((a, b) => a.version_number - b.version_number)) versionNumber.set(row.id, nextNumber++);
-  db.prepare('INSERT INTO projects (id, name, description, cover_image_id, default_model_id, current_version_id, current_image_id, draft_json, is_favorite, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(newId, `${source.name}${nameSuffix}`, source.description, source.cover_image_id ? maps.images.get(source.cover_image_id) : null, source.default_model_id,
-      source.current_version_id ? maps.versions.get(source.current_version_id) : null, source.current_image_id ? maps.images.get(source.current_image_id) : null,
-      source.draft_json, 0, timestamp, timestamp);
-  for (const row of rows.tasks) {
+  const taskStates = new Map(rows.tasks.map((row) => [row.id, copiedTaskState(row, timestamp)]));
+  try {
+    db.exec('BEGIN');
+    db.prepare('INSERT INTO projects (id, name, description, cover_image_id, default_model_id, current_version_id, current_image_id, draft_json, is_favorite, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(newId, `${source.name}${nameSuffix}`, source.description, source.cover_image_id ? maps.images.get(source.cover_image_id) : null, source.default_model_id,
+        source.current_version_id ? maps.versions.get(source.current_version_id) : null, source.current_image_id ? maps.images.get(source.current_image_id) : null,
+        remapProjectDraft(source.draft_json, maps), 0, timestamp, timestamp);
+    for (const row of rows.tasks) {
+      const taskState = taskStates.get(row.id);
     db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, error_json, started_at, finished_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(maps.tasks.get(row.id), newId, row.user_message_id ? maps.messages.get(row.user_message_id) : null, row.operation_type, row.model_id, row.model_snapshot_json, row.params_json, remapTaskInputJson(row.input_json, maps), row.status, row.error_json, row.started_at, row.finished_at, row.created_at);
-  }
-  for (const row of rows.images) {
+      .run(maps.tasks.get(row.id), newId, row.user_message_id ? maps.messages.get(row.user_message_id) : null, row.operation_type, row.model_id, row.model_snapshot_json, row.params_json, remapTaskInputJson(row.input_json, maps), taskState.status, taskState.errorJson, row.started_at, taskState.finishedAt, row.created_at);
+    }
+    for (const row of rows.images) {
     db.prepare(`INSERT INTO images (id, project_id, version_id, task_id, source_type, file_path, mime_type, width, height, file_size, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(maps.images.get(row.id), newId, row.version_id ? maps.versions.get(row.version_id) : null, row.task_id ? maps.tasks.get(row.task_id) : null, row.source_type, row.file_path, row.mime_type, row.width, row.height, row.file_size, row.created_at);
-  }
-  for (const row of rows.textRecognitions) {
+    }
+    for (const row of rows.textRecognitions) {
     const imageId = maps.images.get(row.image_id);
     if (imageId) db.prepare(`INSERT INTO text_recognitions (image_id, vision_model_id, vision_model_fingerprint, model_name, segments_json, created_at)
       VALUES (?, ?, ?, ?, ?, ?)`).run(imageId, row.vision_model_id, row.vision_model_fingerprint, row.model_name, row.segments_json, row.created_at);
-  }
-  for (const row of rows.versions) {
+    }
+    for (const row of rows.versions) {
+      const interrupted = row.task_id && taskStates.get(row.task_id)?.status === 'failed' && rows.tasks.find((task) => task.id === row.task_id)?.status === 'generating';
+      const hasOutput = rows.images.some((image) => image.version_id === row.id);
+      const status = interrupted ? (hasOutput ? 'partial' : 'failed') : row.status;
+      const deletedAt = interrupted && !hasOutput ? timestamp : row.deleted_at || null;
     db.prepare(`INSERT INTO image_versions (id, project_id, task_id, parent_version_id, version_number, operation_type, selected_image_id, status, deleted_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(maps.versions.get(row.id), newId, row.task_id ? maps.tasks.get(row.task_id) : null, row.parent_version_id ? maps.versions.get(row.parent_version_id) : null, row.version_number, row.operation_type, row.selected_image_id ? maps.images.get(row.selected_image_id) : null, row.status, row.deleted_at || null, row.created_at);
-  }
-  for (const row of rows.versionInputs) {
+      .run(maps.versions.get(row.id), newId, row.task_id ? maps.tasks.get(row.task_id) : null, row.parent_version_id ? maps.versions.get(row.parent_version_id) : null, row.version_number, row.operation_type, row.selected_image_id ? maps.images.get(row.selected_image_id) : null, status, deletedAt, row.created_at);
+    }
+    for (const row of rows.versionInputs) {
     const versionId = maps.versions.get(row.version_id);
     const imageId = maps.images.get(row.image_id);
     if (versionId && imageId) db.prepare('INSERT OR IGNORE INTO version_inputs VALUES (?, ?, ?)').run(versionId, imageId, row.input_role);
-  }
-  for (const row of rows.messages) {
+    }
+    for (const row of rows.messages) {
     const content = remapMessageContent(parseJson(row.content_json, {}), maps);
     if (row.message_type === 'prompt' && content.inputImageId === undefined) content.inputImageId = null;
     db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(maps.messages.get(row.id), newId, row.role, row.message_type, JSON.stringify(content), row.created_at);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
+    rmSync(targetRoot, { recursive: true, force: true });
+    throw error;
   }
   return bundle(newId);
 }
@@ -1872,35 +2067,58 @@ async function importProjectZip(buffer) {
   const entries = readZip(buffer);
   const metaEntry = entries.get('project.json');
   if (!metaEntry) throw Object.assign(new Error('压缩包缺少 project.json，不是有效的项目导出文件'), { status: 400 });
-  const meta = JSON.parse(metaEntry.toString('utf8'));
+  let meta;
+  try { meta = JSON.parse(metaEntry.toString('utf8')); }
+  catch { throw invalidArchive('项目导出文件的 project.json 无法解析'); }
+  if (!meta || typeof meta !== 'object' || !meta.project || typeof meta.project !== 'object') throw invalidArchive('项目导出文件缺少有效项目数据');
+  for (const name of entries.keys()) {
+    if (name === 'project.json') continue;
+    if (!name.startsWith('files/')) throw invalidArchive('项目导出文件包含未知条目');
+    safeArchiveRelative(name.slice('files/'.length));
+  }
   const source = meta.project || {};
   const newId = uid();
   const maps = buildIdMaps(meta);
-  ensureProjectDirs(newId);
-  for (const image of meta.images || []) {
-    const entry = entries.get(`files/${image.file_path.replaceAll('\\', '/')}`);
-    if (!entry) continue;
-    const relative = image.file_path.replaceAll('\\', '/');
-    const absolute = path.join(PROJECTS_ROOT, newId, relative);
-    mkdirSync(path.dirname(absolute), { recursive: true });
-    await writeFile(absolute, entry);
+  const stageId = `.import-${newId}`;
+  const stageRoot = path.join(PROJECTS_ROOT, stageId);
+  const targetRoot = path.join(PROJECTS_ROOT, newId);
+  mkdirSync(stageRoot, { recursive: true });
+  const imageRows = Array.isArray(meta.images) ? meta.images : [];
+  const missingFiles = new Set();
+  try {
+    for (const image of imageRows) {
+      const relative = safeArchiveRelative(image?.file_path, '项目图片路径');
+      const entry = entries.get(`files/${relative}`);
+      if (!entry) { missingFiles.add(image.id); continue; }
+      const absolute = archivePathWithin(stageRoot, relative, '项目图片路径');
+      mkdirSync(path.dirname(absolute), { recursive: true });
+      await writeFile(absolute, entry);
+    }
+    for (const folder of ['uploads', 'generated', 'thumbnails', 'temp', 'extracts']) mkdirSync(path.join(stageRoot, folder), { recursive: true });
+  } catch (error) {
+    rmSync(stageRoot, { recursive: true, force: true });
+    throw error;
   }
   const timestamp = now();
-  db.prepare('INSERT INTO projects (id, name, description, cover_image_id, default_model_id, current_version_id, current_image_id, draft_json, is_favorite, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(newId, `${source.name || '导入项目'}（导入）`, source.description || '', source.cover_image_id ? maps.images.get(source.cover_image_id) : null, source.default_model_id || null,
-      source.current_version_id ? maps.versions.get(source.current_version_id) : null, source.current_image_id ? maps.images.get(source.current_image_id) : null,
-      source.draft_json || '{}', 0, timestamp, timestamp);
-  for (const row of meta.tasks || []) {
+  const taskRows = Array.isArray(meta.tasks) ? meta.tasks : [];
+  const taskStates = new Map(taskRows.map((row) => [row.id, copiedTaskState(row, timestamp)]));
+  try {
+    db.exec('BEGIN');
+    db.prepare('INSERT INTO projects (id, name, description, cover_image_id, default_model_id, current_version_id, current_image_id, draft_json, is_favorite, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(newId, `${source.name || '导入项目'}（导入）`, source.description || '', source.cover_image_id ? maps.images.get(source.cover_image_id) : null, source.default_model_id || null,
+        source.current_version_id ? maps.versions.get(source.current_version_id) : null, source.current_image_id ? maps.images.get(source.current_image_id) : null,
+        remapProjectDraft(source.draft_json || '{}', maps), 0, timestamp, timestamp);
+  for (const row of taskRows) {
+    const taskState = taskStates.get(row.id);
     db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, error_json, started_at, finished_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(maps.tasks.get(row.id), newId, row.user_message_id ? maps.messages.get(row.user_message_id) : null, row.operation_type, row.model_id, row.model_snapshot_json, row.params_json, remapTaskInputJson(row.input_json, maps), row.status, row.error_json, row.started_at, row.finished_at, row.created_at);
+      .run(maps.tasks.get(row.id), newId, row.user_message_id ? maps.messages.get(row.user_message_id) : null, row.operation_type, row.model_id, row.model_snapshot_json, row.params_json, remapTaskInputJson(row.input_json, maps), taskState.status, taskState.errorJson, row.started_at, taskState.finishedAt, row.created_at);
   }
-  for (const row of meta.images || []) {
-    const relative = row.file_path.replaceAll('\\', '/');
-    if (!existsSync(path.join(PROJECTS_ROOT, newId, relative))) continue;
+  for (const row of imageRows) {
+    const relative = safeArchiveRelative(row.file_path, '项目图片路径');
     db.prepare(`INSERT INTO images (id, project_id, version_id, task_id, source_type, file_path, mime_type, width, height, file_size, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(maps.images.get(row.id), newId, row.version_id ? maps.versions.get(row.version_id) : null, row.task_id ? maps.tasks.get(row.task_id) : null, row.source_type, row.file_path, row.mime_type, row.width, row.height, row.file_size, row.created_at);
+      .run(maps.images.get(row.id), newId, row.version_id ? maps.versions.get(row.version_id) : null, row.task_id ? maps.tasks.get(row.task_id) : null, row.source_type, relative, row.mime_type, row.width, row.height, row.file_size, row.created_at);
   }
   for (const row of meta.textRecognitions || []) {
     const imageId = maps.images.get(row.image_id);
@@ -1908,9 +2126,13 @@ async function importProjectZip(buffer) {
       VALUES (?, ?, ?, ?, ?, ?)`).run(imageId, row.vision_model_id, row.vision_model_fingerprint, row.model_name, row.segments_json, row.created_at);
   }
   for (const row of meta.versions || []) {
+    const interrupted = row.task_id && taskStates.get(row.task_id)?.status === 'failed' && taskRows.find((task) => task.id === row.task_id)?.status === 'generating';
+    const hasOutput = imageRows.some((image) => image.version_id === row.id);
+    const status = interrupted ? (hasOutput ? 'partial' : 'failed') : row.status;
+    const deletedAt = interrupted && !hasOutput ? timestamp : row.deleted_at || null;
     db.prepare(`INSERT INTO image_versions (id, project_id, task_id, parent_version_id, version_number, operation_type, selected_image_id, status, deleted_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(maps.versions.get(row.id), newId, row.task_id ? maps.tasks.get(row.task_id) : null, row.parent_version_id ? maps.versions.get(row.parent_version_id) : null, row.version_number, row.operation_type, row.selected_image_id ? maps.images.get(row.selected_image_id) : null, row.status, row.deleted_at || null, row.created_at);
+      .run(maps.versions.get(row.id), newId, row.task_id ? maps.tasks.get(row.task_id) : null, row.parent_version_id ? maps.versions.get(row.parent_version_id) : null, row.version_number, row.operation_type, row.selected_image_id ? maps.images.get(row.selected_image_id) : null, status, deletedAt, row.created_at);
   }
   for (const row of meta.versionInputs || []) {
     const versionId = maps.versions.get(row.version_id);
@@ -1920,7 +2142,15 @@ async function importProjectZip(buffer) {
   for (const row of meta.messages || []) {
     db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(maps.messages.get(row.id), newId, row.role, row.message_type, JSON.stringify(remapMessageContent(parseJson(row.content_json, {}), maps)), row.created_at);
   }
-  db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), newId, 'system', 'project_imported', JSON.stringify({ text: `项目已导入${(meta.images || []).some((image) => !existsSync(path.join(PROJECTS_ROOT, newId, image.file_path.replaceAll('\\', '/')))) ? '，部分图片文件缺失，对应位置会显示占位。' : '，全部图片文件已恢复。'}` }), timestamp);
+    db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(uid(), newId, 'system', 'project_imported', JSON.stringify({ text: `项目已导入${missingFiles.size ? '，部分图片文件缺失，对应位置会显示占位。' : '，全部图片文件已恢复。'}` }), timestamp);
+    renameSync(stageRoot, targetRoot);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
+    rmSync(stageRoot, { recursive: true, force: true });
+    rmSync(targetRoot, { recursive: true, force: true });
+    throw error;
+  }
   return bundle(newId);
 }
 
@@ -1942,36 +2172,108 @@ async function buildBackupZip() {
 async function restoreBackup(buffer) {
   const entries = readZip(buffer);
   if (!entries.get('data/app.db')) throw Object.assign(new Error('备份包缺少 data/app.db，不是有效的完整备份'), { status: 400 });
+  const marker = entries.get('pixelflow-backup.json');
+  if (marker) {
+    let manifest;
+    try { manifest = JSON.parse(marker.toString('utf8')); }
+    catch { throw invalidArchive('备份清单无法解析'); }
+    if (manifest?.format !== 'pixelflow-backup') throw invalidArchive('备份清单格式无效');
+  }
   const stamp = now().replace(/[:.]/g, '-');
+  const staging = path.join(DATA_ROOT, `.restore-${uid()}`);
+  const stagedData = path.join(staging, 'data');
+  const stagedProjects = path.join(stagedData, 'projects');
+  const stagedGallery = path.join(stagedData, 'gallery');
+  const stagedConfig = path.join(staging, 'config');
+  const stagedDb = path.join(stagedData, 'app.db');
+  mkdirSync(stagedProjects, { recursive: true });
+  mkdirSync(stagedGallery, { recursive: true });
+  try {
+    for (const [name, data] of entries) {
+      if (name === 'pixelflow-backup.json') continue;
+      if (name === 'data/app.db') {
+        await writeFile(stagedDb, data);
+        continue;
+      }
+      const root = name.startsWith('data/projects/') ? stagedProjects
+        : name.startsWith('data/gallery/') ? stagedGallery
+          : name.startsWith('config/') ? stagedConfig : null;
+      if (!root) throw invalidArchive('备份包含未知条目');
+      const prefix = name.startsWith('data/projects/') ? 'data/projects/'
+        : name.startsWith('data/gallery/') ? 'data/gallery/' : 'config/';
+      const relative = safeArchiveRelative(name.slice(prefix.length), '备份文件路径');
+      const absolute = archivePathWithin(root, relative, '备份文件路径');
+      mkdirSync(path.dirname(absolute), { recursive: true });
+      await writeFile(absolute, data);
+    }
+    const validator = new DatabaseSync(stagedDb, { readOnly: true });
+    try {
+      const integrity = validator.prepare('PRAGMA integrity_check').get()?.integrity_check;
+      if (integrity !== 'ok') throw invalidArchive('备份数据库完整性校验失败');
+      const found = new Set(validator.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
+      for (const [table, requiredColumns] of Object.entries({ ...BACKUP_REQUIRED_SCHEMA, ...BACKUP_OPTIONAL_SCHEMA })) {
+        const optional = Object.hasOwn(BACKUP_OPTIONAL_SCHEMA, table);
+        if (!found.has(table) && optional) continue;
+        if (!found.has(table)) throw invalidArchive(`备份数据库缺少必要数据表：${table}`);
+        const columns = new Set(validator.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+        const missing = requiredColumns.filter((column) => !columns.has(column));
+        if (missing.length) throw invalidArchive(`备份数据库表 ${table} 缺少必要字段：${missing.join('、')}`);
+      }
+      if (validator.prepare('PRAGMA foreign_key_check').all().length) throw invalidArchive('备份数据库外键关系不完整');
+    } finally { validator.close(); }
+    const stagedModels = path.join(stagedConfig, 'models.json');
+    if (existsSync(stagedModels)) JSON.parse((await readFile(stagedModels)).toString('utf8'));
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true });
+    if (error.status) throw error;
+    throw invalidArchive(`备份校验失败：${error.message || '文件损坏'}`);
+  }
+
+  // Checkpoint before taking the rollback copy so it includes recent writes.
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   const safety = path.join(DATA_ROOT, 'backups', stamp);
   mkdirSync(safety, { recursive: true });
-  cpSync(path.join(DATA_ROOT, 'app.db'), path.join(safety, 'app.db'));
-  cpSync(PROJECTS_ROOT, path.join(safety, 'projects'), { recursive: true });
-  if (existsSync(MODELS_CONFIG_PATH)) cpSync(MODELS_CONFIG_PATH, path.join(safety, 'models.json'));
+  try {
+    if (existsSync(path.join(DATA_ROOT, 'app.db'))) cpSync(path.join(DATA_ROOT, 'app.db'), path.join(safety, 'app.db'));
+    if (existsSync(PROJECTS_ROOT)) cpSync(PROJECTS_ROOT, path.join(safety, 'projects'), { recursive: true });
+    if (existsSync(GALLERY_ROOT)) cpSync(GALLERY_ROOT, path.join(safety, 'gallery'), { recursive: true });
+    if (existsSync(MODELS_CONFIG_PATH)) cpSync(MODELS_CONFIG_PATH, path.join(safety, 'models.json'));
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true });
+    throw Object.assign(new Error(`无法创建恢复前安全备份：${error.message}`), { status: 500 });
+  }
 
   closeDatabase();
-  rmSync(path.join(DATA_ROOT, 'app.db-wal'), { force: true });
-  rmSync(path.join(DATA_ROOT, 'app.db-shm'), { force: true });
-  rmSync(path.join(DATA_ROOT, 'app.db'), { force: true });
-  rmSync(PROJECTS_ROOT, { recursive: true, force: true });
-  rmSync(GALLERY_ROOT, { recursive: true, force: true });
-  mkdirSync(PROJECTS_ROOT, { recursive: true });
-  mkdirSync(GALLERY_ROOT, { recursive: true });
-
-  await writeFile(path.join(DATA_ROOT, 'app.db'), entries.get('data/app.db'));
-  const modelsEntry = entries.get('config/models.json');
-  if (modelsEntry) {
-    mkdirSync(path.dirname(MODELS_CONFIG_PATH), { recursive: true });
-    await writeFile(MODELS_CONFIG_PATH, modelsEntry);
-  }
-  for (const [name, data] of entries) {
-    if (!name.startsWith('data/projects/') && !name.startsWith('data/gallery/')) continue;
-    if (name.endsWith('/')) continue;
-    const absolute = name.startsWith('data/projects/')
-      ? path.join(PROJECTS_ROOT, name.slice('data/projects/'.length).replaceAll('/', path.sep))
-      : path.join(GALLERY_ROOT, name.slice('data/gallery/'.length).replaceAll('/', path.sep));
-    mkdirSync(path.dirname(absolute), { recursive: true });
-    await writeFile(absolute, data);
+  try {
+    rmSync(path.join(DATA_ROOT, 'app.db-wal'), { force: true });
+    rmSync(path.join(DATA_ROOT, 'app.db-shm'), { force: true });
+    rmSync(path.join(DATA_ROOT, 'app.db'), { force: true });
+    rmSync(PROJECTS_ROOT, { recursive: true, force: true });
+    rmSync(GALLERY_ROOT, { recursive: true, force: true });
+    rmSync(MODELS_CONFIG_PATH, { force: true });
+    cpSync(stagedDb, path.join(DATA_ROOT, 'app.db'));
+    cpSync(stagedProjects, PROJECTS_ROOT, { recursive: true });
+    cpSync(stagedGallery, GALLERY_ROOT, { recursive: true });
+    if (existsSync(path.join(stagedConfig, 'models.json'))) {
+      mkdirSync(path.dirname(MODELS_CONFIG_PATH), { recursive: true });
+      cpSync(path.join(stagedConfig, 'models.json'), MODELS_CONFIG_PATH);
+    }
+  } catch (error) {
+    // The old data stays available in the safety snapshot even if a late local
+    // filesystem failure occurs. Put it back before reporting the failure.
+    try {
+      rmSync(path.join(DATA_ROOT, 'app.db'), { force: true });
+      rmSync(PROJECTS_ROOT, { recursive: true, force: true });
+      rmSync(GALLERY_ROOT, { recursive: true, force: true });
+      rmSync(MODELS_CONFIG_PATH, { force: true });
+      if (existsSync(path.join(safety, 'app.db'))) cpSync(path.join(safety, 'app.db'), path.join(DATA_ROOT, 'app.db'));
+      if (existsSync(path.join(safety, 'projects'))) cpSync(path.join(safety, 'projects'), PROJECTS_ROOT, { recursive: true });
+      if (existsSync(path.join(safety, 'gallery'))) cpSync(path.join(safety, 'gallery'), GALLERY_ROOT, { recursive: true });
+      if (existsSync(path.join(safety, 'models.json'))) { mkdirSync(path.dirname(MODELS_CONFIG_PATH), { recursive: true }); cpSync(path.join(safety, 'models.json'), MODELS_CONFIG_PATH); }
+    } catch { /* the safety copy is retained for manual recovery */ }
+    throw Object.assign(new Error(`恢复写入失败，已尝试回滚到安全备份：${error.message}`), { status: 500, restartRequired: true });
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
   }
   return { safetyBackup: path.relative(DATA_ROOT, safety) };
 }
@@ -2063,13 +2365,14 @@ async function testModelConnection(model) {
     return { ok: true, latency: Date.now() - started, message: `视觉识别端点连接成功（${apiFormat === 'anthropic_messages' ? 'Anthropic Messages' : apiFormat === 'responses' ? 'Responses' : 'Chat Completions'}）` };
   }
   const modelEndpoint = `${baseUrl}/models/${model.model}`;
-  const isSenseNova = /(?:^|\.)sensenova\.cn$/i.test(new URL(baseUrl).hostname);
+  const isSenseNova = model.provider === 'sensenova' || /(?:^|\.)sensenova\.cn$/i.test(new URL(baseUrl).hostname);
   let response = await fetch(modelEndpoint, { headers: { Authorization: `Bearer ${model.apiKey}` }, signal: AbortSignal.timeout(15000) });
   if (response.status === 404) {
     const imageEndpoint = `${baseUrl}/images/generations`;
     response = await fetch(imageEndpoint, { method: 'OPTIONS', headers: { Authorization: `Bearer ${model.apiKey}` }, signal: AbortSignal.timeout(15000) });
-    if (response.status !== 404) return { ok: true, latency: Date.now() - started, message: '图片生成端点可达（该服务不提供通用模型查询）' };
-    if (isSenseNova) return { ok: true, latency: Date.now() - started, message: 'SenseNova 图片模型配置已识别；请通过一次生成验证权限' };
+    if (response.ok || response.status === 405) return { ok: true, latency: Date.now() - started, message: '图片生成端点可达（该服务不提供通用模型查询）' };
+    if (response.status === 401 || response.status === 403) throw Object.assign(new Error('连接失败：API Key 未获授权'), { status: 502 });
+    if (isSenseNova && response.status === 404) return { ok: true, latency: Date.now() - started, message: 'SenseNova 图片模型配置已识别；请通过一次生成验证权限' };
   }
   if (!response.ok) throw Object.assign(new Error(`连接失败（${response.status}）`), { status: 502 });
   return { ok: true, latency: Date.now() - started, message: '连接成功' };
@@ -2079,8 +2382,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return json(res, 204, {});
   const url = new URL(req.url, `http://${req.headers.host}`);
   const pathname = url.pathname;
+  const requestToken = pathname !== '/api/backup/restore' && pathname !== '/api/health' ? Symbol(pathname) : null;
   try {
     if (pathname.startsWith('/api/') || pathname.startsWith('/files/') || pathname.startsWith('/gallery-files/')) assertLocalUiRequest(req);
+    if (restoreInProgress && pathname !== '/api/backup/restore' && pathname !== '/api/health') throw restoringError();
+    if (requestToken) activeServiceRequests.add(requestToken);
     if (pathname.startsWith('/files/') && req.method === 'GET') return await serveFile(req, res, pathname, url.searchParams);
     if (pathname.startsWith('/gallery-files/') && req.method === 'GET') return await serveGalleryFile(res, pathname);
     if (pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, storage: 'local-sqlite' });
@@ -2110,19 +2416,22 @@ const server = http.createServer(async (req, res) => {
       const input = await body(req, 512 * 1024 * 1024);
       const encoded = String(input.data || '').replace(/^data:[^;]+;base64,/, '');
       if (!encoded) throw Object.assign(new Error('请提供备份文件内容'), { status: 400 });
-      const { safetyBackup } = await restoreBackup(Buffer.from(encoded, 'base64'));
+      if (restoreInProgress) throw restoringError();
+      restoreInProgress = true;
+      let safetyBackup;
+      try {
+        await waitForActiveServiceRequests();
+        await stopRunningTasksForRestore();
+        ({ safetyBackup } = await restoreBackup(Buffer.from(encoded, 'base64')));
+      } catch (error) {
+        if (!error.restartRequired) restoreInProgress = false;
+        throw error;
+      }
       // The on-disk database has been replaced under this process, so hand
       // over to a fresh server and exit. The response is flushed first.
+      restartAfterResponse(res);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ ok: true, restartRequired: true, safetyBackup }));
-      res.on('finish', () => {
-        setTimeout(() => {
-          try {
-            spawn(process.execPath, [path.join(APP_ROOT, 'server', 'index.mjs')], { cwd: APP_ROOT, detached: true, stdio: 'ignore' }).unref();
-          } catch { /* user can restart manually */ }
-          process.exit(0);
-        }, 300);
-      });
       return;
     }
 
@@ -2163,6 +2472,7 @@ const server = http.createServer(async (req, res) => {
       if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw Object.assign(new Error('图片不能为空且不能超过 10MB'), { status: 400 });
       const dimensions = readImageDimensions(bytes, mime);
       if (!dimensions) throw Object.assign(new Error('无法读取图片尺寸，请重新选择有效的 PNG、JPG 或 WebP 图片'), { status: 400 });
+      ensureProjectDirs(projectId);
       const imageId = uid();
       const extension = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
       const relative = path.join('uploads', `${imageId}.${extension}`);
@@ -2243,7 +2553,14 @@ const server = http.createServer(async (req, res) => {
     if (galleryIdMatch && req.method === 'PATCH') return json(res, 200, { entry: galleryDto(await upsertGalleryEntry(await body(req, 32 * 1024 * 1024), galleryIdMatch[1])) });
     if (galleryIdMatch && req.method === 'DELETE') return json(res, 200, deleteGalleryEntry(galleryIdMatch[1]));
     if (pathname === '/api/models' && req.method === 'POST') return json(res, 201, { model: upsertModel(await body(req)) });
-    if (pathname === '/api/models/test-config' && req.method === 'POST') return json(res, 200, await testModelConnection(await body(req)));
+    if (pathname === '/api/models/test-config' && req.method === 'POST') {
+      const candidate = await body(req);
+      if (candidate.apiKey === '••••••••' && candidate.id) {
+        const saved = readModels().models.find((model) => model.id === candidate.id);
+        if (saved) candidate.apiKey = saved.apiKey;
+      }
+      return json(res, 200, await testModelConnection(candidate));
+    }
     const modelApiKeyMatch = pathname.match(/^\/api\/models\/([^/]+)\/api-key$/);
     if (modelApiKeyMatch && req.method === 'POST') {
       const model = readModels().models.find((item) => item.id === modelApiKeyMatch[1]);
@@ -2286,7 +2603,10 @@ const server = http.createServer(async (req, res) => {
     else console.error(`${req.method} ${pathname} → ${status}: ${error.message}`);
     const payload = { error: error.status === 502 ? friendlyModelMessage(error.message) : error.message || '服务器内部错误' };
     if (error.affectedChildren !== undefined) payload.affectedChildren = error.affectedChildren;
+    if (error.restartRequired) restartAfterResponse(res);
     return json(res, error.status || 500, payload);
+  } finally {
+    finishServiceRequest(requestToken);
   }
 });
 

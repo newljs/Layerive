@@ -99,7 +99,7 @@ export type TextSegment = {
 
 export type GenerationTask = {
   id: string;
-  status: 'generating' | 'success' | 'failed' | 'canceled';
+  status: 'generating' | 'success' | 'partial' | 'failed' | 'canceled';
   operationType?: string;
   stage?: 'planning' | 'compositing' | 'generating' | 'preserving' | null;
   error: string | null;

@@ -12,7 +12,6 @@ type Props = {
   onDelete: (id: string) => Promise<void>;
   onActivate: (id: string) => Promise<void>;
   onActivateVision: (id: string) => Promise<void>;
-  onTest: (id: string) => Promise<string>;
   onTestConfig: (model: Partial<ModelConfig>) => Promise<string>;
   onRevealApiKey: (id: string) => Promise<string>;
 };
@@ -45,7 +44,7 @@ function defaultModel(type: ModelConfig['type'], provider: ModelConfig['provider
   return 'gpt-image-2';
 }
 
-export function ModelConfigView({ models, activeModel, activeVisionModel, onBack, onSave, onDelete, onActivate, onActivateVision, onTest, onTestConfig, onRevealApiKey }: Props) {
+export function ModelConfigView({ models, activeModel, activeVisionModel, onBack, onSave, onDelete, onActivate, onActivateVision, onTestConfig, onRevealApiKey }: Props) {
   const { theme, toggleTheme } = useTheme();
   const [selectedId, setSelectedId] = useState(models[0]?.id || '');
   const [form, setForm] = useState<ModelConfig>(models[0] || blankFor());
@@ -165,7 +164,7 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
           {testResult && <div className="test-result">{testResult}</div>}
           <div className="form-footer">
             <div>{selectedId && <button className="text-danger" onClick={() => { if (window.confirm('删除该模型配置？历史项目中的参数快照仍会保留。')) void onDelete(selectedId); }}>删除模型</button>}</div>
-            <div className="footer-actions"><button className="button secondary" disabled={!form.name.trim() || !form.model.trim()} onClick={async () => setTestResult(selectedId ? await onTest(selectedId) : await onTestConfig(form))}>测试连接</button><button className="button primary" disabled={!form.name.trim() || !form.model.trim() || saving} onClick={() => void save()}>{saving ? '保存中…' : '保存配置'}</button></div>
+            <div className="footer-actions"><button className="button secondary" disabled={!form.name.trim() || !form.model.trim()} onClick={async () => setTestResult(await onTestConfig(form))}>测试连接</button><button className="button primary" disabled={!form.name.trim() || !form.model.trim() || saving} onClick={() => void save()}>{saving ? '保存中…' : '保存配置'}</button></div>
           </div>
         </section>
       </section>

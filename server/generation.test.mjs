@@ -24,6 +24,7 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
   const calls = [];
   let visionPrompts = null;
   let visionDifferent = false;
+  let recognitionCalls = 0;
   let failNext429 = 0;
   let always429 = false;
   let nextImageError = null;
@@ -64,7 +65,20 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
           inFlight -= 1;
         }
       }
-      const content = JSON.stringify({ different: visionDifferent, prompts: visionPrompts });
+      const requestBody = JSON.parse(bytes);
+      const instruction = String(requestBody.messages?.at(-1)?.content?.find?.((item) => item?.type === 'text')?.text || requestBody.messages?.at(-1)?.content || '');
+      let content;
+      if (instruction.includes('识别图片内所有可编辑的可见文字')) {
+        recognitionCalls += 1;
+        content = JSON.stringify({ segments: [
+          { id: 'title', text: '旧标题', context: '顶部居中标题' },
+          { id: 'footer', text: '旧页脚', context: '底部右侧小字' },
+        ] });
+      } else if (instruction.includes('根据图片内容和下面的文字替换项')) {
+        content = JSON.stringify({ edit_prompt: '按清单精确修改文字，其余内容保持不变' });
+      } else {
+        content = JSON.stringify({ different: visionDifferent, prompts: visionPrompts });
+      }
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ choices: [{ message: { content } }] }));
     } catch (error) { res.writeHead(500); res.end(String(error)); }
@@ -157,6 +171,21 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
     assert.equal(result.content.promptMode, 'same');
     assert.equal(result.content.prompts, undefined);
     assert.equal(imageBodiesSince(mark).length, 4);
+  }
+
+  // 2b) 不同提示词的一项失败时，只把成功图片对应的提示词写入消息。
+  {
+    const fixture = await fixtureProject();
+    visionDifferent = true;
+    visionPrompts = ['失败的第一张', '成功的第二张'];
+    nextImageError = 'fixture item failure';
+    const started = await request(`/projects/${fixture.projectId}/generate`, { prompt: '分别生成两张', visionModelId: 'vision', params: { size: '1024x1024', count: 2 } }, 202);
+    const task = await finished(fixture.projectId, started.taskId);
+    assert.equal(task.status, 'partial', task.error);
+    const bundle = await request(`/projects/${fixture.projectId}`);
+    const result = bundle.messages.find((message) => message.type === 'result' && message.content.taskId === started.taskId);
+    assert.equal(result.content.outputImageIds.length, 1);
+    assert.deepEqual(result.content.prompts, ['成功的第二张']);
   }
 
   // 3) 原生批量路径：网关忽略 n 时按缺口补发 count=1 请求，同样受限并发。
@@ -498,6 +527,61 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
       variables: [{ name: '花纹', values: ['条纹', '斑点'] }],
     }, 400);
     assert.match(missingVariable.error, /不存在的变量/);
+  }
+
+  // 12) 文字编辑成功后，把修改后的完整文字快照继承给每张输出图；后续
+  // 再打开编辑器直接读缓存，包含新增/替换/删除结果，也支持“全部删除”。
+  {
+    const fixture = await fixtureProject();
+    const recognized = await request(`/projects/${fixture.projectId}/recognize-text`, { imageId: fixture.imageId, visionModelId: 'vision' });
+    assert.equal(recognized.cached, false);
+    assert.equal(recognitionCalls, 1);
+    assert.deepEqual(recognized.segments.map((item) => item.text), ['旧标题', '旧页脚']);
+
+    const editedSegments = [
+      { ...recognized.segments[0], text: '新标题' },
+      { ...recognized.segments[1], text: '' },
+      { id: 'manual-badge', originalText: '', text: '新增角标', context: '右上角角标', manual: true, rect: { x: 70, y: 5, width: 20, height: 10 } },
+    ];
+    const started = await request(`/projects/${fixture.projectId}/edit-text`, {
+      imageId: fixture.imageId,
+      modelId: 'image',
+      visionModelId: 'vision',
+      segments: editedSegments,
+      params: { size: '1024x1024', count: 2 },
+    }, 202);
+    const task = await finished(fixture.projectId, started.taskId);
+    assert.equal(task.status, 'success', task.error);
+    const bundle = await request(`/projects/${fixture.projectId}`);
+    const version = bundle.versions.find((item) => item.operation === 'edit_text');
+    assert.equal(version.outputs.length, 2);
+    for (const output of version.outputs) {
+      const inherited = await request(`/projects/${fixture.projectId}/recognize-text`, { imageId: output.id, visionModelId: 'vision' });
+      assert.equal(inherited.cached, true);
+      assert.equal(inherited.modelName, 'Vision stub');
+      assert.deepEqual(inherited.segments.map((item) => ({ text: item.text, originalText: item.originalText, context: item.context, rect: item.rect })), [
+        { text: '新标题', originalText: '新标题', context: '顶部居中标题', rect: undefined },
+        { text: '新增角标', originalText: '新增角标', context: '右上角角标', rect: { x: 70, y: 5, width: 20, height: 10 } },
+      ]);
+    }
+    assert.equal(recognitionCalls, 1, 'output images must reuse inherited text without another vision call');
+
+    const nextSource = version.outputs[0];
+    const deleteAll = await request(`/projects/${fixture.projectId}/edit-text`, {
+      imageId: nextSource.id,
+      modelId: 'image',
+      visionModelId: 'vision',
+      parentVersionId: version.id,
+      segments: (await request(`/projects/${fixture.projectId}/recognize-text`, { imageId: nextSource.id, visionModelId: 'vision' })).segments.map((item) => ({ ...item, text: '' })),
+      params: { size: '1024x1024', count: 1 },
+    }, 202);
+    assert.equal((await finished(fixture.projectId, deleteAll.taskId)).status, 'success');
+    const afterDeleteBundle = await request(`/projects/${fixture.projectId}`);
+    const deleteVersion = afterDeleteBundle.versions.find((item) => item.parentVersionId === version.id && item.operation === 'edit_text');
+    const empty = await request(`/projects/${fixture.projectId}/recognize-text`, { imageId: deleteVersion.outputs[0].id, visionModelId: 'vision' });
+    assert.equal(empty.cached, true);
+    assert.deepEqual(empty.segments, []);
+    assert.equal(recognitionCalls, 1);
   }
 });
 
