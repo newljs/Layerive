@@ -13,6 +13,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test('backup restore rejects unsafe archives before replacement and preserves a rollback snapshot', { timeout: 30000 }, async (t) => {
   const root = path.resolve(import.meta.dirname, '..');
+  await mkdir(path.join(root, 'work'), { recursive: true });
   const fixture = await mkdtemp(path.join(root, 'work', 'backup-restore-test-'));
   const dataRoot = path.join(fixture, 'data');
   const configRoot = path.join(fixture, 'config');
