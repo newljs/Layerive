@@ -147,6 +147,16 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
     assert.deepEqual(result.content.prompts, visionPrompts);
     assert.equal(result.content.promptMode, 'different');
     assert.equal(result.content.outputImageIds.length, 4);
+    const modelLogs = (await request(`/projects/${fixture.projectId}/model-logs?limit=20`)).logs;
+    const visionLog = modelLogs.find((item) => item.taskId === started.taskId && item.modelType === 'vision');
+    const imageLogs = modelLogs.filter((item) => item.taskId === started.taskId && item.modelType === 'image');
+    assert.equal(visionLog.status, 'success');
+    assert.equal(visionLog.phase, '多图意图判断与提示词拆分');
+    assert.deepEqual(visionLog.response.prompts, visionPrompts);
+    assert.match(visionLog.prompt, /用户选择生成 4 张图片/);
+    assert.equal(imageLogs.length, 4);
+    assert.ok(imageLogs.every((item) => item.durationMs >= 0 && item.response.outputCount === 1));
+    assert.doesNotMatch(JSON.stringify(modelLogs), /data:image|base64/i, 'model logs must not retain image payloads');
     const download = await fetch(`${base}/api/projects/${fixture.projectId}/versions/${version.id}/download`);
     assert.equal(download.status, 200);
     assert.match(download.headers.get('content-type'), /application\/zip/);

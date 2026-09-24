@@ -55,6 +55,27 @@ db.exec(`
     created_at TEXT NOT NULL,
     FOREIGN KEY(project_id) REFERENCES projects(id)
   );
+  CREATE TABLE IF NOT EXISTS model_execution_logs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    task_id TEXT,
+    model_id TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    model_type TEXT NOT NULL,
+    operation_type TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    status TEXT NOT NULL,
+    prompt_text TEXT NOT NULL DEFAULT '',
+    request_json TEXT NOT NULL DEFAULT '{}',
+    response_json TEXT,
+    reasoning_text TEXT,
+    duration_ms INTEGER,
+    error_json TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(project_id) REFERENCES projects(id)
+  );
   CREATE TABLE IF NOT EXISTS image_versions (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -114,6 +135,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_versions_project_created ON image_versions(project_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_images_project_version ON images(project_id, version_id);
   CREATE INDEX IF NOT EXISTS idx_text_recognitions_image ON text_recognitions(image_id);
+  CREATE INDEX IF NOT EXISTS idx_model_logs_project_created ON model_execution_logs(project_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_model_logs_task ON model_execution_logs(task_id);
   PRAGMA optimize;
 `);
 

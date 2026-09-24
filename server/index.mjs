@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { APP_ROOT, CONFIG_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, GALLERY_ROOT, imageDto, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
 import { makeDemoPng, makeThumbnailPng, readImageDimensions } from './png.mjs';
-import { isSenseNovaLegacyVisionEndpoint, isSenseNovaTokenChatEndpoint, normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, visionApiFormat, visionEndpoint, writeModels } from './models.mjs';
+import { imageApiFormat, isSenseNovaLegacyVisionEndpoint, isSenseNovaTokenChatEndpoint, normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, visionApiFormat, visionEndpoint, writeModels } from './models.mjs';
 import { createZip, readZip } from './zip.mjs';
 import { composeLocalReference, normalizeLocalImage, normalizeSenseNovaInput, preserveOutsideRegion, referenceBytes, validatePlacement, validateRect } from './local-edit.mjs';
 
@@ -21,6 +21,8 @@ const MODELS_CONFIG_PATH = path.join(CONFIG_ROOT, 'models.json');
 const startupRecoveryAt = now();
 db.prepare("UPDATE generation_tasks SET status = 'failed', error_json = ?, finished_at = ? WHERE status = 'generating'")
   .run(JSON.stringify({ message: '应用重启，任务已中断，请重新发送。' }), startupRecoveryAt);
+db.prepare("UPDATE model_execution_logs SET status = 'failed', error_json = ?, finished_at = ?, duration_ms = COALESCE(duration_ms, 0) WHERE status = 'running'")
+  .run(JSON.stringify({ message: '应用重启，模型调用已中断。' }), startupRecoveryAt);
 // A batch version is published incrementally. Preserve completed outputs
 // after a restart, but hide an empty placeholder version that never produced an
 // image before the process stopped. Local-edit batches use operation_type
@@ -61,6 +63,7 @@ const BACKUP_REQUIRED_SCHEMA = {
 const BACKUP_OPTIONAL_SCHEMA = {
   text_recognitions: ['image_id', 'vision_model_id', 'vision_model_fingerprint', 'model_name', 'segments_json', 'created_at'],
   gallery_entries: ['id', 'title', 'category', 'prompt', 'style_prompt', 'image_path', 'source', 'created_at', 'updated_at'],
+  model_execution_logs: ['id', 'project_id', 'task_id', 'model_id', 'model_name', 'model_type', 'operation_type', 'phase', 'status', 'prompt_text', 'request_json', 'response_json', 'reasoning_text', 'duration_ms', 'error_json', 'started_at', 'finished_at', 'created_at'],
 };
 
 function trackTask(taskId, controller, timer, work) {
@@ -117,6 +120,82 @@ function restoringError() {
 function json(res, status, payload) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(payload));
+}
+
+const MODEL_LOG_TEXT_LIMIT = 120000;
+
+function boundedLogText(value) {
+  const text = String(value ?? '');
+  return text.length > MODEL_LOG_TEXT_LIMIT ? `${text.slice(0, MODEL_LOG_TEXT_LIMIT)}\n…（日志内容已截断）` : text;
+}
+
+function logJson(value, fallback = {}) {
+  try { return boundedLogText(JSON.stringify(value ?? fallback)); }
+  catch { return JSON.stringify(fallback); }
+}
+
+function beginModelExecutionLog(context, model, input = {}) {
+  if (!context?.projectId || !model) return null;
+  const id = uid();
+  const startedAt = now();
+  db.prepare(`INSERT INTO model_execution_logs
+    (id, project_id, task_id, model_id, model_name, model_type, operation_type, phase, status, prompt_text, request_json, started_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
+    .run(id, context.projectId, context.taskId || null, model.id || model.model || 'unknown', model.name || model.model || '未命名模型', context.modelType || model.type || 'image', context.operationType || 'unknown', context.phase || '模型调用', boundedLogText(input.prompt || ''), logJson(input.request || {}), startedAt, startedAt);
+  return { id, startedMs: Date.now() };
+}
+
+function finishModelExecutionLog(log, response = {}, reasoning = '') {
+  if (!log) return;
+  const finishedAt = now();
+  db.prepare(`UPDATE model_execution_logs
+    SET status = 'success', response_json = ?, reasoning_text = ?, duration_ms = ?, finished_at = ?
+    WHERE id = ?`)
+    .run(logJson(response), boundedLogText(reasoning), Math.max(0, Date.now() - log.startedMs), finishedAt, log.id);
+}
+
+function failModelExecutionLog(log, error) {
+  if (!log) return;
+  const finishedAt = now();
+  const canceled = error?.name === 'AbortError' || /cancel/i.test(String(error?.message || ''));
+  db.prepare(`UPDATE model_execution_logs
+    SET status = ?, duration_ms = ?, error_json = ?, finished_at = ?
+    WHERE id = ?`)
+    .run(canceled ? 'canceled' : 'failed', Math.max(0, Date.now() - log.startedMs), logJson({ message: friendlyModelMessage(error?.message || '模型调用失败') }), finishedAt, log.id);
+}
+
+function modelExecutionLogDto(row) {
+  const response = parseJson(row.response_json, null);
+  const generatedPrompt = response && typeof response === 'object'
+    ? String(response.edit_prompt || response.prompt || (Array.isArray(response.prompts) ? response.prompts.join('\n') : '') || '')
+    : '';
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    modelId: row.model_id,
+    modelName: row.model_name,
+    modelType: row.model_type,
+    operationType: row.operation_type,
+    phase: row.phase,
+    status: row.status,
+    prompt: row.prompt_text,
+    generatedPrompt,
+    request: parseJson(row.request_json, {}),
+    response,
+    reasoning: row.reasoning_text || '',
+    durationMs: row.duration_ms,
+    error: parseJson(row.error_json, null)?.message || null,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    createdAt: row.created_at,
+  };
+}
+
+function listModelExecutionLogs(projectId, limit = 100) {
+  projectOrThrow(projectId);
+  const safeLimit = Math.min(200, Math.max(1, Math.trunc(Number(limit) || 100)));
+  return db.prepare('SELECT * FROM model_execution_logs WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?')
+    .all(projectId, safeLimit).map(modelExecutionLogDto);
 }
 
 const LOCAL_HOSTNAMES = ['127.0.0.1', 'localhost', '[::1]'];
@@ -310,8 +389,27 @@ function requestedImageCount(params) {
   return Math.min(4, Math.max(1, Math.trunc(Number(params?.count) || 1)));
 }
 
+function imageOptions(model) {
+  const fallbackSizes = model.provider === 'sensenova'
+    ? ['1664x2496', '2496x1664', '1760x2368', '2368x1760', '1824x2272', '2272x1824', '2048x2048', '2752x1536', '1536x2752', '3072x1376', '1344x3136']
+    : ['1024x1024', '1536x1024', '1024x1536'];
+  const sizes = Array.isArray(model.sizeOptions) ? model.sizeOptions.filter((item) => /^\d{2,4}x\d{2,4}$/.test(String(item))) : [];
+  const formats = Array.isArray(model.outputFormats) ? model.outputFormats.filter((item) => ['png', 'jpeg', 'webp'].includes(item)) : [];
+  return { sizes: sizes.length ? sizes : fallbackSizes, formats: formats.length ? formats : ['png'], transparent: Boolean(model.transparentBackground), maxCount: Math.max(1, Math.min(4, Number(model.maxCount) || 1)) };
+}
+
+function normalizeGenerationParams(model, input) {
+  const options = imageOptions(model);
+  const params = { ...model.defaultParams, ...(input || {}) };
+  params.size = options.sizes.includes(String(params.size)) ? String(params.size) : options.sizes[0];
+  params.count = Math.min(options.maxCount, requestedImageCount(params));
+  params.outputFormat = options.formats.includes(String(params.outputFormat)) ? String(params.outputFormat) : options.formats[0];
+  params.transparent = options.transparent && params.outputFormat !== 'jpeg' && Boolean(params.transparent);
+  return params;
+}
+
 function isSenseNovaImageModel(model) {
-  return model.provider === 'sensenova' || /(?:^|[/.])sensenova\.cn(?:[/:]|$)/i.test(normalizeBaseUrl(model.baseUrl));
+  return model.provider === 'sensenova' && imageApiFormat(model) === 'openai_images';
 }
 
 async function callOpenAi(model, prompt, params, inputImage, signal) {
@@ -443,9 +541,9 @@ async function callGrok(model, prompt, params, inputImage, signal) {
 }
 
 async function callImageProvider(model, prompt, params, inputImage, signal) {
-  return model.provider === 'gemini'
+  return imageApiFormat(model) === 'gemini_interactions'
     ? callGemini(model, prompt, params, inputImage, signal)
-    : model.provider === 'grok'
+    : imageApiFormat(model) === 'grok_images'
       ? callGrok(model, prompt, params, inputImage, signal)
       : callOpenAi(model, prompt, params, inputImage, signal);
 }
@@ -488,14 +586,37 @@ function abortableDelay(ms, signal) {
 
 // Two retries with a short backoff absorb transient RPS limits without
 // pushing a 4-image task past its count-scaled total timeout.
-async function callImageWithRetry(model, prompt, params, inputImage, signal) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await callImageProvider(model, prompt, params, inputImage, signal);
-    } catch (error) {
-      if (!isRateLimitError(error) || attempt >= 2 || signal.aborted) throw error;
-      await abortableDelay(error.retryAfterMs || [1500, 4000][attempt], signal);
+async function callImageWithRetry(model, prompt, params, inputImage, signal, logContext = null) {
+  const log = beginModelExecutionLog(logContext, model, {
+    prompt,
+    request: {
+      provider: model.provider,
+      model: model.model,
+      params,
+      hasInputImage: Boolean(inputImage),
+      inputDimensions: inputImage?.width && inputImage?.height ? { width: inputImage.width, height: inputImage.height } : null,
+    },
+  });
+  let attempts = 0;
+  try {
+    for (let attempt = 0; ; attempt += 1) {
+      attempts = attempt + 1;
+      try {
+        const outputs = await callImageProvider(model, prompt, params, inputImage, signal);
+        finishModelExecutionLog(log, {
+          outputCount: outputs.length,
+          attempts,
+          outputs: outputs.map((output) => ({ mimeType: output.mimeType, width: output.width || null, height: output.height || null, byteLength: output.bytes?.length || null })),
+        });
+        return outputs;
+      } catch (error) {
+        if (!isRateLimitError(error) || attempt >= 2 || signal.aborted) throw error;
+        await abortableDelay(error.retryAfterMs || [1500, 4000][attempt], signal);
+      }
     }
+  } catch (error) {
+    failModelExecutionLog(log, error);
+    throw error;
   }
 }
 
@@ -525,9 +646,9 @@ async function mapWithConcurrency(items, limit, worker) {
 // (fanning out all at once trips platform RPS limits). Distinct prompts from
 // automatic per-image planning always fan out per prompt, because `n` cannot vary the prompt
 // per image. Partial failures keep whatever came back, as before.
-async function callImageProviderBatch(model, prompts, params, inputImage, signal) {
+async function callImageProviderBatch(model, prompts, params, inputImage, signal, logContext = null) {
   const distinctPrompts = prompts.length > 1;
-  const nativeBatch = !distinctPrompts && model.provider !== 'gemini' && !isSenseNovaImageModel(model);
+  const nativeBatch = !distinctPrompts && imageApiFormat(model) !== 'gemini_interactions' && !isSenseNovaImageModel(model);
   const requestPrompts = nativeBatch
     ? [prompts[0]]
     : distinctPrompts ? prompts : Array.from({ length: requestedImageCount(params) }, () => prompts[0]);
@@ -535,7 +656,7 @@ async function callImageProviderBatch(model, prompts, params, inputImage, signal
   // one request per prompt, so the target count comes from the prompt array.
   const desired = distinctPrompts ? prompts.length : requestedImageCount(params);
   const settled = await mapWithConcurrency(requestPrompts, IMAGE_BATCH_CONCURRENCY, (prompt) =>
-    callImageWithRetry(model, prompt, nativeBatch ? params : { ...params, count: 1 }, inputImage, signal));
+    callImageWithRetry(model, prompt, nativeBatch ? params : { ...params, count: 1 }, inputImage, signal, logContext));
   if (signal.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
 
   const outputs = settled.flatMap((result, promptIndex) => result.status === 'fulfilled'
@@ -550,7 +671,7 @@ async function callImageProviderBatch(model, prompts, params, inputImage, signal
   const allRateLimited = errors.length > 0 && errors.every(isRateLimitError);
   if (nativeBatch && missing > 0 && !allRateLimited) {
     const supplements = await mapWithConcurrency(Array.from({ length: missing }, () => prompts[0]), IMAGE_BATCH_CONCURRENCY, (prompt) =>
-      callImageWithRetry(model, prompt, { ...params, count: 1 }, inputImage, signal));
+      callImageWithRetry(model, prompt, { ...params, count: 1 }, inputImage, signal, { ...logContext, phase: `${logContext?.phase || '图像生成'} · 补发` }));
     if (signal.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
     outputs.push(...supplements.flatMap((result) => result.status === 'fulfilled'
       ? result.value.map((output) => ({ ...output, promptIndex: 0 })) : []));
@@ -601,7 +722,29 @@ function visionModelFingerprint(model) {
   });
 }
 
-async function callVision(model, image, instruction, signal) {
+function visionReasoningText(payload) {
+  const values = [
+    payload?.reasoning,
+    payload?.reasoning_content,
+    payload?.choices?.[0]?.message?.reasoning,
+    payload?.choices?.[0]?.message?.reasoning_content,
+  ];
+  if (Array.isArray(payload?.content)) {
+    values.push(...payload.content.filter((item) => item?.type === 'thinking' || item?.type === 'reasoning').map((item) => item.thinking || item.text || item.content));
+  }
+  if (Array.isArray(payload?.output)) {
+    for (const item of payload.output) {
+      if (item?.type === 'reasoning') {
+        values.push(item.summary, item.content, item.text);
+      }
+    }
+  }
+  return values.flatMap((value) => Array.isArray(value) ? value : [value])
+    .map((value) => typeof value === 'string' ? value : value?.text || value?.content || '')
+    .filter(Boolean).join('\n').trim();
+}
+
+async function callVision(model, image, instruction, signal, logContext = null) {
   if (!model?.apiKey) throw Object.assign(new Error('请先在模型配置中填写视觉识别模型的 API Key'), { status: 400 });
   // image 通常来自数据库行（按 file_path 读盘）；gallery 分析直接携带 buffer。
   const images = await Promise.all((Array.isArray(image) ? image : [image]).map(async (item) => {
@@ -613,6 +756,16 @@ async function callVision(model, image, instruction, signal) {
   const isSenseNovaLegacyVision = isSenseNovaLegacyVisionEndpoint(model.baseUrl);
   const isSenseNovaTokenChat = isSenseNovaTokenChatEndpoint(model.baseUrl);
   const apiFormat = visionApiFormat(model);
+  const log = beginModelExecutionLog({ ...logContext, modelType: 'vision' }, model, {
+    prompt: instruction,
+    request: {
+      provider: model.provider,
+      model: model.model,
+      apiFormat,
+      imageCount: images.length,
+      imageTypes: images.map((item) => item.mimeType),
+    },
+  });
   const headers = apiFormat === 'anthropic_messages'
     ? isDots
       ? { 'api-key': model.apiKey, 'Content-Type': 'application/json' }
@@ -638,16 +791,29 @@ async function callVision(model, image, instruction, signal) {
     : isSenseNovaLegacyVision
     ? { model: model.model, messages: [{ role: 'user', content: [...images.map((item) => ({ type: 'image_url', image_url: item.dataUrl })), { type: 'text', text: instruction }] }], max_new_tokens: images.length > 1 ? 2200 : 1600, temperature: 0.1, stream: false }
     : { model: model.model, messages: [{ role: 'system', content: '你是严谨的图像文字识别与编辑规划助手。必须只返回用户要求的 JSON，不要使用 Markdown。' }, { role: 'user', content: [{ type: 'text', text: instruction }, ...images.map((item) => ({ type: 'image_url', image_url: { url: item.dataUrl } }))] }], ...(!isSenseNovaTokenChat ? { response_format: { type: 'json_object' } } : {}), temperature: 0.1 };
-  const response = await fetch(visionEndpoint(model), { method: 'POST', headers, body: JSON.stringify(requestBody), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000) });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error?.message || payload?.message || `视觉识别请求失败（${response.status}）`);
-  const responseOutput = Array.isArray(payload?.output)
-    ? payload.output.flatMap((item) => Array.isArray(item?.content) ? item.content : []).map((item) => item?.text || '').join('')
-    : '';
-  const message = payload?.output_text || responseOutput || payload?.content || payload?.data?.choices?.[0]?.message || payload?.choices?.[0]?.message?.content || payload?.choices?.[0]?.message;
-  const content = Array.isArray(message) ? message.map((item) => item.text || item.content || '').join('') : message?.content || message;
-  if (!content) throw new Error('视觉识别模型没有返回内容');
-  return content;
+  try {
+    const response = await fetch(visionEndpoint(model), { method: 'POST', headers, body: JSON.stringify(requestBody), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload?.error?.message || payload?.message || `视觉识别请求失败（${response.status}）`);
+    const responseOutput = Array.isArray(payload?.output)
+      ? payload.output.flatMap((item) => Array.isArray(item?.content) ? item.content : []).map((item) => item?.text || '').join('')
+      : '';
+    const message = payload?.output_text || responseOutput || payload?.content || payload?.data?.choices?.[0]?.message || payload?.choices?.[0]?.message?.content || payload?.choices?.[0]?.message;
+    const content = Array.isArray(message) ? message.map((item) => item.text || item.content || '').join('') : message?.content || message;
+    if (!content) throw new Error('视觉识别模型没有返回内容');
+    let output = content;
+    try { output = parseVisionJson(content); } catch { /* Keep non-JSON provider text visible in diagnostics. */ }
+    finishModelExecutionLog(log, {
+      ...(output && typeof output === 'object' && !Array.isArray(output) ? output : { output }),
+      usage: payload?.usage || null,
+      providerModel: payload?.model || model.model,
+      requestId: response.headers.get('x-request-id') || response.headers.get('request-id') || null,
+    }, visionReasoningText(payload));
+    return content;
+  } catch (error) {
+    failModelExecutionLog(log, error);
+    throw error;
+  }
 }
 
 function visionModelOrThrow(config, requestedModelId) {
@@ -713,7 +879,7 @@ async function recognizeImageText(projectId, input) {
       db.prepare('DELETE FROM text_recognitions WHERE image_id = ? AND vision_model_id = ?').run(image.id, visionModel.id);
     }
   }
-  const result = await callVision(visionModel, image, '识别图片内所有可编辑的可见文字，并按视觉区域分段。返回严格 JSON：{"segments":[{"id":"text-1","text":"原始文字","context":"文字所在位置、字号、颜色、排版和附近视觉元素的简短描述"}]}。不要遗漏文字；不要翻译、改写或解释；不要返回 Markdown。');
+  const result = await callVision(visionModel, image, '识别图片内所有可编辑的可见文字，并按视觉区域分段。返回严格 JSON：{"segments":[{"id":"text-1","text":"原始文字","context":"文字所在位置、字号、颜色、排版和附近视觉元素的简短描述"}]}。不要遗漏文字；不要翻译、改写或解释；不要返回 Markdown。', null, { projectId, operationType: 'recognize_text', phase: '文字识别' });
   const segments = textSegments(result);
   db.prepare(`
     INSERT INTO text_recognitions (image_id, vision_model_id, vision_model_fingerprint, model_name, segments_json, created_at)
@@ -751,7 +917,7 @@ async function editImageText(projectId, input) {
       : `${index + 1}. 删除文字“${item.originalText}”，并自然修复文字覆盖的背景（位置与样式：${[item.context || '保持原区域', rectDescription(item.rect)].filter(Boolean).join('；')}）`
     : `${index + 1}. 在 ${[item.context || '指定区域', rectDescription(item.rect)].filter(Boolean).join('；')} 添加文字“${item.text}”，样式与周围内容协调`)
     .join('\n');
-  const planning = await callVision(visionModel, image, `根据图片内容和下面的文字替换项，为图片编辑模型生成一条准确中文提示词。只允许修改列出的文字，必须保留其他文字以及人物、背景、构图、配色、风格、尺寸和物体不变；新文字需要保持原位置、层级、字体风格、字号和颜色，除非替换文本长度导致微小的排版调整。若替换项给出框选区域，必须在 edit_prompt 中保留该精确区域约束，禁止改动框外内容。返回严格 JSON：{"edit_prompt":"..."}。\n替换项：\n${changeList}`);
+  const planning = await callVision(visionModel, image, `根据图片内容和下面的文字替换项，为图片编辑模型生成一条准确中文提示词。只允许修改列出的文字，必须保留其他文字以及人物、背景、构图、配色、风格、尺寸和物体不变；新文字需要保持原位置、层级、字体风格、字号和颜色，除非替换文本长度导致微小的排版调整。若替换项给出框选区域，必须在 edit_prompt 中保留该精确区域约束，禁止改动框外内容。返回严格 JSON：{"edit_prompt":"..."}。\n替换项：\n${changeList}`, null, { projectId, operationType: 'edit_text', phase: '改字提示词规划' });
   const planned = parseVisionJson(planning);
   const fallback = `仅修改以下图片文字，其他所有画面元素、文字、构图、人物、背景、色彩、风格与尺寸均保持不变。${changeList}`;
   const coordinateConstraints = changed.map((item) => rectDescription(item.rect)).filter(Boolean).join('；');
@@ -810,7 +976,7 @@ async function prepareLocalEdit(projectId, taskId, sourceImage, localEdit, signa
   updateTaskInput(taskId, { stage: 'planning' });
   signal.throwIfAborted();
   if (!reference) {
-    const planned = parseVisionJson(await callVision(visionModel, sourceImage, `你是图片局部修改规划助手。只允许修改框选区域，框外的所有文字、人物、背景、构图、光影、颜色、风格、尺寸和物体必须保持不变。请结合图片内容和要求生成准确中文提示词，保留精确区域坐标。返回严格 JSON：{"edit_prompt":"..."}。\n框选区域：${region}\n用户要求：${instruction}`, signal));
+    const planned = parseVisionJson(await callVision(visionModel, sourceImage, `你是图片局部修改规划助手。只允许修改框选区域，框外的所有文字、人物、背景、构图、光影、颜色、风格、尺寸和物体必须保持不变。请结合图片内容和要求生成准确中文提示词，保留精确区域坐标。返回严格 JSON：{"edit_prompt":"..."}。\n框选区域：${region}\n用户要求：${instruction}`, signal, { projectId, taskId, operationType: 'local_edit', phase: '局部修改规划' }));
     return { image: sourceImage, prompt: `${String(planned.edit_prompt || instruction)}\n精确约束：仅修改${region}，框外内容不得改动。` };
   }
   const source = await normalizeLocalImage(await readFile(path.join(PROJECTS_ROOT, projectId, sourceImage.file_path)));
@@ -822,7 +988,7 @@ async function prepareLocalEdit(projectId, taskId, sourceImage, localEdit, signa
 例如图1圈中人头、图2是一只狗，应推断为把人头换成参考图中的狗头，而非换掉整个人或粘贴整张狗照片。其他物体、服饰、商品等同理；用户明确要求优先。
 请精确定位图1中需要替换的主体边界（target_rect，必须在允许区域内）；在图2中定位要取用的主体边界（reference_rect，例如仅狗头含耳朵，不含身体或多余背景）。两个矩形均以各自整张图左上角为原点，使用 0–100 的百分比 x/y/width/height，不是像素、0–1 或相对于选区的坐标。若无法可靠判断，返回 {"error":"说明原因及需要补充的信息"}，不要捏造坐标。
 后台将按 reference_rect 裁剪图2，等比缩放放入 target_rect，形成粗糙拼贴，再把这张合成图交给图片编辑模型。请为这张合成图生成 edit_prompt：明确主体身份与关键特征；只自然融合已经贴上的主体，保留该参考主体的特征；根据实际场景修复裁剪背景、接缝、残留原主体、轮廓/毛发、遮挡关系、颈部/连接位置、姿态透视、光线阴影和材质。按原图风格处理（照片自然真实，插画保持插画），不新增无关内容。合成图不是最终效果，不得照抄粘贴边缘，也不能把替换撤销还原。禁止改动选区外内容、尺寸或构图。
-返回严格 JSON：{"intent":"具体替换意图","target_rect":{"x":0,"y":0,"width":1,"height":1},"reference_rect":{"x":0,"y":0,"width":1,"height":1},"edit_prompt":"适合当前场景的完整中文融合提示词"}。`, signal));
+返回严格 JSON：{"intent":"具体替换意图","target_rect":{"x":0,"y":0,"width":1,"height":1},"reference_rect":{"x":0,"y":0,"width":1,"height":1},"edit_prompt":"适合当前场景的完整中文融合提示词"}。`, signal, { projectId, taskId, operationType: 'local_edit', phase: '参考图定位与融合规划' }));
   signal.throwIfAborted();
   if (planned.error) throw new Error(`视觉定位失败：${String(planned.error)}`);
   const plan = validatePlacement(planned, rect);
@@ -858,7 +1024,7 @@ async function removeImageWatermark(projectId, input) {
   const config = readModels();
   const visionModel = visionModelOrThrow(config, input.visionModelId);
   const image = imageOrThrow(projectId, input.imageId);
-  const analysis = await callVision(visionModel, image, `分析图片中是否存在覆盖在画面上的水印、平台标识、半透明文字或重复 logo。不要把画面本身的招牌、产品 logo、海报正文或自然出现的文字当成水印。若存在水印，描述每个水印的精确位置、范围、形状、透明度、颜色、文字和它遮挡的背景内容，并生成一条供图片编辑模型使用的中文修复提示词。修复时只移除水印并自然补全其遮挡区域，必须完整保留人物、主体、产品、原有设计文字、构图、风格、光影、颜色和尺寸。返回严格 JSON：{"has_watermark":true,"watermarks":[{"location":"...","appearance":"...","coverage":"..."}],"edit_prompt":"..."}。不要返回 Markdown。`);
+  const analysis = await callVision(visionModel, image, `分析图片中是否存在覆盖在画面上的水印、平台标识、半透明文字或重复 logo。不要把画面本身的招牌、产品 logo、海报正文或自然出现的文字当成水印。若存在水印，描述每个水印的精确位置、范围、形状、透明度、颜色、文字和它遮挡的背景内容，并生成一条供图片编辑模型使用的中文修复提示词。修复时只移除水印并自然补全其遮挡区域，必须完整保留人物、主体、产品、原有设计文字、构图、风格、光影、颜色和尺寸。返回严格 JSON：{"has_watermark":true,"watermarks":[{"location":"...","appearance":"...","coverage":"..."}],"edit_prompt":"..."}。不要返回 Markdown。`, null, { projectId, operationType: 'remove_watermark', phase: '水印识别与修复规划' });
   const planned = parseVisionJson(analysis);
   const watermarks = Array.isArray(planned.watermarks) ? planned.watermarks : [];
   if (planned.has_watermark === false || !watermarks.length) {
@@ -909,7 +1075,7 @@ async function extractImageAsset(projectId, input) {
   const intent = hint
     ? `用户还补充了说明：“${hint}”，请优先按补充说明确定要提取的主体。`
     : '截取框可能不够精确：边缘处只出现一部分、被裁断的物体（例如旁边座椅的局部）通常是误入的干扰，不属于主体；主体应是画面中最完整、最主要、最接近截取中心的对象。';
-  const planning = await callVision(visionModel, cropImage, `你是素材提取规划助手。用户从一张更大的图片中截取了当前图片，想把它里面最核心的主体提取成一张独立素材图。${intent}${edgeNote}\n请先判断用户想提取的主体，再为图片编辑模型生成一条中文提示词。提示词必须满足：1) 详细描述主体的内容、形状、文字、颜色、材质、光影等可辨识细节，要求输出图中的主体与当前图片中的主体完全一致，不得增删、变形或改变任何细节；2) 明确去除主体之外的所有背景、环境和边缘干扰元素（含截图补边痕迹）；3) 让主体完整、清晰、居中地占满整个画面。返回严格 JSON：{"subject":"主体简短名称","edit_prompt":"给图片编辑模型的完整中文提示词"}。不要返回 Markdown。`);
+  const planning = await callVision(visionModel, cropImage, `你是素材提取规划助手。用户从一张更大的图片中截取了当前图片，想把它里面最核心的主体提取成一张独立素材图。${intent}${edgeNote}\n请先判断用户想提取的主体，再为图片编辑模型生成一条中文提示词。提示词必须满足：1) 详细描述主体的内容、形状、文字、颜色、材质、光影等可辨识细节，要求输出图中的主体与当前图片中的主体完全一致，不得增删、变形或改变任何细节；2) 明确去除主体之外的所有背景、环境和边缘干扰元素（含截图补边痕迹）；3) 让主体完整、清晰、居中地占满整个画面。返回严格 JSON：{"subject":"主体简短名称","edit_prompt":"给图片编辑模型的完整中文提示词"}。不要返回 Markdown。`, null, { projectId, operationType: 'extract_asset', phase: '素材识别与提示词规划' });
   const planned = parseVisionJson(planning);
   const subject = String(planned.subject || '').trim();
   const fallback = `提取图片中的主要主体${subject ? `（${subject}）` : ''}，生成一张只包含该主体的独立素材图。主体的内容、文字、颜色、材质、光影必须与输入图片中的主体完全一致；去除主体之外的所有背景、环境和边缘干扰元素，让主体完整、清晰、居中占满整个画面。`;
@@ -1013,7 +1179,7 @@ async function saveProjectImageToGallery(projectId, input) {
   const visionModel = visionModelOrThrow(config, input.visionModelId);
   let analysis = null;
   try {
-    analysis = parseVisionJson(await callVision(visionModel, { buffer: bytes, mime_type: image.mime_type }, GALLERY_ANALYZE_INSTRUCTION));
+    analysis = parseVisionJson(await callVision(visionModel, { buffer: bytes, mime_type: image.mime_type }, GALLERY_ANALYZE_INSTRUCTION, null, { projectId, operationType: 'gallery_analyze', phase: '画廊提示词提炼' }));
   } catch (error) {
     // 提炼失败不拦截收藏：图片先入库，提示词留空由用户手动补充。
     console.error('gallery distill failed:', error.message);
@@ -1041,12 +1207,12 @@ function deleteGalleryEntry(id) {
 // whether the count means "more candidates of the same prompt" or "one image
 // per requested variant". Ambiguous or malformed decisions stay in candidate
 // mode so the app never invents differences the user did not ask for.
-async function planGenerationPrompts(inputImage, prompt, count, visionModel, signal) {
+async function planGenerationPrompts(inputImage, prompt, count, visionModel, signal, logContext = null) {
   const instruction = `你是多图生图意图判断助手。用户选择生成 ${count} 张图片，提示词是：“${prompt}”。请判断用户是否明确要求这 ${count} 张图在内容上分别不同。
 判断规则：仅仅选择多张、想多出几个候选、同一描述抽多次，different 必须为 false；只有提示词明确要求“每张不同、分别生成、不同方案/风格/角度/动作/表情”，列举了多个需要分别出图的项目（例如喜怒哀乐），或语义上明确要求一项对应一张时，different 才为 true。含糊时一律为 false。
 若 different 为 true，把提示词拆成恰好 ${count} 条可独立生图、彼此明显不同但忠于原意的完整中文提示词；若为 false，prompts 返回空数组。${inputImage ? '同时参考输入图片判断用户指的是基于同一图片生成多个普通候选，还是分别完成多个明确变化。' : ''}
 返回严格 JSON：{"different":true或false,"prompts":["提示词1",...] }。不要返回 Markdown，不要解释。`;
-  const planned = parseVisionJson(await callVision(visionModel, inputImage || [], instruction, signal));
+  const planned = parseVisionJson(await callVision(visionModel, inputImage || [], instruction, signal, logContext));
   const entries = (Array.isArray(planned) ? planned : Array.isArray(planned.prompts) ? planned.prompts : [])
     .filter((item) => typeof item === 'string' || typeof item === 'number')
     .map((item) => String(item).trim())
@@ -1077,8 +1243,7 @@ function startGeneration(projectId, input, localEdit = null, textEdit = null) {
   if (!model.capabilities.includes(operation) && !(['image_to_image', 'edit_text', 'local_edit', 'outpaint', 'enhance', 'remove_watermark', 'extract_asset'].includes(operation) && model.capabilities.includes('edit_prompt'))) {
     throw Object.assign(new Error('当前模型不支持这个操作'), { status: 400 });
   }
-  const params = { ...model.defaultParams, ...(input.params || {}) };
-  params.count = requestedImageCount(params);
+  const params = normalizeGenerationParams(model, input.params);
   // Only the general /generate route opts into automatic multi-image intent
   // planning. Specialized edit operations keep their existing batch meaning.
   const autoPromptMode = Boolean(input.autoPromptMode) && params.count > 1 && Boolean(prompt);
@@ -1132,7 +1297,7 @@ async function runGenerationTask(projectId, taskId, context) {
     let promptMode = 'same';
     if (context.autoPromptMode) {
       updateTaskInput(taskId, { stage: 'planning' });
-      const decision = await planGenerationPrompts(context.inputImage, prompt, requestedImageCount(params), context.promptVisionModel, controller.signal);
+      const decision = await planGenerationPrompts(context.inputImage, prompt, requestedImageCount(params), context.promptVisionModel, controller.signal, { projectId, taskId, operationType: operation, phase: '多图意图判断与提示词拆分' });
       promptMode = decision.mode;
       if (decision.mode === 'different') {
         const stylePrompt = !inputImage ? String(parseJson(db.prepare('SELECT draft_json FROM projects WHERE id = ?').get(projectId)?.draft_json)?.stylePrompt || '').trim() : '';
@@ -1158,7 +1323,7 @@ async function runGenerationTask(projectId, taskId, context) {
       generated = Array.from({ length: count }, (_, index) => ({ bytes: makeDemoPng(batchPrompts[index] || effectivePrompt || '基于图片继续创作', outputWidth, outputHeight, index), mimeType: 'image/png', width: outputWidth, height: outputHeight, promptIndex: context.autoPromptMode && promptMode === 'different' ? index : 0 }));
     } else {
       if (!model.apiKey) throw new Error('模型尚未配置 API Key');
-      const providerResult = await callImageProviderBatch(model, batchPrompts, params, providerImage, controller.signal);
+      const providerResult = await callImageProviderBatch(model, batchPrompts, params, providerImage, controller.signal, { projectId, taskId, operationType: operation, phase: '图片生成', modelType: 'image' });
       generated = providerResult.outputs;
       generationErrors = providerResult.failedCount ? providerResult.errors.slice(-providerResult.failedCount) : [];
     }
@@ -1381,7 +1546,7 @@ function startBatchEdit(projectId, input) {
   if (!model.capabilities.includes('edit_prompt')) throw Object.assign(new Error('当前模型不支持提示词改图'), { status: 400 });
   const source = ensureUploadVersion(projectId, imageOrThrow(projectId, input.imageId));
   const validated = validateBatchEditInput(input);
-  const params = { ...model.defaultParams, ...(input.params || {}), count: 1 };
+  const params = { ...normalizeGenerationParams(model, input.params), count: 1 };
   const taskId = uid();
   const userMessageId = uid();
   const versionId = uid();
@@ -1437,7 +1602,7 @@ async function runBatchEditTask(projectId, taskId, context) {
           await abortableDelay(300, controller.signal);
           output = { bytes: makeDemoPng(prompt, outputWidth, outputHeight, index), mimeType: 'image/png', width: outputWidth, height: outputHeight };
         } else {
-          [output] = await callImageWithRetry(model, prompt, { ...params, count: 1 }, source, controller.signal);
+          [output] = await callImageWithRetry(model, prompt, { ...params, count: 1 }, source, controller.signal, { projectId, taskId, operationType: 'batch_edit', phase: `批量改图 ${index + 1}/${items.length}`, modelType: 'image' });
         }
         controller.signal.throwIfAborted();
         const dimensions = readImageDimensions(output.bytes, output.mimeType) || parseSize(params.size);
@@ -1540,7 +1705,7 @@ function startBatchGenerate(projectId, input) {
   const validated = validateBatchEditInput(input);
   const stylePrompt = String(input.stylePrompt || '').trim();
   if (stylePrompt.length > 2000) throw Object.assign(new Error('统一风格提示词不能超过 2000 个字符'), { status: 400 });
-  const params = { ...model.defaultParams, ...(input.params || {}), count: 1 };
+  const params = { ...normalizeGenerationParams(model, input.params), count: 1 };
   const taskId = uid();
   const userMessageId = uid();
   const versionId = uid();
@@ -1598,7 +1763,7 @@ async function runBatchGenerateTask(projectId, taskId, context) {
           await abortableDelay(300, controller.signal);
           output = { bytes: makeDemoPng(prompt, outputWidth, outputHeight, item.index), mimeType: 'image/png', width: outputWidth, height: outputHeight };
         } else {
-          [output] = await callImageWithRetry(model, prompt, { ...params, count: 1 }, null, controller.signal);
+          [output] = await callImageWithRetry(model, prompt, { ...params, count: 1 }, null, controller.signal, { projectId, taskId, operationType: 'batch_generate', phase: `批量文生图 ${item.index + 1}/${validated.quantity}`, modelType: 'image' });
         }
         controller.signal.throwIfAborted();
         const dimensions = readImageDimensions(output.bytes, output.mimeType) || parseSize(params.size);
@@ -1711,7 +1876,7 @@ function startLocalEditBatch(projectId, input) {
   if (!model || model.type === 'vision') throw Object.assign(new Error('请选择有效的图片生成模型'), { status: 400 });
   if (!model.capabilities.includes('edit_prompt')) throw Object.assign(new Error('当前模型不支持提示词改图'), { status: 400 });
   const source = ensureUploadVersion(projectId, imageOrThrow(projectId, input.imageId));
-  const params = { ...model.defaultParams, ...(input.params || {}), count: 1 };
+  const params = { ...normalizeGenerationParams(model, input.params), count: 1 };
   if (reference) { params.outputFormat = 'png'; params.transparent = false; }
   const taskId = uid();
   const userMessageId = uid();
@@ -1769,7 +1934,7 @@ async function runLocalEditBatchTask(projectId, taskId, context) {
           await abortableDelay(300, controller.signal);
           output = { bytes: makeDemoPng(prepared.prompt, outputWidth, outputHeight, index), mimeType: 'image/png', width: outputWidth, height: outputHeight };
         } else {
-          [output] = await callImageWithRetry(model, prepared.prompt, { ...params, count: 1 }, prepared.image, controller.signal);
+          [output] = await callImageWithRetry(model, prepared.prompt, { ...params, count: 1 }, prepared.image, controller.signal, { projectId, taskId, operationType: 'local_edit', phase: `批量局部生成 ${index + 1}/${items.length}`, modelType: 'image' });
         }
         controller.signal.throwIfAborted();
         if (prepared.source) {
@@ -1968,6 +2133,7 @@ async function duplicateProject(sourceId, nameSuffix = ' 副本') {
     tasks: db.prepare('SELECT * FROM generation_tasks WHERE project_id = ?').all(sourceId),
     versionInputs: db.prepare('SELECT vi.* FROM version_inputs vi JOIN image_versions v ON v.id = vi.version_id WHERE v.project_id = ?').all(sourceId),
     textRecognitions: db.prepare('SELECT tr.* FROM text_recognitions tr JOIN images i ON i.id = tr.image_id WHERE i.project_id = ?').all(sourceId),
+    modelLogs: db.prepare('SELECT * FROM model_execution_logs WHERE project_id = ?').all(sourceId),
   };
   const targetRoot = path.join(PROJECTS_ROOT, newId);
   ensureProjectDirs(newId);
@@ -1987,6 +2153,15 @@ async function duplicateProject(sourceId, nameSuffix = ' 副本') {
     db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, error_json, started_at, finished_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(maps.tasks.get(row.id), newId, row.user_message_id ? maps.messages.get(row.user_message_id) : null, row.operation_type, row.model_id, row.model_snapshot_json, row.params_json, remapTaskInputJson(row.input_json, maps), taskState.status, taskState.errorJson, row.started_at, taskState.finishedAt, row.created_at);
+    }
+    for (const row of rows.modelLogs) {
+      const interrupted = row.status === 'running';
+      db.prepare(`INSERT INTO model_execution_logs
+        (id, project_id, task_id, model_id, model_name, model_type, operation_type, phase, status, prompt_text, request_json, response_json, reasoning_text, duration_ms, error_json, started_at, finished_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(uid(), newId, row.task_id ? maps.tasks.get(row.task_id) || null : null, row.model_id, row.model_name, row.model_type, row.operation_type, row.phase,
+          interrupted ? 'canceled' : row.status, row.prompt_text, row.request_json, row.response_json, row.reasoning_text, row.duration_ms,
+          interrupted ? JSON.stringify({ message: '复制项目时原模型调用尚未完成。' }) : row.error_json, row.started_at, interrupted ? timestamp : row.finished_at, row.created_at);
     }
     for (const row of rows.images) {
     db.prepare(`INSERT INTO images (id, project_id, version_id, task_id, source_type, file_path, mime_type, width, height, file_size, created_at)
@@ -2050,6 +2225,7 @@ async function exportProjectZip(projectId, includeImages) {
     tasks: db.prepare('SELECT * FROM generation_tasks WHERE project_id = ?').all(projectId),
     versionInputs: db.prepare('SELECT vi.* FROM version_inputs vi JOIN image_versions v ON v.id = vi.version_id WHERE v.project_id = ?').all(projectId),
     textRecognitions: db.prepare('SELECT tr.* FROM text_recognitions tr JOIN images i ON i.id = tr.image_id WHERE i.project_id = ?').all(projectId),
+    modelLogs: db.prepare('SELECT * FROM model_execution_logs WHERE project_id = ?').all(projectId),
   };
   const meta = { format: 'pixelflow-project', version: 2, exportedAt: now(), project: source, ...rows };
   const entries = [{ name: 'project.json', data: Buffer.from(JSON.stringify(meta, null, 2), 'utf8') }];
@@ -2113,6 +2289,15 @@ async function importProjectZip(buffer) {
     db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, error_json, started_at, finished_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(maps.tasks.get(row.id), newId, row.user_message_id ? maps.messages.get(row.user_message_id) : null, row.operation_type, row.model_id, row.model_snapshot_json, row.params_json, remapTaskInputJson(row.input_json, maps), taskState.status, taskState.errorJson, row.started_at, taskState.finishedAt, row.created_at);
+  }
+  for (const row of meta.modelLogs || []) {
+    const interrupted = row.status === 'running';
+    db.prepare(`INSERT INTO model_execution_logs
+      (id, project_id, task_id, model_id, model_name, model_type, operation_type, phase, status, prompt_text, request_json, response_json, reasoning_text, duration_ms, error_json, started_at, finished_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(uid(), newId, row.task_id ? maps.tasks.get(row.task_id) || null : null, String(row.model_id || ''), String(row.model_name || ''), String(row.model_type || 'image'), String(row.operation_type || 'unknown'), String(row.phase || '模型调用'),
+        interrupted ? 'canceled' : String(row.status || 'failed'), String(row.prompt_text || ''), String(row.request_json || '{}'), row.response_json || null, row.reasoning_text || null, Number.isFinite(Number(row.duration_ms)) ? Number(row.duration_ms) : null,
+        interrupted ? JSON.stringify({ message: '导入项目时原模型调用尚未完成。' }) : row.error_json || null, String(row.started_at || timestamp), interrupted ? timestamp : row.finished_at || null, String(row.created_at || timestamp));
   }
   for (const row of imageRows) {
     const relative = safeArchiveRelative(row.file_path, '项目图片路径');
@@ -2332,7 +2517,7 @@ async function testModelConnection(model) {
   if (model.provider === 'mock') return { ok: true, latency: Date.now() - started, message: '本地演示模型可用' };
   if (!model.apiKey || model.apiKey === '••••••••') throw Object.assign(new Error('请先填写 API Key'), { status: 400 });
   const baseUrl = normalizeBaseUrl(model.baseUrl);
-  if (model.type === 'image' && model.provider === 'gemini') {
+  if (model.type === 'image' && imageApiFormat(model) === 'gemini_interactions') {
     const response = await fetch(`${baseUrl}/models/${encodeURIComponent(model.model)}`, {
       headers: { 'x-goog-api-key': model.apiKey },
       signal: AbortSignal.timeout(15000),
@@ -2365,7 +2550,7 @@ async function testModelConnection(model) {
     return { ok: true, latency: Date.now() - started, message: `视觉识别端点连接成功（${apiFormat === 'anthropic_messages' ? 'Anthropic Messages' : apiFormat === 'responses' ? 'Responses' : 'Chat Completions'}）` };
   }
   const modelEndpoint = `${baseUrl}/models/${model.model}`;
-  const isSenseNova = model.provider === 'sensenova' || /(?:^|\.)sensenova\.cn$/i.test(new URL(baseUrl).hostname);
+  const isSenseNova = isSenseNovaImageModel(model);
   let response = await fetch(modelEndpoint, { headers: { Authorization: `Bearer ${model.apiKey}` }, signal: AbortSignal.timeout(15000) });
   if (response.status === 404) {
     const imageEndpoint = `${baseUrl}/images/generations`;
@@ -2511,6 +2696,8 @@ const server = http.createServer(async (req, res) => {
 
     const tasksMatch = pathname.match(/^\/api\/projects\/([^/]+)\/tasks$/);
     if (tasksMatch && req.method === 'GET') return json(res, 200, { tasks: listGeneratingTasks(tasksMatch[1]) });
+    const modelLogsMatch = pathname.match(/^\/api\/projects\/([^/]+)\/model-logs$/);
+    if (modelLogsMatch && req.method === 'GET') return json(res, 200, { logs: listModelExecutionLogs(modelLogsMatch[1], url.searchParams.get('limit')) });
     const taskMatch = pathname.match(/^\/api\/projects\/([^/]+)\/tasks\/([^/]+)$/);
     if (taskMatch && req.method === 'GET') {
       const task = db.prepare('SELECT * FROM generation_tasks WHERE id = ? AND project_id = ?').get(taskMatch[2], taskMatch[1]);

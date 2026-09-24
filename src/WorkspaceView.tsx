@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, readFileAsDataUrl, thumbUrl } from './api';
 import { Icon } from './Icon';
 import { PromptGalleryModal } from './PromptGalleryModal';
-import { sizesForProvider, defaultSizeForProvider, closestSizeForDimensions, isValidSizeForProvider, OUTPUT_FORMATS, type OutputFormat } from './sizes';
+import { sizesForProvider, defaultSizeForProvider, closestSizeForDimensions, isValidSizeForProvider, type OutputFormat } from './sizes';
 import { useTheme } from './theme';
 import type { GalleryEntry } from './gallery';
-import type { BatchEditProgress, GenerationTask, LocalEditReference, ModelConfig, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
+import type { BatchEditProgress, GenerationTask, LocalEditReference, ModelConfig, ModelExecutionLog, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
 
 type Props = {
   projectId: string;
@@ -20,8 +20,20 @@ type Props = {
 type TaskKind = 'generate' | 'batch-edit' | 'text-edit' | 'local-edit' | 'outpaint' | 'enhance' | 'remove-watermark' | 'extract-asset';
 const localEditStages = { planning: '视觉模型正在理解选区与修改意图、定位主体…', compositing: '正在裁剪参考主体并合成到目标位置…', generating: '图片模型正在完成局部修改与自然融合…', preserving: '正在还原框外原图并保存结果…' };
 
-const operationLabels: Record<string, string> = { auto: '自动识别', upload: '上传原图', text_to_image: '文生图', image_to_image: '图生图', edit_prompt: '提示词改图', batch_edit: '批量处理', batch_generate: '批量文生图', edit_text: '文字编辑', local_edit: '局部修改', outpaint: '扩图', enhance: '变清晰', remove_watermark: '去水印', extract_asset: '提取素材' };
+const operationLabels: Record<string, string> = { auto: '自动识别', upload: '上传原图', text_to_image: '文生图', image_to_image: '图生图', edit_prompt: '提示词改图', batch_edit: '批量处理', batch_generate: '批量文生图', edit_text: '文字编辑', recognize_text: '文字识别', local_edit: '局部修改', outpaint: '扩图', enhance: '变清晰', remove_watermark: '去水印', extract_asset: '提取素材', gallery_analyze: '画廊提炼' };
 const formatTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+
+function formatLogDuration(value: number | null) {
+  if (value == null) return '执行中';
+  if (value < 1000) return `${value} ms`;
+  return `${(value / 1000).toFixed(value < 10000 ? 2 : 1)} s`;
+}
+
+function prettyLogData(value: unknown) {
+  if (value == null || value === '') return '—';
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
 
 function batchVariableNames(template: string) {
   return [...new Set([...template.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map((match) => match[1].trim()).filter(Boolean))];
@@ -302,6 +314,73 @@ function VersionTreeModal({ versions, currentVersionId, onSelect, onClose }: { v
   );
 }
 
+function ModelLogsModal({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+  const [logs, setLogs] = useState<ModelExecutionLog[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
+    try {
+      const result = await api.modelLogs(projectId);
+      setLogs(result.logs);
+      setSelectedId((current) => current && result.logs.some((item) => item.id === current) ? current : result.logs[0]?.id || null);
+      setError('');
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : '模型日志加载失败');
+    } finally {
+      if (!quiet) setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(true), 2500);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  const selected = logs.find((item) => item.id === selectedId) || logs[0] || null;
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="model-logs-modal" role="dialog" aria-modal="true" aria-labelledby="model-logs-title">
+        <div className="modal-heading model-logs-heading">
+          <div><p className="eyebrow">MODEL TRACE</p><h2 id="model-logs-title">模型日志</h2><small>记录当前项目最近 100 次视觉理解与图片模型调用；不保存 API Key 或图片 Base64。</small></div>
+          <div className="model-log-actions"><button className="button secondary" disabled={loading} onClick={() => void load()}><Icon name="logs" size={14} /> 刷新</button><button className="icon-button" onClick={onClose} aria-label="关闭模型日志"><Icon name="close" size={16} /></button></div>
+        </div>
+        {error && <div className="model-log-error">{error}</div>}
+        <div className="model-logs-layout">
+          <aside className="model-log-list">
+            {loading && !logs.length && <div className="model-log-empty"><span className="spinner" />正在读取模型日志…</div>}
+            {!loading && !logs.length && <div className="model-log-empty"><Icon name="logs" size={26} /><strong>还没有模型日志</strong><span>执行一次生成、改字、局部修改或视觉识别后，这里会显示调用过程。</span></div>}
+            {logs.map((item) => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => setSelectedId(item.id)}>
+              <span className={`model-log-status ${item.status}`} />
+              <span className="model-log-list-copy"><strong>{item.phase}</strong><small>{item.modelType === 'vision' ? '视觉' : '图片'} · {item.modelName}</small><em>{new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(item.startedAt))}</em></span>
+              <span className="model-log-duration">{formatLogDuration(item.durationMs)}</span>
+            </button>)}
+          </aside>
+          <div className="model-log-detail">
+            {selected ? <>
+              <div className="model-log-summary">
+                <div><span>模型</span><strong>{selected.modelName}</strong><small>{selected.modelType === 'vision' ? '视觉模型' : '图片模型'}</small></div>
+                <div><span>操作</span><strong>{operationLabels[selected.operationType] || selected.operationType}</strong><small>{selected.phase}</small></div>
+                <div><span>状态</span><strong className={`model-log-state-text ${selected.status}`}>{selected.status === 'success' ? '成功' : selected.status === 'running' ? '执行中' : selected.status === 'canceled' ? '已取消' : '失败'}</strong><small>{formatLogDuration(selected.durationMs)}</small></div>
+                <div><span>开始时间</span><strong>{new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(selected.startedAt))}</strong><small>{selected.taskId ? `任务 ${selected.taskId.slice(0, 8)}` : '同步调用'}</small></div>
+              </div>
+              {selected.error && <section className="model-log-section error"><h3>错误</h3><pre>{selected.error}</pre></section>}
+              <section className="model-log-section"><h3>{selected.modelType === 'vision' ? '视觉模型指令' : '生成提示词'}</h3><pre>{selected.prompt || '—'}</pre></section>
+              {selected.generatedPrompt && <section className="model-log-section generated"><h3>产出的提示词</h3><pre>{selected.generatedPrompt}</pre></section>}
+              {selected.modelType === 'vision' && <section className="model-log-section reasoning"><h3>视觉模型思考 / 分析过程</h3><pre>{selected.reasoning || '该模型或接口未返回独立的思考字段。下方“模型产出数据”仍会展示其结构化分析结果。'}</pre></section>}
+              <section className="model-log-section"><h3>请求过程数据</h3><pre>{prettyLogData(selected.request)}</pre></section>
+              <section className="model-log-section"><h3>模型产出数据</h3><pre>{prettyLogData(selected.response)}</pre></section>
+            </> : <div className="model-log-empty">选择左侧记录查看详情。</div>}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function WorkspaceView({ projectId, models, activeModel, activeVisionModel, onBack, onModels, onProjectChanged, notify }: Props) {
   const { theme, toggleTheme } = useTheme();
   const imageModels = models.filter((model) => model.type !== 'vision');
@@ -314,7 +393,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [operation, setOperation] = useState('auto');
   const [modelId, setModelId] = useState(activeModel);
   const [visionModelId, setVisionModelId] = useState(fallbackVisionModelId);
-  const [size, setSize] = useState(defaultSizeForProvider(imageModels.find((model) => model.id === activeModel)?.provider));
+  const [size, setSize] = useState(defaultSizeForProvider(imageModels.find((model) => model.id === activeModel)));
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('png');
   const [transparentBg, setTransparentBg] = useState(false);
   const [count, setCount] = useState(1);
@@ -340,6 +419,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [sliderPosition, setSliderPosition] = useState(50);
   const [versionTreeOpen, setVersionTreeOpen] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
+  const [modelLogsOpen, setModelLogsOpen] = useState(false);
   const [textEditorOpen, setTextEditorOpen] = useState(false);
   const [textImageId, setTextImageId] = useState<string | null>(null);
   const [textSegments, setTextSegments] = useState<TextSegment[]>([]);
@@ -590,7 +670,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       setModelId(String(draft.modelId || data.project.defaultModelId || activeModel));
       const savedVisionModelId = String(draft.visionModelId || '');
       setVisionModelId(visionModels.some((model) => model.id === savedVisionModelId) ? savedVisionModelId : fallbackVisionModelId);
-      setSize(String(draft.size || defaultSizeForProvider(imageModels.find((model) => model.id === String(draft.modelId || data.project.defaultModelId || activeModel))?.provider)));
+      setSize(String(draft.size || defaultSizeForProvider(imageModels.find((model) => model.id === String(draft.modelId || data.project.defaultModelId || activeModel)))));
       setOutputFormat((draft.outputFormat as OutputFormat) || 'png');
       setTransparentBg(Boolean(draft.transparentBg));
       setCount(Number(draft.count || 1));
@@ -627,17 +707,22 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [bundle?.messages.length, generating]);
 
-  const provider = selectedModel?.provider;
-  // Switching providers invalidates the current size — snap back to a size the
-  // new provider actually supports instead of letting the API reject it.
+  const availableOutputFormats = selectedModel?.outputFormats?.length ? selectedModel.outputFormats : ['png'];
+  const canChooseOutputFormat = availableOutputFormats.length > 1;
+  const canUseTransparentBackground = Boolean(selectedModel?.transparentBackground);
+  const maxImageCount = selectedModel?.maxCount || 1;
+  // Switching models invalidates the current size — snap back to a size the
+  // selected model actually supports instead of letting the API reject it.
   useEffect(() => {
-    if (!provider) return;
-    setSize((current) => (isValidSizeForProvider(provider, current) ? current : defaultSizeForProvider(provider)));
-  }, [provider]);
+    if (!selectedModel) return;
+    setSize((current) => (isValidSizeForProvider(selectedModel, current) ? current : defaultSizeForProvider(selectedModel)));
+    setCount((current) => Math.min(current, selectedModel.maxCount || 1));
+    if (!availableOutputFormats.includes(outputFormat)) setOutputFormat(availableOutputFormats[0] as OutputFormat);
+  }, [selectedModel, availableOutputFormats, outputFormat]);
   // Transparent background only works with png/webp output.
   useEffect(() => {
-    if (outputFormat === 'jpeg') setTransparentBg(false);
-  }, [outputFormat]);
+    if (outputFormat === 'jpeg' || !canUseTransparentBackground) setTransparentBg(false);
+  }, [outputFormat, canUseTransparentBackground]);
 
   function chooseVersion(version: Version) {
     const image = version.outputs.find((item) => item.id === version.selectedImageId) || version.outputs[0];
@@ -667,7 +752,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   function useImage(image: ProjectImage) {
     setCurrentImageId(image.id);
     setInputImageId(image.id);
-    if (image.sourceType === 'upload') setSize(closestSizeForDimensions(provider, image.width, image.height));
+    if (image.sourceType === 'upload') setSize(closestSizeForDimensions(selectedModel, image.width, image.height));
     if (operation === 'text_to_image') setOperation('auto');
   }
 
@@ -913,7 +998,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         instruction: localEditInstruction.trim(),
         reference: localReference || undefined,
         rect: localEditRect,
-        params: { size: closestSizeForDimensions(provider, currentImage.width, currentImage.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: localReference ? 'png' : outputFormat, transparent: localReference ? false : transparentBg },
+        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: localReference ? 'png' : outputFormat, transparent: localReference ? false : transparentBg },
       });
       setLocalEditMode(false);
       startPolling(result.taskId, 'local-edit');
@@ -934,7 +1019,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         rect: localEditRect,
         instructions: localBatchLines,
         reference: localReference || undefined,
-        params: { size: closestSizeForDimensions(provider, currentImage.width, currentImage.height), quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: localReference ? 'png' : outputFormat, transparent: localReference ? false : transparentBg },
+        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: localReference ? 'png' : outputFormat, transparent: localReference ? false : transparentBg },
       });
       setLocalEditMode(false);
       setLocalBatchOpen(false);
@@ -951,10 +1036,10 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setRightMode('chat');
     closeLocalEdit();
     closeExtract();
-    const availableSizes = sizesForProvider(provider);
+    const availableSizes = sizesForProvider(selectedModel);
     const sourceRatio = (currentImage.width || 1) / (currentImage.height || 1);
     const preferred = availableSizes.find((option) => Math.abs(Number(option.value.split('x')[0]) / Number(option.value.split('x')[1]) - sourceRatio) > 0.08) || availableSizes[0];
-    setOutpaintSize(preferred?.value || defaultSizeForProvider(provider));
+    setOutpaintSize(preferred?.value || defaultSizeForProvider(selectedModel));
     setOutpaintMode(true);
   }
 
@@ -1019,7 +1104,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         rect: extractRect,
         crop: { data: crop.dataUrl, mimeType: crop.mimeType, padded: crop.padded },
         hint: extractHint.trim() || undefined,
-        params: { size: closestSizeForDimensions(provider, crop.width, crop.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false },
+        params: { size: closestSizeForDimensions(selectedModel, crop.width, crop.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false },
       });
       closeExtract();
       startPolling(result.taskId, 'extract-asset');
@@ -1074,7 +1159,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         visionModelId,
         parentVersionId: sourceVersion?.id || null,
         segments: textSegments,
-        params: { size: closestSizeForDimensions(provider, textImage.width, textImage.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false },
+        params: { size: closestSizeForDimensions(selectedModel, textImage.width, textImage.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false },
       });
       setTextEditorError('');
       startPolling(result.taskId, 'text-edit');
@@ -1108,7 +1193,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       const image = data.images.find((item) => item.id === data.project.currentImageId) || data.images.at(-1);
       if (image) {
         useImage(image);
-        notify(`图片已保存到项目素材，已匹配 ${closestSizeForDimensions(provider, image.width, image.height)} 输出比例`, 'success');
+        notify(`图片已保存到项目素材，已匹配 ${closestSizeForDimensions(selectedModel, image.width, image.height)} 输出比例`, 'success');
       } else {
         notify('图片已保存到项目素材', 'success');
       }
@@ -1384,6 +1469,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           </select>
           <button className="gallery-open-button" title="提示词画廊：把完整提示词填入对话或批量列表，或把风格设为项目 / 批量统一风格" aria-label="提示词画廊" onClick={() => setGalleryOpen(true)}><span className="gallery-open-icon"><Icon name="gallery" size={17} /><Icon name="sparkle" size={9} /></span><span className="gallery-open-copy"><strong>提示词画廊</strong><small>灵感 · 风格 · 模板</small></span></button>
           <button className="icon-button theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'} aria-label="切换配色模式"><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} /></button>
+          <button className="icon-button" title="模型日志" aria-label="模型日志" onClick={() => setModelLogsOpen(true)}><Icon name="logs" size={17} /></button>
           <button className="icon-button" title="模型配置" onClick={() => void leaveWorkspace(onModels)}><Icon name="sliders" size={17} /></button>
         </div>
       </header>
@@ -1434,7 +1520,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
                 <div className="local-edit-panel-actions"><button className="button secondary" disabled={localBatchSubmitting} onClick={() => setLocalBatchOpen(false)}>收起</button><button className="button primary" disabled={Boolean(localBatchError) || localBatchSubmitting || generating || localReferenceLoading} onClick={() => void submitLocalBatch()}>{localBatchSubmitting ? '正在创建批次…' : `开始批量修改 ${localBatchLines.length} 张`}</button></div>
               </aside>}
             </div>}
-            {outpaintMode && currentImage && <section className="outpaint-panel"><div className="outpaint-panel-head"><div><strong>扩图</strong><span>选择当前模型支持的目标画布比例</span></div><button className="outpaint-exit" onClick={closeOutpaint}><Icon name="close" size={13} /> 退出</button></div><div className="outpaint-size-list">{sizesForProvider(provider).map((option) => <button key={option.value} className={option.value === outpaintSize ? 'active' : ''} onClick={() => setOutpaintSize(option.value)}><strong>{option.ratio}</strong><span>{option.value}</span></button>)}</div><p className="outpaint-summary">原图将居中保留，绿色虚线框内的新增区域会由模型自然延展补全。</p><div className="outpaint-panel-actions"><button className="button secondary" onClick={closeOutpaint}>取消</button><button className="button primary" disabled={!outpaintSize || outpaintSubmitting || generating} onClick={() => void submitOutpaint()}>{outpaintSubmitting ? '正在创建扩图任务…' : '确认扩图'}</button></div></section>}
+            {outpaintMode && currentImage && <section className="outpaint-panel"><div className="outpaint-panel-head"><div><strong>扩图</strong><span>选择当前模型支持的目标画布比例</span></div><button className="outpaint-exit" onClick={closeOutpaint}><Icon name="close" size={13} /> 退出</button></div><div className="outpaint-size-list">{sizesForProvider(selectedModel).map((option) => <button key={option.value} className={option.value === outpaintSize ? 'active' : ''} onClick={() => setOutpaintSize(option.value)}><strong>{option.ratio}</strong><span>{option.value}</span></button>)}</div><p className="outpaint-summary">原图将居中保留，绿色虚线框内的新增区域会由模型自然延展补全。</p><div className="outpaint-panel-actions"><button className="button secondary" onClick={closeOutpaint}>取消</button><button className="button primary" disabled={!outpaintSize || outpaintSubmitting || generating} onClick={() => void submitOutpaint()}>{outpaintSubmitting ? '正在创建扩图任务…' : '确认扩图'}</button></div></section>}
             {(extractMode || extractRect) && !extractDragging && currentImage && <section className="extract-panel"><div className="extract-panel-head"><div><strong>提取素材</strong><span>{extractRect ? '识别模型会聚焦框选主体，并剔除圈入的边缘干扰' : '可从图片内外起拖，框选想提取的内容'}</span></div><button className="extract-exit" onClick={closeExtract}><Icon name="close" size={13} /> 退出</button></div>{extractRect && <><div className="extract-preview">{extractPreview ? <img src={extractPreview.dataUrl} alt="提取区域截图预览" /> : <span className="extract-preview-loading"><span className="spinner" />正在生成截图…</span>}{extractPreview && <small>{extractPreview.padded ? '已自动补边 · ' : ''}{extractPreview.width} × {extractPreview.height}</small>}</div><textarea value={extractHint} onChange={(event) => setExtractHint(event.target.value)} placeholder="可选补充说明，例如：只要中间的银幕，去掉两侧的座椅" rows={2} /><div className="extract-panel-actions"><button className="button secondary" onClick={() => { setExtractRect(null); setExtractPreview(null); }}>重新框选</button><button className="button primary" disabled={!extractPreview || extractSubmitting || generating} onClick={() => void submitExtract()}>{extractSubmitting ? '正在识别与规划…' : '提取为独立素材'}</button></div></>}</section>}
           </div>
           {batchProgress && <section className={`batch-progress-panel ${batchProgress.status}`} aria-live="polite">
@@ -1495,13 +1581,13 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
                 <button className="attach-button" onClick={() => fileRef.current?.click()} disabled={uploading} aria-label="上传图片">{uploading ? '…' : <Icon name="plus" size={16} />}</button>
                 <select value={operation} onChange={(event) => setOperation(event.target.value)}><option value="auto">自动识别</option><option value="text_to_image">文生图</option><option value="image_to_image">图生图</option><option value="edit_prompt">提示词改图</option></select>
                 <select value={size} onChange={(event) => setSize(event.target.value)} title="生成尺寸（宽高比）">
-                  {sizesForProvider(provider).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}
-                  {!isValidSizeForProvider(provider, size) && <option value={size}>{size}</option>}
+                  {sizesForProvider(selectedModel).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}
+                  {!isValidSizeForProvider(selectedModel, size) && <option value={size}>{size}</option>}
                 </select>
-                <select value={count} onChange={(event) => setCount(Number(event.target.value))} aria-label="生成图片数量" title="选择多张时，视觉模型会根据提示词自动判断生成普通候选还是每张分别不同；单图接口会自动拆成多次请求" disabled={generating}><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="4">4 张</option></select>
-                {provider === 'openai' && <>
-                  <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as OutputFormat)} title="输出格式">{OUTPUT_FORMATS.map((format) => <option key={format.value} value={format.value}>{format.label}</option>)}</select>
-                  <button type="button" className={`bg-toggle ${transparentBg ? 'active' : ''}`} disabled={outputFormat === 'jpeg'} title={outputFormat === 'jpeg' ? 'JPEG 不支持透明背景' : '生成透明背景图片'} onClick={() => setTransparentBg((value) => !value)}>透明</button>
+                <select value={count} onChange={(event) => setCount(Number(event.target.value))} aria-label="生成图片数量" title="选择多张时，视觉模型会根据提示词自动判断生成普通候选还是每张分别不同；单图接口会自动拆成多次请求" disabled={generating}>{Array.from({ length: maxImageCount }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1} 张</option>)}</select>
+                {(canChooseOutputFormat || canUseTransparentBackground) && <>
+                  {canChooseOutputFormat && <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as OutputFormat)} title="输出格式">{availableOutputFormats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select>}
+                  {canUseTransparentBackground && <button type="button" className={`bg-toggle ${transparentBg ? 'active' : ''}`} disabled={outputFormat === 'jpeg'} title={outputFormat === 'jpeg' ? 'JPEG 不支持透明背景' : '生成透明背景图片'} onClick={() => setTransparentBg((value) => !value)}>透明</button>}
                 </>}
               </div>
               <button className="send-button" disabled={generating || (!prompt.trim() && !inputImageId)} onClick={() => void send()} aria-label="发送生成请求"><Icon name="up" size={17} /></button>
@@ -1519,9 +1605,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
                 ? <div className="batch-edit-source"><img src={thumbUrl(currentImage)} alt="批量处理参考图" /><div><strong>统一参考图</strong><span>{currentImage.width || '—'} × {currentImage.height || '—'} · {selectedModel?.name || '当前图片模型'}</span></div></div>
                 : <div className="batch-panel-hint">请先在画布中选择一张图片，作为批量改图的统一参考图。</div>
               : <div className="batch-generate-params">
-                  <label className="batch-param"><span>尺寸</span><select value={size} onChange={(event) => setSize(event.target.value)} title="批量文生图输出尺寸（宽高比）">{sizesForProvider(provider).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}{!isValidSizeForProvider(provider, size) && <option value={size}>{size}</option>}</select></label>
-                  {provider === 'openai' && <label className="batch-param"><span>格式</span><select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as OutputFormat)} title="输出格式">{OUTPUT_FORMATS.map((format) => <option key={format.value} value={format.value}>{format.label}</option>)}</select></label>}
-                  {provider === 'openai' && <button type="button" className={`batch-transparent-toggle ${transparentBg ? 'active' : ''}`} disabled={outputFormat === 'jpeg'} title={outputFormat === 'jpeg' ? 'JPEG 不支持透明背景' : '生成透明背景图片'} onClick={() => setTransparentBg((value) => !value)}>透明</button>}
+                  <label className="batch-param"><span>尺寸</span><select value={size} onChange={(event) => setSize(event.target.value)} title="批量文生图输出尺寸（宽高比）">{sizesForProvider(selectedModel).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}{!isValidSizeForProvider(selectedModel, size) && <option value={size}>{size}</option>}</select></label>
+                  {canChooseOutputFormat && <label className="batch-param"><span>格式</span><select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as OutputFormat)} title="输出格式">{availableOutputFormats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label>}
+                  {canUseTransparentBackground && <button type="button" className={`batch-transparent-toggle ${transparentBg ? 'active' : ''}`} disabled={outputFormat === 'jpeg'} title={outputFormat === 'jpeg' ? 'JPEG 不支持透明背景' : '生成透明背景图片'} onClick={() => setTransparentBg((value) => !value)}>透明</button>}
                 </div>}
             <div className="batch-tabs" role="tablist" aria-label="提示词录入方式">
               <button type="button" role="tab" aria-selected={batchPromptTab === 'template'} className={batchPromptTab === 'template' ? 'active' : ''} onClick={() => setBatchPromptTab('template')}><strong>变量模板</strong><small>插入变量 · 矩阵填值</small></button>
@@ -1605,6 +1691,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
 
       {versionTreeOpen && <VersionTreeModal versions={bundle.versions} currentVersionId={currentVersion?.id || null} onClose={() => setVersionTreeOpen(false)} onSelect={(version) => { chooseVersion(version); setVersionTreeOpen(false); }} />}
       {galleryOpen && <PromptGalleryModal visionModelId={selectedVisionModel?.id || ''} onClose={() => setGalleryOpen(false)} onUsePrompt={useGalleryPrompt} onUseStyle={useGalleryStyle} />}
+      {modelLogsOpen && <ModelLogsModal projectId={projectId} onClose={() => setModelLogsOpen(false)} />}
 
       {textEditorOpen && textImage && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !textEditSubmitting && !generating && setTextEditorOpen(false)}>
         <section className="text-editor-modal" role="dialog" aria-modal="true" aria-labelledby="text-editor-title">

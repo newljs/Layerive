@@ -2,13 +2,21 @@ export type ModelConfig = {
   id: string;
   name: string;
   type: 'image' | 'vision';
-  provider: 'sensenova' | 'openai' | 'gemini' | 'grok';
+  /** A preset only: it supplies sensible defaults and provider-specific UI copy. */
+  provider: 'sensenova' | 'openai' | 'gemini' | 'grok' | 'custom';
+  /** The image request/response protocol, independent from the preset. */
+  imageApiFormat?: 'openai_images' | 'gemini_interactions' | 'grok_images';
   apiFormat?: 'anthropic_messages' | 'chat_completions' | 'responses';
   baseUrl: string;
   apiKey: string;
   model: string;
   capabilities: string[];
   defaultParams: { size?: string; count?: number; quality?: string };
+  /** Per-model workspace options. Older saved models receive preset defaults. */
+  sizeOptions?: string[];
+  outputFormats?: Array<'png' | 'jpeg' | 'webp'>;
+  transparentBackground?: boolean;
+  maxCount?: number;
 };
 
 export type Project = {
@@ -105,6 +113,27 @@ export type GenerationTask = {
   error: string | null;
   createdAt: string;
   finishedAt: string | null;
+};
+
+export type ModelExecutionLog = {
+  id: string;
+  taskId: string | null;
+  modelId: string;
+  modelName: string;
+  modelType: 'image' | 'vision' | string;
+  operationType: string;
+  phase: string;
+  status: 'running' | 'success' | 'failed' | 'canceled';
+  prompt: string;
+  generatedPrompt: string;
+  request: Record<string, unknown>;
+  response: Record<string, unknown> | string | null;
+  reasoning: string;
+  durationMs: number | null;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  createdAt: string;
 };
 
 export type LocalEditReference = { data: string; mimeType: string; name?: string };

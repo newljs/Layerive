@@ -6,13 +6,15 @@
 
 # Layerive
 
-**A local workspace that keeps images, conversations, and edit history together by project.**
+**A local image-creation workspace for work that grows beyond a single prompt.**
 
 ![Layerive product tour](docs/assets/layerive-overview.gif)
 
 **1:47 product tour** — projects, text-to-image, regional editing, text editing, asset extraction, reference-image replacement, batch generation, version history, comparison, and the prompt gallery.
 
-Layerive is built for image work that takes more than one prompt. Start from text or an existing image, then edit, replace a region, change text, outpaint, or extract an asset. Each result becomes a version in the project, while images, conversations, and model settings remain on your machine.
+Layerive keeps iterative image work in one local project. Start from a prompt or an existing image, then refine it: change text, replace a region, outpaint, or extract an asset. Every result becomes a version you can revisit, compare, or branch from—rather than another file or prompt lost in a chat history.
+
+Connect the image and vision models you choose, without putting the project in a hosted workspace. Apart from requests sent to the model services you configure, your images, conversations, edit history, and model settings stay on your machine.
 
 [![Runs locally](https://img.shields.io/badge/Runs%20locally-No%20sign--in-6d55f7)](#local-data-and-privacy)
 [![Storage](https://img.shields.io/badge/Storage-SQLite%20%2B%20local%20files-2e8c78)](#local-data-and-privacy)
@@ -45,6 +47,7 @@ The work stays in one project. Each generation or edit creates a version that ca
 - **Text to image** — generate 1–4 images from one prompt. Multiple results belong to the same version, and any candidate can be selected for further editing. Providers that return one image per call are split into multiple requests and may bill each request separately; rate-limited requests retry automatically with backoff. No separate “distinct per image” switch is needed: for multi-image requests, the vision model automatically decides whether the prompt asks for normal same-content candidates or explicit per-image variants such as different emotions or concepts.
 - **Image to image and prompt-based editing** — start from an uploaded, pasted, or historical image and describe the next change. The app chooses the supported output size closest to the source aspect ratio. SenseNova U1.5 Lite requests use a temporary provider-compliant copy without altering the local original.
 - **Batch mode** — the right-hand conversation panel has “对话 / 批量” (chat / batch) mode tabs; picking “批量” defaults to batch text-to-image, and batch mode moves the former batch dialog into the sidebar. The “批量处理” button at the top-right of the canvas also jumps straight to this panel with batch editing preselected.
+- **Model logs** — use the workspace header button beside Model configuration to inspect the current project's vision-planning output, generated prompts, sanitized request/response metadata, duration, and errors. Explicit provider reasoning fields are shown when available; API keys, image Base64, and returned image bytes are never stored in these logs.
   - **Batch editing** — use the image currently shown on the canvas as the shared reference, and insert one or more non-editable variable tags directly into a single prompt editor. Choosing 2–50 outputs creates a matrix with one image per row and one input per variable. A template such as “a consistent [head] humanoid wearing [outfit]” can use dog head + red jacket, donkey head + blue jacket, and so on; every row replaces all of its variables while keeping unrelated regions stable. You can also switch to the “提示词列表” (prompt list) tab and import a TXT file with one prompt per line, or paste multiple lines directly: the lines are echoed into an editable list, the line count becomes the output count (2–50 prompts, up to 1000 characters each), and each line is used verbatim as that image's full prompt without variable constraints.
   - **Batch text-to-image** — no input image needed: each prompt line produces an independent image, with the same variable-template and prompt-list input modes. A “unified style prompt” (initialized from the project style prompt, editable separately) is appended to every line to keep the whole batch consistent; the panel also offers output size (plus format and transparent background for openai providers).
   - **Shared behavior** — each result appears below the canvas as soon as it finishes, with remaining count and ETA; individual failures do not stop later items, and cancellation preserves completed outputs. Each row makes a separate image-model call and may be billed separately. The top-bar prompt gallery also works in batch mode: entry prompts are appended as list lines, and style entries feed the unified style prompt during batch text-to-image.
@@ -147,18 +150,18 @@ Screenshots are stored in `doc/界面操作截图/` and listed below in workflow
 Open **Model configuration** from the home page or workspace:
 
 1. Select **Add image model** or **Add vision model**.
-2. Image models support **SenseNova / OpenAI / Gemini / Grok**. Vision models support **Anthropic Messages / Chat Completions / Responses** API formats, with Chat Completions selected by default for new configurations.
-3. Enter a display name, Base URL, API key, model name, and capabilities. The button beside the API key toggles visibility and can reveal a previously saved key on demand. Switching an image provider fills in matching endpoint and model examples.
+2. For image models, choose a preset (**SenseNova / OpenAI / Gemini / Grok / Custom**) and the actual image API protocol (OpenAI Images, Gemini Interactions, or Grok Images) independently. Vision models support **Anthropic Messages / Chat Completions / Responses** API formats, with Chat Completions selected by default for new configurations.
+3. Enter a display name, Base URL, API key, model name, and capabilities. Configure the sizes, output formats, transparent-background support, and maximum images supported by that model; the workspace only offers declared options. The button beside the API key toggles visibility and can reveal a previously saved key on demand. A preset fills in useful starting values.
 4. Use **Test connection**, save the model, then set an image model as the default or a vision model as the recognition default.
 
 | Model type | Supported providers | Primary use |
 | --- | --- | --- |
-| Image model | SenseNova, OpenAI-compatible, Gemini, Grok | Text-to-image, image-to-image, edits, outpainting, and more |
+| Image model | SenseNova, OpenAI, Gemini, Grok, or Custom presets; OpenAI Images, Gemini Interactions, or Grok Images protocols | Text-to-image, image-to-image, edits, outpainting, and more |
 | Vision model | Anthropic Messages, Chat Completions, Responses | Analysis and prompt planning for text editing, regional edits, and asset extraction |
 
 ### Configuration notes
 
-- Parameter support is determined by the gateway for OpenAI-compatible services. For example, if `quality` accepts only `auto`, `low`, `medium`, or `high`, use one of those values in the model's default parameters.
+- For an OpenAI-compatible gateway, use the **Custom** preset and select the image protocol it actually implements. Declare only its supported sizes, output formats, and image count; the server enforces those limits.
 - Text editing, regional editing, outpainting, enhancement, and asset extraction require an image model with **prompt-editing** capability. The first two recognition-driven operations also require an enabled vision model.
 - Available outpainting sizes are constrained by the active image model. Confirm the canvas preview before submitting.
 - Output quality, text accuracy, and regional fidelity depend on the underlying model. For complex layouts, recognize text first and use manual selections to edit one region at a time.
