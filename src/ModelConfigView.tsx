@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon';
+import { LanguageToggle, useLanguage } from './i18n';
 import { useTheme } from './theme';
 import type { ModelConfig } from './types';
 
@@ -65,6 +66,7 @@ function defaultModel(type: ModelConfig['type'], provider: ModelConfig['provider
 }
 
 export function ModelConfigView({ models, activeModel, activeVisionModel, onBack, onSave, onDelete, onActivate, onActivateVision, onTestConfig, onRevealApiKey }: Props) {
+  const { t } = useLanguage();
   const { theme, toggleTheme } = useTheme();
   const [selectedId, setSelectedId] = useState(models[0]?.id || '');
   const [form, setForm] = useState<ModelConfig>(models[0] || blankFor());
@@ -132,79 +134,79 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
     } finally { setSaving(false); }
   }
   function renderItem(model: ModelConfig) {
-    const typeLabel = model.type === 'vision' ? '视觉识别' : '图片生成';
+    const typeLabel = model.type === 'vision' ? t('mc.typeVision') : t('mc.typeImage');
     const visionFormatLabel = model.apiFormat === 'anthropic_messages' ? 'A' : model.apiFormat === 'responses' ? 'R' : 'C';
     return <button key={model.id} className={`model-list-item ${selectedId === model.id ? 'active' : ''}`} onClick={() => choose(model.id)}>
       <span className={`model-provider ${model.type === 'vision' ? 'vision-api' : model.provider}`}>{model.type === 'vision' ? visionFormatLabel : model.provider === 'sensenova' ? '日' : model.provider === 'gemini' ? 'Gm' : model.provider === 'grok' ? 'Gr' : 'O'}</span>
       <span className="model-label"><strong>{model.name}</strong><small>{typeLabel} · {model.model}</small></span>
-      {model.type !== 'vision' && activeModel === model.id && <span className="default-tag">默认</span>}
-      {model.type === 'vision' && activeVisionModel === model.id && <span className="default-tag">识别默认</span>}
+      {model.type !== 'vision' && activeModel === model.id && <span className="default-tag">{t('mc.defaultTag')}</span>}
+      {model.type === 'vision' && activeVisionModel === model.id && <span className="default-tag">{t('mc.visionDefaultTag')}</span>}
     </button>;
   }
 
   return (
     <main className="settings-page">
       <header className="settings-topbar">
-        <button className="back-button" onClick={onBack}><Icon name="left" size={15} /> 返回项目</button>
-        <div><p className="eyebrow">GLOBAL SETTINGS</p><h1>模型配置</h1></div>
-        <div className="save-state"><button className="icon-button theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'} aria-label="切换配色模式"><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} /></button><span className="status-dot" />配置保存在本机</div>
+        <button className="back-button" onClick={onBack}><Icon name="left" size={15} /> {t('mc.back')}</button>
+        <div><p className="eyebrow">GLOBAL SETTINGS</p><h1>{t('mc.title')}</h1></div>
+        <div className="save-state"><button className="icon-button theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? t('common.switchToLight') : t('common.switchToDark')} aria-label={t('common.toggleTheme')}><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} /></button><LanguageToggle /><span className="status-dot" />{t('mc.savedLocally')}</div>
       </header>
 
       <section className="models-layout">
         <aside className="model-list-panel">
-          <div className="panel-heading"><div><h2>模型列表</h2><p>{models.length} 个可用配置</p></div><div className="model-add-actions"><button title="添加图片生成模型" onClick={() => startCreate('image')}><Icon name="plus" size={13} /> 图</button><button title="添加视觉识别模型" onClick={() => startCreate('vision')}><Icon name="plus" size={13} /> 识</button></div></div>
+          <div className="panel-heading"><div><h2>{t('mc.listTitle')}</h2><p>{t('mc.listCount', { count: models.length })}</p></div><div className="model-add-actions"><button title={t('mc.addImageTitle')} onClick={() => startCreate('image')}><Icon name="plus" size={13} /> {t('mc.addImageBadge')}</button><button title={t('mc.addVisionTitle')} onClick={() => startCreate('vision')}><Icon name="plus" size={13} /> {t('mc.addVisionBadge')}</button></div></div>
           <div className="model-list">
-            <p className="model-group-title">图片生成模型</p>{imageModels.map(renderItem)}
-            <p className="model-group-title vision">视觉识别模型</p>{visionModels.map(renderItem)}
-            {!visionModels.length && <button className="empty-model-group" onClick={() => startCreate('vision')}><Icon name="plus" size={14} /> 添加视觉识别模型</button>}
+            <p className="model-group-title">{t('mc.groupImage')}</p>{imageModels.map(renderItem)}
+            <p className="model-group-title vision">{t('mc.groupVision')}</p>{visionModels.map(renderItem)}
+            {!visionModels.length && <button className="empty-model-group" onClick={() => startCreate('vision')}><Icon name="plus" size={14} /> {t('mc.addVision')}</button>}
           </div>
-          <div className="model-help"><strong>关于密钥</strong><p>密钥仅保存在本机配置文件中，不会写入项目对话和任务历史。</p></div>
+          <div className="model-help"><strong>{t('mc.aboutKeys')}</strong><p>{t('mc.keysHint')}</p></div>
         </aside>
 
         <section className="model-form-panel">
-          <div className="form-title-row"><div><p className="eyebrow">{selectedId ? 'EDIT MODEL' : 'NEW MODEL'}</p><h2>{selectedId ? '编辑模型配置' : '添加模型配置'}</h2></div>{form.type === 'image' && activeModel !== selectedId && selectedId && <button className="button secondary" onClick={() => void onActivate(selectedId)}>设为默认</button>}{form.type === 'vision' && activeVisionModel !== selectedId && selectedId && <button className="button secondary" onClick={() => void onActivateVision(selectedId)}>设为识别默认</button>}</div>
+          <div className="form-title-row"><div><p className="eyebrow">{selectedId ? 'EDIT MODEL' : 'NEW MODEL'}</p><h2>{selectedId ? t('mc.editTitle') : t('mc.addTitle')}</h2></div>{form.type === 'image' && activeModel !== selectedId && selectedId && <button className="button secondary" onClick={() => void onActivate(selectedId)}>{t('mc.setDefault')}</button>}{form.type === 'vision' && activeVisionModel !== selectedId && selectedId && <button className="button secondary" onClick={() => void onActivateVision(selectedId)}>{t('mc.setVisionDefault')}</button>}</div>
           <div className="form-grid two-columns">
-            <label className="field"><span>配置类型</span><select value={form.type} onChange={(event) => changeType(event.target.value as ModelConfig['type'])}><option value="image">图片生成模型</option><option value="vision">视觉识别模型</option></select></label>
-            <label className="field"><span>显示名称 *</span><input value={form.name} onChange={(event) => update('name', event.target.value)} placeholder={form.type === 'vision' ? '例如：图片理解模型' : '例如：日日新 U1.5'} /></label>
+            <label className="field"><span>{t('mc.typeLabel')}</span><select value={form.type} onChange={(event) => changeType(event.target.value as ModelConfig['type'])}><option value="image">{t('mc.optionImage')}</option><option value="vision">{t('mc.optionVision')}</option></select></label>
+            <label className="field"><span>{t('mc.nameLabel')}</span><input value={form.name} onChange={(event) => update('name', event.target.value)} placeholder={form.type === 'vision' ? t('mc.namePlaceholderVision') : t('mc.namePlaceholderImage')} /></label>
           </div>
           {form.type === 'vision'
-            ? <label className="field"><span>API 格式</span><select value={form.apiFormat || defaultVisionApiFormat} onChange={(event) => update('apiFormat', event.target.value as NonNullable<ModelConfig['apiFormat']>)}><option value="anthropic_messages">Anthropic Messages (/v1/messages)</option><option value="chat_completions">Chat Completions (/chat/completions)</option><option value="responses">Responses (/responses)</option></select></label>
-            : <label className="field"><span>预设</span><select value={form.provider} onChange={(event) => changeProvider(event.target.value as ModelConfig['provider'])}><option value="sensenova">日日新</option><option value="openai">OpenAI</option><option value="gemini">Gemini · Nano Banana</option><option value="grok">Grok · Imagine</option><option value="custom">自定义</option></select><small className="field-help">预设只用于填入初始值和说明，不决定实际请求协议。</small></label>}
+            ? <label className="field"><span>{t('mc.apiFormat')}</span><select value={form.apiFormat || defaultVisionApiFormat} onChange={(event) => update('apiFormat', event.target.value as NonNullable<ModelConfig['apiFormat']>)}><option value="anthropic_messages">Anthropic Messages (/v1/messages)</option><option value="chat_completions">Chat Completions (/chat/completions)</option><option value="responses">Responses (/responses)</option></select></label>
+            : <label className="field"><span>{t('mc.preset')}</span><select value={form.provider} onChange={(event) => changeProvider(event.target.value as ModelConfig['provider'])}><option value="sensenova">{t('mc.presetSenseNova')}</option><option value="openai">OpenAI</option><option value="gemini">Gemini · Nano Banana</option><option value="grok">Grok · Imagine</option><option value="custom">{t('mc.presetCustom')}</option></select><small className="field-help">{t('mc.presetHelp')}</small></label>}
 
-          {form.type === 'image' && <label className="field"><span>图片 API 协议</span><select value={form.imageApiFormat || 'openai_images'} onChange={(event) => changeImageApiFormat(event.target.value as NonNullable<ModelConfig['imageApiFormat']>)}><option value="openai_images">OpenAI Images (/images/generations、/images/edits)</option><option value="gemini_interactions">Gemini Interactions (/interactions)</option><option value="grok_images">Grok Images (/images/generations、/images/edits)</option></select><small className="field-help">可与任意预设组合；协议决定请求体、认证方式和返回解析。</small></label>}
+          {form.type === 'image' && <label className="field"><span>{t('mc.imageApiFormat')}</span><select value={form.imageApiFormat || 'openai_images'} onChange={(event) => changeImageApiFormat(event.target.value as NonNullable<ModelConfig['imageApiFormat']>)}><option value="openai_images">OpenAI Images (/images/generations、/images/edits)</option><option value="gemini_interactions">Gemini Interactions (/interactions)</option><option value="grok_images">Grok Images (/images/generations、/images/edits)</option></select><small className="field-help">{t('mc.protocolHelp')}</small></label>}
 
-          {form.type === 'vision' ? <div className="provider-guide"><strong>视觉接口配置</strong><p>请选择服务支持的请求格式；Base URL 填写服务根地址，系统会自动拼接所选接口路径。旧配置会沿用原请求格式。</p></div> : isSenseNova ? <div className="provider-guide sensenova-guide"><strong>日日新配置</strong><p>这是日日新的预设。仍可单独选择协议和模型能力；其官方图片接口会固定启用无水印参数。</p></div> : isGemini ? <div className="provider-guide gemini-guide"><strong>Gemini Nano Banana 配置</strong><p>这是 Gemini 的预设。使用其原生 Interactions 协议时需使用 Google API Key。</p></div> : isGrok ? <div className="provider-guide grok-guide"><strong>Grok Imagine 配置</strong><p>这是 xAI 的预设。可改用其他协议，以适配兼容服务。</p></div> : <div className="provider-guide"><strong>{form.provider === 'custom' ? '自定义配置' : 'OpenAI 配置'}</strong><p>请按服务实际支持的协议填写根地址、认证密钥和模型名；模型能力决定工作台展示的选项。</p></div>}
+          {form.type === 'vision' ? <div className="provider-guide"><strong>{t('mc.guideVisionTitle')}</strong><p>{t('mc.guideVisionBody')}</p></div> : isSenseNova ? <div className="provider-guide sensenova-guide"><strong>{t('mc.guideSenseNovaTitle')}</strong><p>{t('mc.guideSenseNovaBody')}</p></div> : isGemini ? <div className="provider-guide gemini-guide"><strong>{t('mc.guideGeminiTitle')}</strong><p>{t('mc.guideGeminiBody')}</p></div> : isGrok ? <div className="provider-guide grok-guide"><strong>{t('mc.guideGrokTitle')}</strong><p>{t('mc.guideGrokBody')}</p></div> : <div className="provider-guide"><strong>{form.provider === 'custom' ? t('mc.guideCustomTitle') : t('mc.guideOpenAiTitle')}</strong><p>{t('mc.guideCustomBody')}</p></div>}
 
-          <label className="field"><span>{form.type === 'vision' ? 'API Base URL' : isSenseNova ? '日日新服务地址' : isGemini ? 'Gemini API Base URL' : isGrok ? 'xAI API Base URL' : 'API Base URL'}</span><input disabled={form.type === 'image' && isSenseNova} value={form.baseUrl} onChange={(event) => update('baseUrl', event.target.value)} placeholder={providerBaseUrl(form.type, form.provider)} /><small className="field-help">{form.type === 'vision' ? '填写服务根地址；也兼容直接填写完整接口地址。' : isSenseNova ? `固定使用 ${providerBaseUrl(form.type, form.provider)}。` : isGemini ? '官方地址为 https://generativelanguage.googleapis.com/v1beta。' : isGrok ? '官方地址为 https://api.x.ai/v1。' : '例如 https://api.openai.com/v1 或中转站提供的 /v1 根地址。'}</small></label>
+          <label className="field"><span>{form.type === 'vision' ? 'API Base URL' : isSenseNova ? t('mc.baseUrlSenseNova') : isGemini ? 'Gemini API Base URL' : isGrok ? 'xAI API Base URL' : 'API Base URL'}</span><input disabled={form.type === 'image' && isSenseNova} value={form.baseUrl} onChange={(event) => update('baseUrl', event.target.value)} placeholder={providerBaseUrl(form.type, form.provider)} /><small className="field-help">{form.type === 'vision' ? t('mc.baseUrlVisionHelp') : isSenseNova ? t('mc.baseUrlSenseNovaHelp', { url: providerBaseUrl(form.type, form.provider) }) : isGemini ? t('mc.baseUrlGeminiHelp') : isGrok ? t('mc.baseUrlGrokHelp') : t('mc.baseUrlOpenAiHelp')}</small></label>
           <div className="form-grid two-columns">
-            <label className="field"><span>{form.type === 'vision' ? 'API Key' : isSenseNova ? '日日新 API Key' : isGemini ? 'Gemini API Key' : isGrok ? 'xAI API Key' : 'OpenAI API Key'}</span><div className="secret-input"><input type={showApiKey ? 'text' : 'password'} value={form.apiKey} onChange={(event) => update('apiKey', event.target.value)} placeholder={isGemini ? 'AIza...' : 'sk-...'} /><button type="button" disabled={revealingApiKey} onClick={() => void toggleApiKeyVisibility()} title={showApiKey ? '隐藏 API Key' : '显示 API Key'} aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'} aria-pressed={showApiKey}>{revealingApiKey ? <span className="secret-loading" /> : <Icon name={showApiKey ? 'eyeOff' : 'eye'} size={17} />}</button></div></label>
-            <label className="field"><span>{form.type === 'vision' ? '视觉识别模型名称 *' : '图片生成模型名称 *'}</span><input value={form.model} onChange={(event) => update('model', event.target.value)} placeholder={defaultModel(form.type, form.provider)} /></label>
+            <label className="field"><span>{form.type === 'vision' ? 'API Key' : isSenseNova ? t('mc.keySenseNova') : isGemini ? 'Gemini API Key' : isGrok ? 'xAI API Key' : 'OpenAI API Key'}</span><div className="secret-input"><input type={showApiKey ? 'text' : 'password'} value={form.apiKey} onChange={(event) => update('apiKey', event.target.value)} placeholder={isGemini ? 'AIza...' : 'sk-...'} /><button type="button" disabled={revealingApiKey} onClick={() => void toggleApiKeyVisibility()} title={showApiKey ? t('mc.hideKey') : t('mc.showKey')} aria-label={showApiKey ? t('mc.hideKey') : t('mc.showKey')} aria-pressed={showApiKey}>{revealingApiKey ? <span className="secret-loading" /> : <Icon name={showApiKey ? 'eyeOff' : 'eye'} size={17} />}</button></div></label>
+            <label className="field"><span>{form.type === 'vision' ? t('mc.modelNameVision') : t('mc.modelNameImage')}</span><input value={form.model} onChange={(event) => update('model', event.target.value)} placeholder={defaultModel(form.type, form.provider)} /></label>
           </div>
 
           {form.type === 'image' ? <>
-            <fieldset className="capability-field"><legend>支持能力</legend><div className="capability-options">
-              {[['text_to_image', '文生图'], ['image_to_image', '图生图'], ['edit_prompt', '提示词改图'], ['edit_text', '文字编辑'], ['remove_watermark', '去水印']].map(([value, label]) => (
+            <fieldset className="capability-field"><legend>{t('mc.capabilities')}</legend><div className="capability-options">
+              {[['text_to_image', t('cap.text_to_image')], ['image_to_image', t('cap.image_to_image')], ['edit_prompt', t('cap.edit_prompt')], ['edit_text', t('cap.edit_text')], ['remove_watermark', t('cap.remove_watermark')]].map(([value, label]) => (
                 <label key={value} className={form.capabilities.includes(value) ? 'checked' : ''}><input type="checkbox" checked={form.capabilities.includes(value)} onChange={() => toggleCapability(value)} /><span>{label}</span></label>
               ))}
             </div></fieldset>
             <div className="form-grid three-columns">
-              <label className="field"><span>默认尺寸</span><select value={form.defaultParams.size || form.sizeOptions?.[0] || '1024x1024'} onChange={(event) => update('defaultParams', { ...form.defaultParams, size: event.target.value })}>{(form.sizeOptions?.length ? form.sizeOptions : ['1024x1024']).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-              <label className="field"><span>默认数量</span><select value={Math.min(form.defaultParams.count || 1, form.maxCount || 1)} onChange={(event) => update('defaultParams', { ...form.defaultParams, count: Number(event.target.value) })}>{Array.from({ length: form.maxCount || 1 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1} 张</option>)}</select></label>
-              <label className="field"><span>默认质量</span><select disabled={isGemini} value={form.defaultParams.quality || 'auto'} onChange={(event) => update('defaultParams', { ...form.defaultParams, quality: event.target.value })}><option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+              <label className="field"><span>{t('mc.defaultSize')}</span><select value={form.defaultParams.size || form.sizeOptions?.[0] || '1024x1024'} onChange={(event) => update('defaultParams', { ...form.defaultParams, size: event.target.value })}>{(form.sizeOptions?.length ? form.sizeOptions : ['1024x1024']).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+              <label className="field"><span>{t('mc.defaultCount')}</span><select value={Math.min(form.defaultParams.count || 1, form.maxCount || 1)} onChange={(event) => update('defaultParams', { ...form.defaultParams, count: Number(event.target.value) })}>{Array.from({ length: form.maxCount || 1 }, (_, index) => <option key={index + 1} value={index + 1}>{t('common.countImages', { count: index + 1 })}</option>)}</select></label>
+              <label className="field"><span>{t('mc.defaultQuality')}</span><select disabled={isGemini} value={form.defaultParams.quality || 'auto'} onChange={(event) => update('defaultParams', { ...form.defaultParams, quality: event.target.value })}><option value="auto">{t('mc.qualityAuto')}</option><option value="low">{t('mc.qualityLow')}</option><option value="medium">{t('mc.qualityMedium')}</option><option value="high">{t('mc.qualityHigh')}</option></select></label>
             </div>
             <div className="form-grid two-columns">
-              <label className="field"><span>可选尺寸</span><input value={(form.sizeOptions || []).join(', ')} onChange={(event) => update('sizeOptions', event.target.value.split(',').map((value) => value.trim()).filter(Boolean))} placeholder="例如 1024x1024, 1536x1024" /><small className="field-help">用英文逗号分隔。工作台会按此列表选择尺寸和比例。</small></label>
-              <label className="field"><span>单次最多图片</span><select value={form.maxCount || 1} onChange={(event) => update('maxCount', Number(event.target.value))}><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="4">4 张</option></select></label>
+              <label className="field"><span>{t('mc.sizeOptions')}</span><input value={(form.sizeOptions || []).join(', ')} onChange={(event) => update('sizeOptions', event.target.value.split(',').map((value) => value.trim()).filter(Boolean))} placeholder={t('mc.sizeOptionsPlaceholder')} /><small className="field-help">{t('mc.sizeOptionsHelp')}</small></label>
+              <label className="field"><span>{t('mc.maxCount')}</span><select value={form.maxCount || 1} onChange={(event) => update('maxCount', Number(event.target.value))}><option value="1">{t('common.countImages', { count: 1 })}</option><option value="2">{t('common.countImages', { count: 2 })}</option><option value="3">{t('common.countImages', { count: 3 })}</option><option value="4">{t('common.countImages', { count: 4 })}</option></select></label>
             </div>
-            <fieldset className="capability-field"><legend>输出能力</legend><div className="capability-options">
+            <fieldset className="capability-field"><legend>{t('mc.output')}</legend><div className="capability-options">
               {outputFormatsForProtocol(form.imageApiFormat || 'openai_images').map((value) => <label key={value} className={form.outputFormats?.includes(value) ? 'checked' : ''}><input type="checkbox" checked={form.outputFormats?.includes(value) || false} onChange={() => update('outputFormats', form.outputFormats?.includes(value) ? form.outputFormats.filter((item) => item !== value) : [...(form.outputFormats || []), value])} /><span>{value.toUpperCase()}</span></label>)}
-              {form.imageApiFormat === 'openai_images' && <label className={form.transparentBackground ? 'checked' : ''}><input type="checkbox" checked={Boolean(form.transparentBackground)} onChange={() => update('transparentBackground', !form.transparentBackground)} /><span>透明背景</span></label>}
+              {form.imageApiFormat === 'openai_images' && <label className={form.transparentBackground ? 'checked' : ''}><input type="checkbox" checked={Boolean(form.transparentBackground)} onChange={() => update('transparentBackground', !form.transparentBackground)} /><span>{t('mc.transparentBackground')}</span></label>}
             </div></fieldset>
-          </> : <div className="vision-guide"><strong>视觉识别模型用途</strong><p>用于识别和理解上传图片内容。当前会保存和测试该配置；工作台后续的智能图片分析将使用这里配置的模型。</p></div>}
+          </> : <div className="vision-guide"><strong>{t('mc.visionUseTitle')}</strong><p>{t('mc.visionUseBody')}</p></div>}
           {testResult && <div className="test-result">{testResult}</div>}
           <div className="form-footer">
-            <div>{selectedId && <button className="text-danger" onClick={() => { if (window.confirm('删除该模型配置？历史项目中的参数快照仍会保留。')) void onDelete(selectedId); }}>删除模型</button>}</div>
-            <div className="footer-actions"><button className="button secondary" disabled={!form.name.trim() || !form.model.trim()} onClick={async () => setTestResult(await onTestConfig(form))}>测试连接</button><button className="button primary" disabled={!form.name.trim() || !form.model.trim() || saving} onClick={() => void save()}>{saving ? '保存中…' : '保存配置'}</button></div>
+            <div>{selectedId && <button className="text-danger" onClick={() => { if (window.confirm(t('mc.deleteConfirm'))) void onDelete(selectedId); }}>{t('mc.deleteModel')}</button>}</div>
+            <div className="footer-actions"><button className="button secondary" disabled={!form.name.trim() || !form.model.trim()} onClick={async () => setTestResult(await onTestConfig(form))}>{t('mc.testConnection')}</button><button className="button primary" disabled={!form.name.trim() || !form.model.trim() || saving} onClick={() => void save()}>{saving ? t('mc.saving') : t('mc.save')}</button></div>
           </div>
         </section>
       </section>

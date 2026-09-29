@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, readFileAsDataUrl, thumbUrl } from './api';
 import { Icon } from './Icon';
+import { LanguageToggle, useLanguage, tf, type Language, type TranslationKey } from './i18n';
 import { PromptGalleryModal } from './PromptGalleryModal';
 import { sizesForProvider, defaultSizeForProvider, closestSizeForDimensions, isValidSizeForProvider, type OutputFormat } from './sizes';
 import { useTheme } from './theme';
@@ -17,14 +18,16 @@ type Props = {
   onProjectChanged: () => void;
   notify: (message: string, kind?: 'success' | 'error') => void;
 };
-type TaskKind = 'generate' | 'batch-edit' | 'text-edit' | 'local-edit' | 'outpaint' | 'enhance' | 'remove-watermark' | 'extract-asset';
-const localEditStages = { planning: '视觉模型正在理解选区与修改意图、定位主体…', compositing: '正在裁剪参考主体并合成到目标位置…', generating: '图片模型正在完成局部修改与自然融合…', preserving: '正在还原框外原图并保存结果…' };
+type TaskKind = 'generate' | 'batch-edit' | 'text-edit' | 'local-edit' | 'remove-element' | 'outpaint' | 'enhance' | 'remove-watermark' | 'extract-asset';
+const localEditStageKeys: Record<string, TranslationKey> = { planning: 'ws.stagePlanning', compositing: 'ws.stageCompositing', generating: 'ws.stageGenerating', preserving: 'ws.stagePreserving' };
+const removeElementStageKeys: Record<string, TranslationKey> = { planning: 'ws.removeElementStagePlanning', generating: 'ws.removeElementStageGenerating', preserving: 'ws.removeElementStagePreserving' };
 
-const operationLabels: Record<string, string> = { auto: '自动识别', upload: '上传原图', text_to_image: '文生图', image_to_image: '图生图', edit_prompt: '提示词改图', batch_edit: '批量处理', batch_generate: '批量文生图', edit_text: '文字编辑', recognize_text: '文字识别', local_edit: '局部修改', outpaint: '扩图', enhance: '变清晰', remove_watermark: '去水印', extract_asset: '提取素材', gallery_analyze: '画廊提炼' };
-const formatTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+const operationKeys: Record<string, TranslationKey> = { auto: 'op.auto', upload: 'op.upload', text_to_image: 'op.text_to_image', image_to_image: 'op.image_to_image', edit_prompt: 'op.edit_prompt', batch_edit: 'op.batch_edit', batch_generate: 'op.batch_generate', edit_text: 'op.edit_text', recognize_text: 'op.recognize_text', local_edit: 'op.local_edit', remove_element: 'op.remove_element', outpaint: 'op.outpaint', enhance: 'op.enhance', remove_watermark: 'op.remove_watermark', extract_asset: 'op.extract_asset', gallery_analyze: 'op.gallery_analyze' };
+const localeFor = (language: Language) => (language === 'zh' ? 'zh-CN' : 'en-US');
+const formatTime = (value: string, language: Language) => new Intl.DateTimeFormat(localeFor(language), { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 
 function formatLogDuration(value: number | null) {
-  if (value == null) return '执行中';
+  if (value == null) return tf('ws.statusRunning', '执行中');
   if (value < 1000) return `${value} ms`;
   return `${(value / 1000).toFixed(value < 10000 ? 2 : 1)} s`;
 }
@@ -48,7 +51,7 @@ function createBatchVariableToken(name: string) {
   const remove = document.createElement('span');
   remove.className = 'batch-variable-remove';
   remove.dataset.removeBatchVariable = 'true';
-  remove.title = `移除${name}`;
+  remove.title = tf('ws.removeVariable', '移除{name}', { name });
   remove.textContent = '×';
   token.append(remove);
   return token;
@@ -82,19 +85,19 @@ function serializeBatchTemplateEditor(editor: HTMLDivElement) {
 
 function nextBatchVariableName(names: string[]) {
   let index = 1;
-  while (names.includes(`变量${index}`)) index += 1;
-  return `变量${index}`;
+  while (names.includes(tf('ws.defaultVariableName', '变量{index}', { index }))) index += 1;
+  return tf('ws.defaultVariableName', '变量{index}', { index });
 }
 
 function batchItemValueLabel(values: Record<string, string>) {
-  return Object.entries(values).map(([name, value]) => `${name}：${value}`).join(' · ');
+  return Object.entries(values).map(([name, value]) => tf('ws.variableValue', '{name}：{value}', { name, value })).join(' · ');
 }
 
 function formatRemainingTime(seconds: number | null) {
-  if (seconds == null) return '正在估算…';
-  if (seconds < 60) return `约 ${seconds} 秒`;
+  if (seconds == null) return tf('ws.etaEstimating', '正在估算…');
+  if (seconds < 60) return tf('ws.etaSeconds', '约 {seconds} 秒', { seconds });
   const minutes = Math.ceil(seconds / 60);
-  return `约 ${minutes} 分钟`;
+  return tf('ws.etaMinutes', '约 {minutes} 分钟', { minutes });
 }
 
 // 素材提取截图：把圈选区域按百分比换算为原图像素后用 canvas 截取。
@@ -125,10 +128,10 @@ function hasTextSegmentChanges(segments: TextSegment[]) {
 async function cropImageRegion(image: ProjectImage, rect: NonNullable<TextSegment['rect']>): Promise<{ dataUrl: string; mimeType: 'image/png' | 'image/jpeg'; width: number; height: number; padded: boolean } | null> {
   const source = new Image();
   source.src = image.url;
-  await new Promise<void>((resolve, reject) => { source.onload = () => resolve(); source.onerror = () => reject(new Error('读取原图失败，请重试')); });
+  await new Promise<void>((resolve, reject) => { source.onload = () => resolve(); source.onerror = () => reject(new Error(tf('ws.cropLoadFailed', '读取原图失败，请重试'))); });
   const naturalWidth = source.naturalWidth || image.width || 0;
   const naturalHeight = source.naturalHeight || image.height || 0;
-  if (!naturalWidth || !naturalHeight) throw new Error('无法读取原图尺寸');
+  if (!naturalWidth || !naturalHeight) throw new Error(tf('ws.cropSizeFailed', '无法读取原图尺寸'));
   const left = Math.min(naturalWidth - 1, Math.max(0, Math.round((rect.x / 100) * naturalWidth)));
   const top = Math.min(naturalHeight - 1, Math.max(0, Math.round((rect.y / 100) * naturalHeight)));
   const width = Math.max(1, Math.min(naturalWidth - left, Math.round((rect.width / 100) * naturalWidth)));
@@ -150,7 +153,7 @@ async function cropImageRegion(image: ProjectImage, rect: NonNullable<TextSegmen
   canvas.width = Math.max(256, Math.round(paddedWidth * scale));
   canvas.height = Math.max(256, Math.round(paddedHeight * scale));
   const context = canvas.getContext('2d');
-  if (!context) throw new Error('无法生成截图，请重试');
+  if (!context) throw new Error(tf('ws.cropCanvasFailed', '无法生成截图，请重试'));
   const unit = canvas.width / paddedWidth;
   context.drawImage(source, left, top, width, height, padLeft * unit, padTop * unit, width * unit, height * unit);
   if (padded) {
@@ -169,24 +172,26 @@ async function cropImageRegion(image: ProjectImage, rect: NonNullable<TextSegmen
 }
 
 function VersionItem({ version, active, onSelect, onEdit, onDownload, onDelete }: { version: Version; active: boolean; onSelect: () => void; onEdit: () => void; onDownload: () => void; onDelete: () => void }) {
+  const { language, t } = useLanguage();
   const image = version.outputs.find((item) => item.id === version.selectedImageId) || version.outputs[0];
   const multiple = version.outputs.length > 1;
+  const operation = version.operation && operationKeys[version.operation] ? t(operationKeys[version.operation]) : version.operation;
   return (
     <div className={`version-item-wrap ${active ? 'active' : ''} ${multiple ? 'has-multiple' : ''}`}>
       <button className={`version-item ${active ? 'active' : ''}`} onClick={onSelect}>
         <div className={`version-thumb ${multiple ? `multiple count-${Math.min(4, version.outputs.length)}` : ''}`}>
           {multiple
-            ? version.outputs.slice(0, 4).map((output, index) => <img key={output.id} src={thumbUrl(output, 160)} alt={`候选图 ${index + 1}`} loading="lazy" />)
+            ? version.outputs.slice(0, 4).map((output, index) => <img key={output.id} src={thumbUrl(output, 160)} alt={t('ws.candidateThumbAlt', { index: index + 1 })} loading="lazy" />)
             : image ? <img src={thumbUrl(image)} alt="" loading="lazy" /> : <span>V{version.number}</span>}
           {multiple && <em className="version-count-badge">{version.outputs.length}</em>}
         </div>
-        <div className="version-copy"><strong>V{version.number}</strong><span>{operationLabels[version.operation] || version.operation}</span><div className="version-meta"><small>{formatTime(version.createdAt)}</small>{multiple && <em>多图 · {version.outputs.length} 张</em>}</div></div>
-        {version.parentVersionId && <span className="branch-mark" title="包含父版本关系"><Icon name="branch" size={12} /></span>}
+        <div className="version-copy"><strong>V{version.number}</strong><span>{operation}</span><div className="version-meta"><small>{formatTime(version.createdAt, language)}</small>{multiple && <em>{t('ws.multiCount', { count: version.outputs.length })}</em>}</div></div>
+        {version.parentVersionId && <span className="branch-mark" title={t('ws.branchTitle')}><Icon name="branch" size={12} /></span>}
       </button>
       <div className="version-item-actions">
-        {image && <button className="version-edit" title={`用 V${version.number} 这张图继续改图`} onClick={(event) => { event.stopPropagation(); onEdit(); }}>改图</button>}
-        {multiple && <button className="version-download" title={`将 V${version.number} 的 ${version.outputs.length} 张候选图下载为 ZIP`} onClick={(event) => { event.stopPropagation(); onDownload(); }}><Icon name="download" size={12} /> ZIP</button>}
-        <button className="version-delete" title="删除此版本" onClick={(event) => { event.stopPropagation(); onDelete(); }}><Icon name="close" size={13} /></button>
+        {image && <button className="version-edit" title={t('ws.editVersionTitle', { number: version.number })} onClick={(event) => { event.stopPropagation(); onEdit(); }}>{t('ws.editVersion')}</button>}
+        {multiple && <button className="version-download" title={t('ws.downloadVersionTitle', { number: version.number, count: version.outputs.length })} onClick={(event) => { event.stopPropagation(); onDownload(); }}><Icon name="download" size={12} /> ZIP</button>}
+        <button className="version-delete" title={t('ws.deleteVersionTitle')} onClick={(event) => { event.stopPropagation(); onDelete(); }}><Icon name="close" size={13} /></button>
       </div>
     </div>
   );
@@ -241,6 +246,7 @@ function layoutVersionTree(versions: Version[]) {
 }
 
 function VersionTreeModal({ versions, currentVersionId, onSelect, onClose }: { versions: Version[]; currentVersionId: string | null; onSelect: (version: Version) => void; onClose: () => void }) {
+  const { t } = useLanguage();
   const { position, columns, rows } = useMemo(() => layoutVersionTree(versions), [versions]);
   const [zoom, setZoom] = useState(1);
   const panState = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
@@ -264,15 +270,15 @@ function VersionTreeModal({ versions, currentVersionId, onSelect, onClose }: { v
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="version-tree-modal fullscreen" role="dialog" aria-modal="true" aria-labelledby="tree-title">
         <div className="modal-heading">
-          <div><p className="eyebrow">VERSION GRAPH</p><h2 id="tree-title">完整版本树</h2></div>
+          <div><p className="eyebrow">VERSION GRAPH</p><h2 id="tree-title">{t('ws.treeTitle')}</h2></div>
           <div className="tree-controls">
-            <button className="icon-button" onClick={() => setZoom((z) => Math.max(0.4, Math.round((z - 0.2) * 10) / 10))} aria-label="缩小"><Icon name="minus" size={15} /></button>
+            <button className="icon-button" onClick={() => setZoom((z) => Math.max(0.4, Math.round((z - 0.2) * 10) / 10))} aria-label={t('common.zoomOut')}><Icon name="minus" size={15} /></button>
             <span className="zoom-label">{Math.round(zoom * 100)}%</span>
-            <button className="icon-button" onClick={() => setZoom((z) => Math.min(2, Math.round((z + 0.2) * 10) / 10))} aria-label="放大"><Icon name="plus" size={15} /></button>
+            <button className="icon-button" onClick={() => setZoom((z) => Math.min(2, Math.round((z + 0.2) * 10) / 10))} aria-label={t('common.zoomIn')}><Icon name="plus" size={15} /></button>
             <button className="icon-button" onClick={onClose}><Icon name="close" size={16} /></button>
           </div>
         </div>
-        <p className="tree-help">按住空白处拖动平移；点击节点在画布中查看该版本。连线表示从父版本继续创作。</p>
+        <p className="tree-help">{t('ws.treeHelp')}</p>
         <div className="tree-viewport" ref={viewport} onMouseDown={onPanStart} onMouseMove={onPanMove} onMouseUp={() => { panState.current = null; }} onMouseLeave={() => { panState.current = null; }}>
           <div className="tree-canvas" style={{ width: canvasWidth * zoom, height: canvasHeight * zoom }}>
             <div className="tree-scale" style={{ width: canvasWidth, height: canvasHeight, transform: `scale(${zoom})` }}>
@@ -302,7 +308,7 @@ function VersionTreeModal({ versions, currentVersionId, onSelect, onClose }: { v
                   >
                     <span className="tree-thumb">{image ? <img src={thumbUrl(image)} alt="" loading="lazy" /> : `V${version.number}`}</span>
                     <strong>V{version.number}</strong>
-                    <small>{operationLabels[version.operation] || version.operation}</small>
+                    <small>{version.operation && operationKeys[version.operation] ? t(operationKeys[version.operation]) : version.operation}</small>
                   </button>
                 );
               })}
@@ -315,6 +321,9 @@ function VersionTreeModal({ versions, currentVersionId, onSelect, onClose }: { v
 }
 
 function ModelLogsModal({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+  const { language, t } = useLanguage();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [logs, setLogs] = useState<ModelExecutionLog[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -328,7 +337,7 @@ function ModelLogsModal({ projectId, onClose }: { projectId: string; onClose: ()
       setSelectedId((current) => current && result.logs.some((item) => item.id === current) ? current : result.logs[0]?.id || null);
       setError('');
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : '模型日志加载失败');
+      setError(loadError instanceof Error ? loadError.message : tRef.current('ws.logsLoadFailed'));
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -345,35 +354,35 @@ function ModelLogsModal({ projectId, onClose }: { projectId: string; onClose: ()
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="model-logs-modal" role="dialog" aria-modal="true" aria-labelledby="model-logs-title">
         <div className="modal-heading model-logs-heading">
-          <div><p className="eyebrow">MODEL TRACE</p><h2 id="model-logs-title">模型日志</h2><small>记录当前项目最近 100 次视觉理解与图片模型调用；不保存 API Key 或图片 Base64。</small></div>
-          <div className="model-log-actions"><button className="button secondary" disabled={loading} onClick={() => void load()}><Icon name="logs" size={14} /> 刷新</button><button className="icon-button" onClick={onClose} aria-label="关闭模型日志"><Icon name="close" size={16} /></button></div>
+          <div><p className="eyebrow">MODEL TRACE</p><h2 id="model-logs-title">{t('ws.logsTitle')}</h2><small>{t('ws.logsSubtitle')}</small></div>
+          <div className="model-log-actions"><button className="button secondary" disabled={loading} onClick={() => void load()}><Icon name="logs" size={14} /> {t('common.refresh')}</button><button className="icon-button" onClick={onClose} aria-label={t('ws.logsClose')}><Icon name="close" size={16} /></button></div>
         </div>
         {error && <div className="model-log-error">{error}</div>}
         <div className="model-logs-layout">
           <aside className="model-log-list">
-            {loading && !logs.length && <div className="model-log-empty"><span className="spinner" />正在读取模型日志…</div>}
-            {!loading && !logs.length && <div className="model-log-empty"><Icon name="logs" size={26} /><strong>还没有模型日志</strong><span>执行一次生成、改字、局部修改或视觉识别后，这里会显示调用过程。</span></div>}
+            {loading && !logs.length && <div className="model-log-empty"><span className="spinner" />{t('ws.logsLoading')}</div>}
+            {!loading && !logs.length && <div className="model-log-empty"><Icon name="logs" size={26} /><strong>{t('ws.logsEmptyTitle')}</strong><span>{t('ws.logsEmptyHint')}</span></div>}
             {logs.map((item) => <button key={item.id} className={item.id === selected?.id ? 'active' : ''} onClick={() => setSelectedId(item.id)}>
               <span className={`model-log-status ${item.status}`} />
-              <span className="model-log-list-copy"><strong>{item.phase}</strong><small>{item.modelType === 'vision' ? '视觉' : '图片'} · {item.modelName}</small><em>{new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(item.startedAt))}</em></span>
+              <span className="model-log-list-copy"><strong>{item.phase}</strong><small>{item.modelType === 'vision' ? t('ws.modelVision') : t('ws.modelImage')} · {item.modelName}</small><em>{new Intl.DateTimeFormat(localeFor(language), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(item.startedAt))}</em></span>
               <span className="model-log-duration">{formatLogDuration(item.durationMs)}</span>
             </button>)}
           </aside>
           <div className="model-log-detail">
             {selected ? <>
               <div className="model-log-summary">
-                <div><span>模型</span><strong>{selected.modelName}</strong><small>{selected.modelType === 'vision' ? '视觉模型' : '图片模型'}</small></div>
-                <div><span>操作</span><strong>{operationLabels[selected.operationType] || selected.operationType}</strong><small>{selected.phase}</small></div>
-                <div><span>状态</span><strong className={`model-log-state-text ${selected.status}`}>{selected.status === 'success' ? '成功' : selected.status === 'running' ? '执行中' : selected.status === 'canceled' ? '已取消' : '失败'}</strong><small>{formatLogDuration(selected.durationMs)}</small></div>
-                <div><span>开始时间</span><strong>{new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(selected.startedAt))}</strong><small>{selected.taskId ? `任务 ${selected.taskId.slice(0, 8)}` : '同步调用'}</small></div>
+                <div><span>{t('ws.logModel')}</span><strong>{selected.modelName}</strong><small>{selected.modelType === 'vision' ? t('ws.visionModel') : t('ws.imageModel')}</small></div>
+                <div><span>{t('ws.logOperation')}</span><strong>{selected.operationType && operationKeys[selected.operationType] ? t(operationKeys[selected.operationType]) : selected.operationType}</strong><small>{selected.phase}</small></div>
+                <div><span>{t('ws.logStatus')}</span><strong className={`model-log-state-text ${selected.status}`}>{selected.status === 'success' ? t('ws.statusSuccess') : selected.status === 'running' ? t('ws.statusRunning') : selected.status === 'canceled' ? t('ws.statusCanceled') : t('ws.statusFailed')}</strong><small>{formatLogDuration(selected.durationMs)}</small></div>
+                <div><span>{t('ws.logStarted')}</span><strong>{new Intl.DateTimeFormat(localeFor(language), { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(selected.startedAt))}</strong><small>{selected.taskId ? t('ws.logTask', { id: selected.taskId.slice(0, 8) }) : t('ws.logSync')}</small></div>
               </div>
-              {selected.error && <section className="model-log-section error"><h3>错误</h3><pre>{selected.error}</pre></section>}
-              <section className="model-log-section"><h3>{selected.modelType === 'vision' ? '视觉模型指令' : '生成提示词'}</h3><pre>{selected.prompt || '—'}</pre></section>
-              {selected.generatedPrompt && <section className="model-log-section generated"><h3>产出的提示词</h3><pre>{selected.generatedPrompt}</pre></section>}
-              {selected.modelType === 'vision' && <section className="model-log-section reasoning"><h3>视觉模型思考 / 分析过程</h3><pre>{selected.reasoning || '该模型或接口未返回独立的思考字段。下方“模型产出数据”仍会展示其结构化分析结果。'}</pre></section>}
-              <section className="model-log-section"><h3>请求过程数据</h3><pre>{prettyLogData(selected.request)}</pre></section>
-              <section className="model-log-section"><h3>模型产出数据</h3><pre>{prettyLogData(selected.response)}</pre></section>
-            </> : <div className="model-log-empty">选择左侧记录查看详情。</div>}
+              {selected.error && <section className="model-log-section error"><h3>{t('ws.logError')}</h3><pre>{selected.error}</pre></section>}
+              <section className="model-log-section"><h3>{selected.modelType === 'vision' ? t('ws.logVisionPrompt') : t('ws.logImagePrompt')}</h3><pre>{selected.prompt || '—'}</pre></section>
+              {selected.generatedPrompt && <section className="model-log-section generated"><h3>{t('ws.logGeneratedPrompt')}</h3><pre>{selected.generatedPrompt}</pre></section>}
+              {selected.modelType === 'vision' && <section className="model-log-section reasoning"><h3>{t('ws.logReasoning')}</h3><pre>{selected.reasoning || t('ws.logNoReasoning')}</pre></section>}
+              <section className="model-log-section"><h3>{t('ws.logRequest')}</h3><pre>{prettyLogData(selected.request)}</pre></section>
+              <section className="model-log-section"><h3>{t('ws.logResponse')}</h3><pre>{prettyLogData(selected.response)}</pre></section>
+            </> : <div className="model-log-empty">{t('ws.logPickHint')}</div>}
           </div>
         </div>
       </section>
@@ -382,6 +391,11 @@ function ModelLogsModal({ projectId, onClose }: { projectId: string; onClose: ()
 }
 
 export function WorkspaceView({ projectId, models, activeModel, activeVisionModel, onBack, onModels, onProjectChanged, notify }: Props) {
+  const { language, t } = useLanguage();
+  // 轮询等长生命周期回调经 ref 取词：语言切换后完成的任务用新语言提示，
+  // 同时避免 t 进入回调依赖导致主数据加载 effect 在切语言时整页重载。
+  const tRef = useRef(t);
+  tRef.current = t;
   const { theme, toggleTheme } = useTheme();
   const imageModels = models.filter((model) => model.type !== 'vision');
   const visionModels = models.filter((model) => model.type === 'vision');
@@ -436,6 +450,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [localBatchSubmitting, setLocalBatchSubmitting] = useState(false);
   const [localEditInstruction, setLocalEditInstruction] = useState('');
   const [localEditSubmitting, setLocalEditSubmitting] = useState(false);
+  const [removeElementMode, setRemoveElementMode] = useState(false);
+  const [removeElementRect, setRemoveElementRect] = useState<TextSegment['rect'] | null>(null);
+  const [removeElementSubmitting, setRemoveElementSubmitting] = useState(false);
   const [localReference, setLocalReference] = useState<LocalEditReference | null>(null);
   const [localReferenceLoading, setLocalReferenceLoading] = useState(false);
   const localReferenceRevision = useRef(0);
@@ -454,6 +471,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [savingToGallery, setSavingToGallery] = useState(false);
   // 面板只在鼠标松开（框选结束）后出现，否则圈选靠下时弹窗会挡住拖拽。
   const [localDragging, setLocalDragging] = useState(false);
+  const [removeElementDragging, setRemoveElementDragging] = useState(false);
   const [extractDragging, setExtractDragging] = useState(false);
   const [zoom, setZoom] = useState(1);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -466,13 +484,21 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const batchTemplateEditorRef = useRef<HTMLDivElement>(null);
   const boxStart = useRef<{ x: number; y: number } | null>(null);
   const localBoxStart = useRef<{ x: number; y: number } | null>(null);
+  const removeElementBoxStart = useRef<{ x: number; y: number } | null>(null);
   const extractBoxStart = useRef<{ x: number; y: number } | null>(null);
   const bundleRef = useRef<ProjectBundle | null>(null);
   const draftSnapshot = useRef<Record<string, unknown>>({});
   const draftCacheKey = `layerive-draft:${projectId}`;
 
   const generating = activeTask !== null;
-  const visionBusy = generating || recognizingText || textEditSubmitting || localEditSubmitting || extractSubmitting || removingWatermark || savingToGallery;
+  // 服务端任务/消息文本带稳定码时按 msg.* 字典本地化；历史数据回退原文。
+  const taskErrorText = (task: GenerationTask, fallback: string) => {
+    if (!task.error) return fallback;
+    return task.errorCode ? tf(`msg.${task.errorCode}`, task.error, task.errorParams || {}) : task.error;
+  };
+  const persistedText = (content: { code?: string; params?: unknown; text?: string; message?: string }, raw: string) =>
+    content.code ? tf(`msg.${content.code}`, raw, (content.params as Record<string, string | number>) || {}) : raw;
+  const visionBusy = generating || recognizingText || textEditSubmitting || localEditSubmitting || removeElementSubmitting || extractSubmitting || removingWatermark || savingToGallery;
   const imageMap = useMemo(() => new Map((bundle?.images || []).map((image) => [image.id, image])), [bundle?.images]);
   const currentImage = currentImageId ? imageMap.get(currentImageId) || null : null;
   const inputImage = inputImageId ? imageMap.get(inputImageId) || null : null;
@@ -502,32 +528,32 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const batchListTooLongLine = batchPromptLines.findIndex((line) => line.length > 1000);
   const batchValidationError = batchPromptTab === 'list'
     ? batchPromptLines.length < 2
-      ? '提示词列表至少需要 2 行（每行一条）'
+      ? t('ws.errListTooFew')
       : batchPromptLines.length > 50
-        ? `提示词最多 50 条，当前 ${batchPromptLines.length} 条，请删减后再开始`
+        ? t('ws.errListTooMany', { count: batchPromptLines.length })
         : batchListTooLongLine >= 0
-          ? `第 ${batchListTooLongLine + 1} 行提示词超过 1000 个字符，请缩短`
+          ? t('ws.errLineTooLong', { index: batchListTooLongLine + 1 })
           : null
     : !batchTemplate.trim()
-    ? '请输入带变量的提示词模板'
+    ? t('ws.errTemplateEmpty')
     : batchTemplateHasInvalidVariables
-      ? '变量标签格式不完整，请删除后重新插入'
+      ? t('ws.errTemplateBroken')
       : !detectedBatchVariables.length
-        ? '请在提示词中插入至少一个变量'
+        ? t('ws.errNoVariables')
         : detectedBatchVariables.length > 10
-          ? '一个模板最多支持 10 个变量'
+          ? t('ws.errTooManyVariables')
           : batchFilledCount !== batchExpectedValueCount
-            ? `需要填写 ${batchExpectedValueCount} 个变量值，当前已填写 ${batchFilledCount} 个`
+            ? t('ws.errValuesMissing', { expected: batchExpectedValueCount, filled: batchFilledCount })
             : null;
   // 批量局部修改：同一选区多组指令，逐张生成并进入同一版本。
   const localBatchLines = localBatchText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const localBatchTooLongLine = localBatchLines.findIndex((line) => line.length > 1000);
   const localBatchError = localBatchLines.length < 2
-    ? '批量局部修改至少需要 2 条指令（每行一条）'
+    ? t('ws.errLocalTooFew')
     : localBatchLines.length > 50
-      ? `指令最多 50 条，当前 ${localBatchLines.length} 条，请删减后再开始`
+      ? t('ws.errLocalTooMany', { count: localBatchLines.length })
       : localBatchTooLongLine >= 0
-        ? `第 ${localBatchTooLongLine + 1} 行指令超过 1000 个字符，请缩短`
+        ? t('ws.errLocalLineTooLong', { index: localBatchTooLongLine + 1 })
         : null;
   const parentImage = useMemo(() => {
     if (!bundle || !currentVersion?.parentVersionId) return null;
@@ -566,7 +592,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       try {
         if (kind === 'batch-edit') {
           const progress = await api.getBatchEdit(projectId, taskId);
-          const batchLabel = progress.textBatch ? '批量文生图' : progress.localEdit ? '批量局部修改' : '批量处理';
+          const batchLabel = progress.textBatch ? tRef.current('ws.batchText') : progress.localEdit ? tRef.current('ws.batchLocal') : tRef.current('ws.batchEdit');
           const processed = progress.completed + progress.failed;
           if (processed > batchProcessed.current) {
             batchProcessed.current = processed;
@@ -590,10 +616,10 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
             setCurrentImageId(data.project.currentImageId);
             setInputImageId(data.project.currentImageId);
           }
-          if (progress.status === 'success') notify(`${batchLabel}已完成，共 ${progress.completed} 张。`, 'success');
-          else if (progress.status === 'partial') notify(`${batchLabel}完成 ${progress.completed}/${progress.total} 张，${progress.failed} 张失败。`, 'error');
-          else if (progress.status === 'canceled') notify(`${batchLabel}已取消，保留 ${progress.completed} 张结果。`, 'error');
-          else notify(progress.error || `${batchLabel}失败，请重试。`, 'error');
+          if (progress.status === 'success') notify(tRef.current('ws.batchDoneAll', { label: batchLabel, count: progress.completed }), 'success');
+          else if (progress.status === 'partial') notify(tRef.current('ws.batchDonePartial', { label: batchLabel, completed: progress.completed, total: progress.total, failed: progress.failed }), 'error');
+          else if (progress.status === 'canceled') notify(tRef.current('ws.batchDoneCanceled', { label: batchLabel, count: progress.completed }), 'error');
+          else notify(progress.error ? (progress.errorCode ? tf(`msg.${progress.errorCode}`, progress.error, progress.errorParams || {}) : progress.error) : tRef.current('ws.batchFailed', { label: batchLabel }), 'error');
           onProjectChanged();
           return;
         }
@@ -610,32 +636,37 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           setCurrentImageId(data.project.currentImageId);
           setInputImageId(data.project.currentImageId);
           if (task.status === 'partial') {
-            notify(task.error || '部分图片生成失败，已保留成功结果。', 'error');
+            notify(taskErrorText(task, tRef.current('ws.partialKeep')), 'error');
           } else if (kind === 'generate') {
             setPrompt('');
-            notify(`已创建版本 V${data.versions[0]?.number}`, 'success');
+            notify(tRef.current('ws.createdVersion', { number: data.versions[0]?.number }), 'success');
           } else if (kind === 'text-edit') {
-            notify(`文字已修改并保存为 V${data.versions[0]?.number}`, 'success');
+            notify(tRef.current('ws.savedText', { number: data.versions[0]?.number }), 'success');
           } else if (kind === 'local-edit') {
             setLocalReference(null);
             setLocalEditInstruction('');
             setLocalEditRect(null);
-            notify(`局部修改已保存为 V${data.versions[0]?.number}`, 'success');
+            notify(tRef.current('ws.savedLocalEdit', { number: data.versions[0]?.number }), 'success');
+          } else if (kind === 'remove-element') {
+            setRemoveElementRect(null);
+            notify(tRef.current('ws.savedRemoveElement', { number: data.versions[0]?.number }), 'success');
           } else if (kind === 'enhance') {
-            notify(`高清增强已保存为 V${data.versions[0]?.number}`, 'success');
+            notify(tRef.current('ws.savedEnhance', { number: data.versions[0]?.number }), 'success');
           } else if (kind === 'remove-watermark') {
-            notify(`去水印结果已保存为 V${data.versions[0]?.number}`, 'success');
+            notify(tRef.current('ws.savedWatermark', { number: data.versions[0]?.number }), 'success');
           } else if (kind === 'extract-asset') {
-            notify(`素材已提取并保存为 V${data.versions[0]?.number}`, 'success');
+            notify(tRef.current('ws.savedExtract', { number: data.versions[0]?.number }), 'success');
           } else {
-            notify(`扩图已保存为 V${data.versions[0]?.number}`, 'success');
+            notify(tRef.current('ws.savedOutpaint', { number: data.versions[0]?.number }), 'success');
           }
         } else if (task.status === 'canceled') {
           if (kind === 'local-edit') setLocalEditMode(true);
-          notify('已取消本次生成，输入已保留。', 'error');
+          if (kind === 'remove-element') setRemoveElementMode(true);
+          notify(tRef.current('ws.canceledKeep'), 'error');
         } else {
           if (kind === 'local-edit') setLocalEditMode(true);
-          notify(task.error || '生成失败，请重试。', 'error');
+          if (kind === 'remove-element') setRemoveElementMode(true);
+          notify(taskErrorText(task, tRef.current('ws.generateFailed')), 'error');
         }
         onProjectChanged();
       } catch { /* transient network error: keep polling */ }
@@ -680,7 +711,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       setInputImageId(cachedInputImageId);
       initialized.current = true;
       const task = taskData.tasks[0];
-      if (task) startPolling(task.id, task.operationType === 'batch_edit' || task.operationType === 'batch_generate' ? 'batch-edit' : task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'outpaint' ? 'outpaint' : task.operationType === 'enhance' ? 'enhance' : task.operationType === 'remove_watermark' ? 'remove-watermark' : task.operationType === 'extract_asset' ? 'extract-asset' : 'generate');
+      if (task) startPolling(task.id, task.operationType === 'batch_edit' || task.operationType === 'batch_generate' ? 'batch-edit' : task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'remove_element' ? 'remove-element' : task.operationType === 'outpaint' ? 'outpaint' : task.operationType === 'enhance' ? 'enhance' : task.operationType === 'remove_watermark' ? 'remove-watermark' : task.operationType === 'extract_asset' ? 'extract-asset' : 'generate');
     }).catch((error) => notify(error.message, 'error')).finally(() => setLoading(false));
   }, [projectId, activeModel, activeVisionModel, startPolling, notify, draftCacheKey]);
 
@@ -743,7 +774,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   function openCompare() {
     if (!currentImage || !bundle) return;
     const target = parentImage || bundle.images.find((image) => image.id !== currentImage.id);
-    if (!target) return notify('至少需要两张已保存的图片才能对比。', 'error');
+    if (!target) return notify(t('ws.compareNeedTwo'), 'error');
     setCompareImageId(target.id);
     setSliderPosition(50);
     setCompareOpen(true);
@@ -759,6 +790,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   // 切换画布图片时，针对旧图片的圈选与截图预览全部失效，一并清理。
   useEffect(() => {
     setLocalEditRect(null);
+    setRemoveElementRect(null);
+    setRemoveElementMode(false);
+    removeElementBoxStart.current = null;
     localReferenceRevision.current++;
     setLocalReference(null);
     setLocalReferenceLoading(false);
@@ -771,14 +805,14 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setGalleryOpen(false);
     if (rightMode === 'batch') {
       const existing = batchPromptsText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-      if (existing.length >= 50) return notify('批量提示词列表已满 50 条，请删减后再从画廊追加。', 'error');
+      if (existing.length >= 50) return notify(t('ws.galleryListFull'), 'error');
       setBatchPromptTab('list');
       setBatchPromptsText([...existing, entry.prompt].join('\n'));
-      notify(`已把完整提示词追加到批量提示词列表（${existing.length + 1} 条）`, 'success');
+      notify(t('ws.galleryAppended', { count: existing.length + 1 }), 'success');
       return;
     }
     setPrompt((current) => (current.trim() ? `${current.trim()}\n${entry.prompt}` : entry.prompt));
-    notify('已把完整提示词填入对话输入框', 'success');
+    notify(t('ws.galleryPromptFilled'), 'success');
   }
 
   function useGalleryStyle(entry: GalleryEntry) {
@@ -786,16 +820,17 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     // 批量文生图有独立的统一风格槽位；其余场景写入项目风格提示词。
     if (rightMode === 'batch' && batchType === 'text') {
       setBatchStylePrompt(entry.stylePrompt);
-      notify('已设为批量统一风格提示词，会追加到每条提示词末尾', 'success');
+      notify(t('ws.galleryStyleBatch'), 'success');
       return;
     }
     setStylePrompt(entry.stylePrompt);
-    notify('已设为项目风格提示词，文生图时自动生效', 'success');
+    notify(t('ws.galleryStyleProject'), 'success');
   }
 
   async function openTextEditor() {
     if (!currentImage) return;
     setRightMode('chat');
+    closeRemoveElement();
     setTextImageId(currentImage.id);
     setTextSegments([]);
     setRecognitionModel('');
@@ -808,7 +843,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       const data = await api.recognizeText(projectId, currentImage.id, visionModelId);
       setTextSegments(data.segments);
       setRecognitionModel(data.modelName);
-      if (data.cached) notify('已复用该图片的文字识别结果', 'success');
+      if (data.cached) notify(t('ws.recognizeCached'), 'success');
     } catch (error) {
       setTextEditorError((error as Error).message);
     } finally { setRecognizingText(false); }
@@ -871,9 +906,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   }
 
   function onCanvasSelectionStart(event: React.PointerEvent<HTMLDivElement>) {
-    if ((!localEditMode && !extractMode) || event.button !== 0 || generating || localEditSubmitting) return;
+    if ((!localEditMode && !removeElementMode && !extractMode) || event.button !== 0 || generating || localEditSubmitting || removeElementSubmitting) return;
     const target = event.target as Element;
-    if (target.closest('.local-edit-panel, .local-edit-dock, .local-batch-panel, .extract-panel')) return;
+    if (target.closest('.local-edit-panel, .local-edit-dock, .local-batch-panel, .remove-element-panel, .extract-panel')) return;
     const point = canvasPointerRatio(event);
     if (!point) return;
     event.preventDefault();
@@ -882,6 +917,10 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       localBoxStart.current = point;
       setLocalDragging(true);
       setLocalEditRect({ x: point.x, y: point.y, width: 0, height: 0 });
+    } else if (removeElementMode) {
+      removeElementBoxStart.current = point;
+      setRemoveElementDragging(true);
+      setRemoveElementRect({ x: point.x, y: point.y, width: 0, height: 0 });
     } else {
       extractBoxStart.current = point;
       setExtractDragging(true);
@@ -894,6 +933,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     const point = canvasPointerRatio(event);
     if (!point) return;
     if (localBoxStart.current) setLocalEditRect(selectionRect(localBoxStart.current, point));
+    if (removeElementBoxStart.current) setRemoveElementRect(selectionRect(removeElementBoxStart.current, point));
     if (extractBoxStart.current) setExtractRect(selectionRect(extractBoxStart.current, point));
   }
 
@@ -908,6 +948,19 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       localBoxStart.current = null;
       setLocalDragging(false);
       setLocalEditRect(rect.width > 2 && rect.height > 2 ? rect : null);
+    }
+
+    const removeStart = removeElementBoxStart.current;
+    if (removeStart) {
+      const rect = selectionRect(removeStart, point);
+      removeElementBoxStart.current = null;
+      setRemoveElementDragging(false);
+      if (rect.width <= 2 || rect.height <= 2) {
+        setRemoveElementRect(null);
+      } else {
+        setRemoveElementRect(rect);
+        void submitRemoveElement(rect);
+      }
     }
 
     const extractStart = extractBoxStart.current;
@@ -931,10 +984,13 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   function onCanvasSelectionCancel(event: React.PointerEvent<HTMLDivElement>) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     localBoxStart.current = null;
+    removeElementBoxStart.current = null;
     extractBoxStart.current = null;
     setLocalDragging(false);
+    setRemoveElementDragging(false);
     setExtractDragging(false);
     setLocalEditRect(null);
+    setRemoveElementRect(null);
     setExtractRect(null);
     setExtractPreview(null);
   }
@@ -943,6 +999,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     if (!currentImage || generating) return;
     setRightMode('chat');
     closeOutpaint();
+    closeRemoveElement();
     closeExtract();
     setLocalEditMode(true);
     setLocalEditRect(null);
@@ -963,10 +1020,49 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setLocalBatchOpen(false);
   }
 
+  function startRemoveElement() {
+    if (!currentImage || generating) return;
+    setRightMode('chat');
+    closeLocalEdit();
+    closeOutpaint();
+    closeExtract();
+    setRemoveElementMode(true);
+    setRemoveElementRect(null);
+  }
+
+  function closeRemoveElement() {
+    removeElementBoxStart.current = null;
+    setRemoveElementMode(false);
+    setRemoveElementRect(null);
+    setRemoveElementDragging(false);
+  }
+
+  async function submitRemoveElement(rect: NonNullable<TextSegment['rect']>) {
+    if (!currentImage || removeElementSubmitting || generating) return;
+    setRemoveElementSubmitting(true);
+    setActiveTask({ id: null, kind: 'remove-element', stage: 'planning' });
+    try {
+      const result = await api.removeElement(projectId, {
+        imageId: currentImage.id,
+        modelId,
+        visionModelId,
+        parentVersionId: currentVersion?.id || null,
+        rect,
+        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count: 1, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: 'png', transparent: false },
+      });
+      setRemoveElementMode(false);
+      startPolling(result.taskId, 'remove-element');
+    } catch (error) {
+      setActiveTask(null);
+      setRemoveElementMode(true);
+      notify((error as Error).message, 'error');
+    } finally { setRemoveElementSubmitting(false); }
+  }
+
   async function selectLocalReference(file?: File) {
     if (!file || localEditSubmitting || generating) return;
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 10 * 1024 * 1024) {
-      notify('请上传不超过 10MB 的 PNG、JPEG 或 WebP 参考图', 'error');
+      notify(t('ws.referenceTooLarge'), 'error');
       return;
     }
     const revision = ++localReferenceRevision.current;
@@ -976,10 +1072,10 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       const preview = new Image();
       preview.src = data;
       await preview.decode();
-      if (preview.naturalWidth * preview.naturalHeight > 40_000_000) throw new Error('参考图像素过大，请缩小到 4000 万像素以内');
+      if (preview.naturalWidth * preview.naturalHeight > 40_000_000) throw new Error(t('ws.referenceTooManyPixels'));
       if (revision === localReferenceRevision.current) setLocalReference({ data, mimeType: file.type, name: file.name });
     } catch (error) {
-      if (revision === localReferenceRevision.current) notify(`参考图读取失败：${(error as Error).message}`, 'error');
+      if (revision === localReferenceRevision.current) notify(t('ws.referenceReadFailed', { message: (error as Error).message }), 'error');
     } finally {
       if (revision === localReferenceRevision.current) setLocalReferenceLoading(false);
     }
@@ -1026,7 +1122,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       batchProcessed.current = 0;
       setBatchProgress(null);
       startPolling(result.taskId, 'batch-edit');
-      notify('批量局部修改已开始，生成结果会逐张出现。', 'success');
+      notify(t('ws.localBatchStarted'), 'success');
     } catch (error) { notify((error as Error).message, 'error'); }
     finally { setLocalBatchSubmitting(false); }
   }
@@ -1035,6 +1131,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     if (!currentImage || generating) return;
     setRightMode('chat');
     closeLocalEdit();
+    closeRemoveElement();
     closeExtract();
     const availableSizes = sizesForProvider(selectedModel);
     const sourceRatio = (currentImage.width || 1) / (currentImage.height || 1);
@@ -1072,6 +1169,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     if (!currentImage || generating) return;
     setRightMode('chat');
     closeLocalEdit();
+    closeRemoveElement();
     closeOutpaint();
     setExtractMode(true);
     setExtractRect(null);
@@ -1095,7 +1193,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       // 预览仅在截图时的图片与当前图片一致时才可复用，切换画布图片后必须重截。
       const cached = extractPreview && extractPreview.imageId === currentImage.id && sameRect(extractPreview.rect, extractRect) ? extractPreview : null;
       const crop = cached || await cropImageRegion(currentImage, extractRect);
-      if (!crop) throw new Error('生成截图失败，请重新框选');
+      if (!crop) throw new Error(t('ws.cropRetry'));
       const result = await api.extractAsset(projectId, {
         imageId: currentImage.id,
         modelId,
@@ -1115,6 +1213,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   async function enhanceImage() {
     if (!currentImage || enhancing || generating) return;
     setRightMode('chat');
+    closeRemoveElement();
     setEnhancing(true);
     try {
       const result = await api.enhance(projectId, {
@@ -1131,6 +1230,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   async function removeWatermark() {
     if (!currentImage || removingWatermark || generating) return;
     setRightMode('chat');
+    closeRemoveElement();
     setRemovingWatermark(true);
     try {
       const result = await api.removeWatermark(projectId, {
@@ -1147,7 +1247,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
 
   async function submitTextEdit() {
     if (!textImage || textEditSubmitting || generating) return;
-    if (!hasTextChanges) return notify('请先修改或删除至少一段文字，或框选并填写要添加的文字', 'error');
+    if (!hasTextChanges) return notify(t('ws.textNoChanges'), 'error');
     setTextEditSubmitting(true);
     setTextEditorOpen(false);
     setActiveTask({ id: null, kind: 'text-edit' });
@@ -1183,8 +1283,8 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   }
 
   async function upload(file: File) {
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return notify('仅支持 PNG、JPG 和 WebP 图片', 'error');
-    if (file.size > 10 * 1024 * 1024) return notify('图片不能超过 10MB', 'error');
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return notify(t('ws.uploadTypeUnsupported'), 'error');
+    if (file.size > 10 * 1024 * 1024) return notify(t('ws.uploadTooLarge'), 'error');
     setUploading(true);
     uploadingRef.current = true;
     try {
@@ -1193,9 +1293,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       const image = data.images.find((item) => item.id === data.project.currentImageId) || data.images.at(-1);
       if (image) {
         useImage(image);
-        notify(`图片已保存到项目素材，已匹配 ${closestSizeForDimensions(selectedModel, image.width, image.height)} 输出比例`, 'success');
+        notify(t('ws.uploadMatched', { size: closestSizeForDimensions(selectedModel, image.width, image.height) }), 'success');
       } else {
-        notify('图片已保存到项目素材', 'success');
+        notify(t('ws.uploadSaved'), 'success');
       }
     } catch (error) { notify((error as Error).message, 'error'); }
     finally { setUploading(false); uploadingRef.current = false; if (fileRef.current) fileRef.current.value = ''; }
@@ -1247,14 +1347,6 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       notify((error as Error).message, 'error');
       try { setBundle(await api.getProject(projectId)); } catch { /* keep current view */ }
     }
-  }
-
-  // 画布浮动按钮与历史里的批量入口都指向右侧批量面板，不再弹独立弹窗。
-  function openBatchPanel() {
-    if (generating) return;
-    setBatchTemplate((current) => current || prompt.trim());
-    setBatchType('edit');
-    setRightMode('batch');
   }
 
   function syncBatchTemplateEditor() {
@@ -1332,16 +1424,16 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     const text = await file.text();
     const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     if (!lines.length) {
-      notify('文件中没有找到有效的提示词行。', 'error');
+      notify(t('ws.importNoLines'), 'error');
       return;
     }
     setBatchPromptTab('list');
     if (lines.length > 50) {
       setBatchPromptsText(lines.slice(0, 50).join('\n'));
-      notify(`文件共 ${lines.length} 行，超过单批 50 张上限，已保留前 50 行。`, 'error');
+      notify(t('ws.importTruncated', { count: lines.length }), 'error');
     } else {
       setBatchPromptsText(lines.join('\n'));
-      notify(`已导入 ${lines.length} 条提示词，将生成 ${lines.length} 张。`, 'success');
+      notify(t('ws.imported', { count: lines.length }), 'success');
     }
   }
 
@@ -1370,7 +1462,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       batchProcessed.current = 0;
       setBatchProgress(null);
       startPolling(result.taskId, 'batch-edit');
-      notify(batchType === 'edit' ? '批量处理已开始，生成结果会逐张出现。' : '批量文生图已开始，生成结果会逐张出现。', 'success');
+      notify(batchType === 'edit' ? t('ws.batchStarted') : t('ws.batchTextStarted'), 'success');
     } catch (error) {
       notify((error as Error).message, 'error');
     } finally {
@@ -1380,13 +1472,13 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
 
   async function cancelActiveTask() {
     if (!activeTask?.id) return;
-    try { await api.cancelTask(projectId, activeTask.id); notify('正在取消…', 'success'); }
+    try { await api.cancelTask(projectId, activeTask.id); notify(t('ws.canceling'), 'success'); }
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
   async function leaveWorkspace(destination: () => void) {
     if (!await flushDraft()) {
-      notify('草稿保存失败，请检查本地服务后重试。', 'error');
+      notify(t('ws.draftSaveFailed'), 'error');
       return;
     }
     destination();
@@ -1395,23 +1487,23 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   async function removeVersion(version: Version) {
     if (!bundle) return;
     const childCount = bundle.versions.filter((item) => item.parentVersionId === version.id).length;
-    const baseMessage = `确定删除版本 V${version.number} 吗？版本记录将被移入回收状态，图片文件仍保留在磁盘。`;
-    const childMessage = childCount ? `该版本被 ${childCount} 个后续版本引用，删除后它们将直接衔接其父版本。` : '';
+    const baseMessage = t('ws.deleteVersionConfirm', { number: version.number });
+    const childMessage = childCount ? t('ws.deleteVersionChildren', { count: childCount }) : '';
     if (!window.confirm(`${baseMessage}\n${childMessage}`)) return;
     try {
       const data = await api.deleteVersion(projectId, version.id, childCount > 0);
       setBundle(data);
       if (currentVersion?.id === version.id) setCurrentImageId(data.project.currentImageId || null);
-      notify(`已删除版本 V${version.number}`);
+      notify(t('ws.versionDeleted', { number: version.number }));
       onProjectChanged();
     } catch (error) {
       const message = (error as Error).message;
-      if (window.confirm(`${message}\n\n仍要删除并让后续版本衔接其父版本吗？`)) {
+      if (window.confirm(t('ws.forceDeleteConfirm', { message }))) {
         try {
           const data = await api.deleteVersion(projectId, version.id, true);
           setBundle(data);
           if (currentVersion?.id === version.id) setCurrentImageId(data.project.currentImageId || null);
-          notify(`已删除版本 V${version.number}`);
+          notify(t('ws.versionDeleted', { number: version.number }));
           onProjectChanged();
         } catch (retryError) { notify((retryError as Error).message, 'error'); }
       }
@@ -1431,7 +1523,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setContextMenu(null);
     try {
       await api.addGalleryFromProject({ projectId, imageId, visionModelId });
-      notify('已收藏到提示词画廊，提示词由视觉模型自动提炼', 'success');
+      notify(t('ws.savedToGallery'), 'success');
     } catch (error) { notify((error as Error).message, 'error'); }
     finally { setSavingToGallery(false); }
   }
@@ -1444,7 +1536,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     return () => { window.removeEventListener('click', close); window.removeEventListener('resize', close); };
   }, [contextMenu]);
 
-  if (loading || !bundle) return <main className="workspace-loading">正在恢复项目工作台…</main>;
+  if (loading || !bundle) return <main className="workspace-loading">{t('ws.restoringWorkspace')}</main>;
 
   const beforeImage = compareMode === 'slider' ? (compareImage || parentImage) : null;
   const outpaintAspectRatio = outpaintSize ? outpaintSize.replace('x', ' / ') : undefined;
@@ -1453,203 +1545,212 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     <main className="workspace-shell">
       <header className="workspace-topbar">
         <div className="workspace-title-group">
-          <button className="back-button compact" onClick={() => void leaveWorkspace(onBack)}>← 项目列表</button>
+          <button className="back-button compact" onClick={() => void leaveWorkspace(onBack)}>← {t('ws.backToList')}</button>
           <span className="header-divider" />
           <span className="project-name-field">
-            <input className="project-name-input" defaultValue={bundle.project.name} onBlur={(event) => void rename(event.target.value)} aria-label="项目名称" title="点击即可重命名项目" />
+            <input className="project-name-input" defaultValue={bundle.project.name} onBlur={(event) => void rename(event.target.value)} aria-label={t('ws.projectNameAria')} title={t('ws.renameHintTitle')} />
             <Icon name="edit" size={13} />
           </span>
         </div>
-        <div className={`autosave-state ${saveState}`}><span />{saveState === 'saving' ? '保存中…' : saveState === 'failed' ? '保存失败' : '已自动保存'}</div>
+        <div className={`autosave-state ${saveState}`}><span />{saveState === 'saving' ? t('ws.saveStateSaving') : saveState === 'failed' ? t('ws.saveStateFailed') : t('ws.saveStateSaved')}</div>
         <div className="workspace-header-actions">
-          <select value={modelId} onChange={(event) => setModelId(event.target.value)} aria-label="图片生成模型" title="当前图片生成模型">{imageModels.map((model) => <option key={model.id} value={model.id}>出图 · {model.name}</option>)}</select>
-          <select className="vision-model-select" value={visionModelId} onChange={(event) => setVisionModelId(event.target.value)} aria-label="视觉识别模型" title="当前视觉识别模型" disabled={!visionModels.length || visionBusy}>
-            {!visionModels.length && <option value="">未配置视觉模型</option>}
-            {visionModels.map((model) => <option key={model.id} value={model.id}>视觉 · {model.name}</option>)}
+          <select value={modelId} onChange={(event) => setModelId(event.target.value)} aria-label={t('ws.imageModelAria')} title={t('ws.imageModelTitle')}>{imageModels.map((model) => <option key={model.id} value={model.id}>{t('ws.imageModelOption', { name: model.name })}</option>)}</select>
+          <select className="vision-model-select" value={visionModelId} onChange={(event) => setVisionModelId(event.target.value)} aria-label={t('ws.visionModelAria')} title={t('ws.visionModelTitle')} disabled={!visionModels.length || visionBusy}>
+            {!visionModels.length && <option value="">{t('ws.noVisionModel')}</option>}
+            {visionModels.map((model) => <option key={model.id} value={model.id}>{t('ws.visionModelOption', { name: model.name })}</option>)}
           </select>
-          <button className="gallery-open-button" title="提示词画廊：把完整提示词填入对话或批量列表，或把风格设为项目 / 批量统一风格" aria-label="提示词画廊" onClick={() => setGalleryOpen(true)}><span className="gallery-open-icon"><Icon name="gallery" size={17} /><Icon name="sparkle" size={9} /></span><span className="gallery-open-copy"><strong>提示词画廊</strong><small>灵感 · 风格 · 模板</small></span></button>
-          <button className="icon-button theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'} aria-label="切换配色模式"><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} /></button>
-          <button className="icon-button" title="模型日志" aria-label="模型日志" onClick={() => setModelLogsOpen(true)}><Icon name="logs" size={17} /></button>
-          <button className="icon-button" title="模型配置" onClick={() => void leaveWorkspace(onModels)}><Icon name="sliders" size={17} /></button>
+          <button className="gallery-open-button" title={t('ws.galleryBtnTitle')} aria-label={t('pg.title')} onClick={() => setGalleryOpen(true)}><span className="gallery-open-icon"><Icon name="gallery" size={17} /><Icon name="sparkle" size={9} /></span><span className="gallery-open-copy"><strong>{t('pg.title')}</strong><small>{t('ws.galleryBtnSubtitle')}</small></span></button>
+          <button className="icon-button theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? t('common.switchToLight') : t('common.switchToDark')} aria-label={t('common.toggleTheme')}><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} /></button>
+          <LanguageToggle />
+          <button className="icon-button" title={t('ws.logsTitle')} aria-label={t('ws.logsTitle')} onClick={() => setModelLogsOpen(true)}><Icon name="logs" size={17} /></button>
+          <button className="icon-button" title={t('mc.title')} onClick={() => void leaveWorkspace(onModels)}><Icon name="sliders" size={17} /></button>
         </div>
       </header>
 
       <section className="workspace-body">
         <aside className="versions-panel">
-          <div className="workspace-panel-title"><div><p className="eyebrow">VERSIONS</p><h2>历史版本</h2></div><span>{bundle.versions.length}</span></div>
+          <div className="workspace-panel-title"><div><p className="eyebrow">VERSIONS</p><h2>{t('ws.historyTitle')}</h2></div><span>{bundle.versions.length}</span></div>
           <div className="version-list">
-            {bundle.versions.map((version) => <VersionItem key={version.id} version={version} active={version.id === currentVersion?.id} onSelect={() => chooseVersion(version)} onEdit={() => editVersion(version)} onDownload={() => api.downloadVersionImages(projectId, version.id)} onDelete={() => version.status === 'generating' ? notify('该批量版本仍在生成，请先取消或等待完成。', 'error') : void removeVersion(version)} />)}
-            {!bundle.versions.length && <div className="small-empty"><span><Icon name="image" size={22} /></span><p>生成第一张图片后，版本会出现在这里。</p></div>}
+            {bundle.versions.map((version) => <VersionItem key={version.id} version={version} active={version.id === currentVersion?.id} onSelect={() => chooseVersion(version)} onEdit={() => editVersion(version)} onDownload={() => api.downloadVersionImages(projectId, version.id)} onDelete={() => version.status === 'generating' ? notify(t('ws.batchVersionBusy'), 'error') : void removeVersion(version)} />)}
+            {!bundle.versions.length && <div className="small-empty"><span><Icon name="image" size={22} /></span><p>{t('ws.emptyVersions')}</p></div>}
           </div>
-          <button className="version-tree-button" disabled={!bundle.versions.length} onClick={() => setVersionTreeOpen(true)}><Icon name="tree" size={15} /> 查看版本关系</button>
+          <button className="version-tree-button" disabled={!bundle.versions.length} onClick={() => setVersionTreeOpen(true)}><Icon name="tree" size={15} /> {t('ws.viewTree')}</button>
         </aside>
 
         <section className="canvas-panel">
           <div className="canvas-toolbar">
-              <div className="canvas-context">{currentVersion ? <><strong>V{currentVersion.number}</strong><span>{operationLabels[currentVersion.operation]}</span></> : <span>项目画布</span>}</div>
-            <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label="缩小"><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label="放大"><Icon name="plus" size={14} /></button><button className="upload-image-launch" disabled={uploading} title="向当前项目添加一张图片，并将它作为下一次编辑的输入" onClick={() => fileRef.current?.click()}>{uploading ? '上传中…' : <><Icon name="plus" size={14} /> 上传图片</>}</button><button className={`local-edit-launch ${localEditMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={localEditMode || localEditRect ? '退出局部修改' : '框选图片区域，用文字要求修改，或上传参考图替换选中的主体'} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit}>{localEditMode || localEditRect ? <><Icon name="close" size={14} /> 退出局部</> : <><Icon name="box" size={14} /> 局部修改</>}</button><button className={`extract-launch ${(extractMode || extractRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={(extractMode || extractRect) ? '退出提取素材' : '框选图片中的主体，提取为一张独立素材图'} onClick={(extractMode || extractRect) ? closeExtract : startExtract}>{(extractMode || extractRect) ? <><Icon name="close" size={14} /> 退出提取</> : <><Icon name="extract" size={14} /> 提取素材</>}</button><button className={`outpaint-launch ${outpaintMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={outpaintMode ? '退出扩图' : '扩展当前图片画布'} onClick={outpaintMode ? closeOutpaint : startOutpaint}>{outpaintMode ? <><Icon name="close" size={14} /> 退出扩图</> : <><Icon name="image" size={14} /> 扩图</>}</button><button className="enhance-launch" disabled={!currentImage || generating || removingWatermark || enhancing} title="调用改图模型提升当前图片的清晰度与细节" onClick={() => void enhanceImage()}>{enhancing ? '处理中…' : <><Icon name="sparkle" size={14} /> 变清晰</>}</button><button className="watermark-remove-launch" disabled={!currentImage || generating || removingWatermark || enhancing} title="先识别覆盖式水印，再调用改图模型修复" onClick={() => void removeWatermark()}>{removingWatermark ? '识别中…' : <><Icon name="sparkle" size={14} /> 去水印</>}</button><button disabled={!currentImage || generating || removingWatermark || enhancing} onClick={() => void openTextEditor()}>编辑文字</button><button disabled={!currentImage} onClick={openCompare}>对比</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>下载</a>{currentVersion && currentVersion.outputs.length > 1 && <button className="download-version-zip" title={`将本轮 ${currentVersion.outputs.length} 张候选图下载为 ZIP`} onClick={() => api.downloadVersionImages(projectId, currentVersion.id)}><Icon name="download" size={13} /> ZIP</button>}</div>
+              <div className="canvas-context">{currentVersion ? <><strong>V{currentVersion.number}</strong><span>{currentVersion.operation && operationKeys[currentVersion.operation] ? t(operationKeys[currentVersion.operation]) : currentVersion.operation}</span></> : <span>{t('ws.projectCanvas')}</span>}</div>
+            <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label={t('common.zoomOut')}><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label={t('common.zoomIn')}><Icon name="plus" size={14} /></button><button className={`local-edit-launch ${localEditMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={localEditMode || localEditRect ? t('ws.exitLocalEditTitle') : t('ws.localEditTitle')} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit}>{localEditMode || localEditRect ? <><Icon name="close" size={14} /> {t('ws.exitLocalEdit')}</> : <><Icon name="box" size={14} /> {t('ws.localEdit')}</>}</button><button className={`remove-element-launch ${(removeElementMode || removeElementRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={(removeElementMode || removeElementRect) ? t('ws.exitRemoveElementTitle') : t('ws.removeElementTitle')} onClick={(removeElementMode || removeElementRect) ? closeRemoveElement : startRemoveElement}>{(removeElementMode || removeElementRect) ? <><Icon name="close" size={14} /> {t('ws.exitRemoveElement')}</> : <><Icon name="trash" size={14} /> {t('ws.removeElement')}</>}</button><button className={`extract-launch ${(extractMode || extractRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={(extractMode || extractRect) ? t('ws.exitExtractTitle') : t('ws.extractTitle')} onClick={(extractMode || extractRect) ? closeExtract : startExtract}>{(extractMode || extractRect) ? <><Icon name="close" size={14} /> {t('ws.exitExtract')}</> : <><Icon name="extract" size={14} /> {t('ws.extract')}</>}</button><button className={`outpaint-launch ${outpaintMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={outpaintMode ? t('ws.exitOutpaintTitle') : t('ws.outpaintTitle')} onClick={outpaintMode ? closeOutpaint : startOutpaint}>{outpaintMode ? <><Icon name="close" size={14} /> {t('ws.exitOutpaint')}</> : <><Icon name="image" size={14} /> {t('ws.outpaint')}</>}</button><button className="enhance-launch" disabled={!currentImage || generating || removingWatermark || enhancing} title={t('ws.enhanceTitle')} onClick={() => void enhanceImage()}>{enhancing ? t('ws.processing') : <><Icon name="sparkle" size={14} /> {t('ws.enhance')}</>}</button><button className="watermark-remove-launch" disabled={!currentImage || generating || removingWatermark || enhancing} title={t('ws.watermarkTitle')} onClick={() => void removeWatermark()}>{removingWatermark ? t('ws.recognizing') : <><Icon name="sparkle" size={14} /> {t('ws.removeWatermark')}</>}</button><button disabled={!currentImage || generating || removingWatermark || enhancing} onClick={() => void openTextEditor()}>{t('ws.editText')}</button><button disabled={!currentImage} onClick={openCompare}>{t('ws.compare')}</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>{t('common.download')}</a>{currentVersion && currentVersion.outputs.length > 1 && <button className="download-version-zip" title={t('ws.downloadZipTitle', { count: currentVersion.outputs.length })} onClick={() => api.downloadVersionImages(projectId, currentVersion.id)}><Icon name="download" size={13} /> ZIP</button>}</div>
           </div>
-          <div className={`canvas-stage ${(localEditMode || extractMode) ? 'selection-mode' : ''}`} onPointerDown={onCanvasSelectionStart} onPointerMove={onCanvasSelectionMove} onPointerUp={onCanvasSelectionEnd} onPointerCancel={onCanvasSelectionCancel}>
-            {currentImage && <button type="button" className="batch-launch" disabled={!batchEditSupported || generating} title={!batchEditSupported ? '当前模型不支持提示词改图' : '在右侧批量面板中，以当前画布图片为基准逐张批量处理'} onPointerDown={(event) => event.stopPropagation()} onClick={openBatchPanel}><Icon name="grid" size={14} /> 批量处理</button>}
-            {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined} onContextMenu={(event) => openImageContextMenu(event, currentImage.id)}>{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={`扩图预览${currentVersion ? `版本 V${currentVersion.number}` : ''}`} /><span>新增画布区域</span></div> : <img src={currentImage.url} alt={`项目图片${currentVersion ? `版本 V${currentVersion.number}` : ''}`} />}{(localEditMode || localEditRect) && <div className="local-edit-surface">{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>修改区域</em></span>}</div>}{(extractMode || extractRect) && <div className="extract-surface">{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>提取区域</em></span>}</div>}<span className="image-chip">{outpaintMode ? `目标 ${outpaintSize}` : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
-              <div className="canvas-empty"><div className="empty-visual"><span /><span /><span /></div><h2>开始你的第一张作品</h2><p>在右侧输入创作描述，或者上传 / 直接 Ctrl+V 粘贴一张图片进行修改。</p><button className="button secondary" onClick={() => fileRef.current?.click()}>上传初始图片</button></div>
+          <div className={`canvas-stage ${(localEditMode || removeElementMode || extractMode) ? 'selection-mode' : ''}`} onPointerDown={onCanvasSelectionStart} onPointerMove={onCanvasSelectionMove} onPointerUp={onCanvasSelectionEnd} onPointerCancel={onCanvasSelectionCancel}>
+            {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(removeElementMode || removeElementRect) ? 'removing-element' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined} onContextMenu={(event) => openImageContextMenu(event, currentImage.id)}>{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={t('ws.outpaintPreviewAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} /><span>{t('ws.newCanvasArea')}</span></div> : <img src={currentImage.url} alt={t('ws.projectImageAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} />}{(localEditMode || localEditRect) && <div className="local-edit-surface">{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>{t('ws.editArea')}</em></span>}</div>}{(removeElementMode || removeElementRect) && <div className="remove-element-surface">{removeElementRect && <span className="remove-element-rect" style={{ left: `${removeElementRect.x}%`, top: `${removeElementRect.y}%`, width: `${removeElementRect.width}%`, height: `${removeElementRect.height}%` }}><em>{t('ws.removeElementArea')}</em></span>}</div>}{(extractMode || extractRect) && <div className="extract-surface">{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>{t('ws.extractArea')}</em></span>}</div>}<span className="image-chip">{outpaintMode ? t('ws.targetSize', { size: outpaintSize }) : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
+              <div className="canvas-empty"><div className="empty-visual"><span /><span /><span /></div><h2>{t('ws.startFirstTitle')}</h2><p>{t('ws.startFirstHint')}</p><button className="button secondary" onClick={() => fileRef.current?.click()}>{t('ws.uploadInitial')}</button></div>
             )}
+            {removeElementMode && !removeElementDragging && currentImage && <section className="remove-element-panel" role="dialog" aria-label={t('ws.removeElement')}><div><strong>{t('ws.removeElement')}</strong><span>{removeElementSubmitting ? t('ws.removeElementIdentifying') : t('ws.removeElementHint')}</span></div><button disabled={removeElementSubmitting || generating} onClick={closeRemoveElement}><Icon name="close" size={13} /> {t('common.exit')}</button></section>}
             {localEditMode && !localDragging && currentImage && <div className="local-edit-dock">
-              <section className="local-edit-panel" role="dialog" aria-label="局部修改">
-              <div className="local-edit-panel-head"><div><strong>局部修改</strong><span>{localEditRect ? '描述改动，或上传参考图替换选中的主体' : '可从图片内外起拖，框选需要修改的位置；框选后可填写文字要求或上传参考图'}</span></div><button className="local-edit-exit" disabled={localEditSubmitting} onClick={closeLocalEdit}><Icon name="close" size={13} /> 退出</button></div>
+              <section className="local-edit-panel" role="dialog" aria-label={t('ws.localEdit')}>
+              <div className="local-edit-panel-head"><div><strong>{t('ws.localEdit')}</strong><span>{localEditRect ? t('ws.localPanelHintRect') : t('ws.localPanelHint')}</span></div><button className="local-edit-exit" disabled={localEditSubmitting} onClick={closeLocalEdit}><Icon name="close" size={13} /> {t('common.exit')}</button></div>
               {localEditRect && <>
                 <input ref={localReferenceFileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; void selectLocalReference(file); }} />
                 <div className="local-reference">
-                  {localReference && <img src={localReference.data} alt="局部替换参考图" />}
-                  <div><strong>{localReference ? localReference.name || '已选择参考图' : '参考图片（可选）'}</strong><span>{localReference ? '将识别参考图中的主体并融合到框选位置' : '例如：框选人头，上传狗的照片，自动完成换头'}</span>
-                    <div className="local-reference-actions"><button className="button secondary" disabled={localReferenceLoading || localEditSubmitting || generating} onClick={() => localReferenceFileRef.current?.click()}>{localReferenceLoading ? '正在读取…' : localReference ? '更换图片' : '上传参考图'}</button>{localReference && <button className="button secondary" disabled={localReferenceLoading || localEditSubmitting || generating} onClick={() => { localReferenceRevision.current++; setLocalReference(null); }}>移除</button>}</div>
-                    <small>PNG / JPEG / WebP，最大 10MB，也可 Ctrl+V 粘贴</small>
+                  {localReference && <img src={localReference.data} alt={t('ws.referenceAlt')} />}
+                  <div><strong>{localReference ? localReference.name || t('ws.referenceChosen') : t('ws.referenceOptional')}</strong><span>{localReference ? t('ws.referenceFusion') : t('ws.referenceExample')}</span>
+                    <div className="local-reference-actions"><button className="button secondary" disabled={localReferenceLoading || localEditSubmitting || generating} onClick={() => localReferenceFileRef.current?.click()}>{localReferenceLoading ? t('ws.reading') : localReference ? t('ws.changeImage') : t('ws.uploadReference')}</button>{localReference && <button className="button secondary" disabled={localReferenceLoading || localEditSubmitting || generating} onClick={() => { localReferenceRevision.current++; setLocalReference(null); }}>{t('common.remove')}</button>}</div>
+                    <small>{t('ws.referenceLimits')}</small>
                   </div>
                 </div>
-                <textarea aria-label="局部修改要求" disabled={localEditSubmitting} value={localEditInstruction} onChange={(event) => setLocalEditInstruction(event.target.value)} placeholder={localReference ? '可不填写，由模型推断意图。也可补充：只替换头部，保留耳朵，保持原图的姿态与光影' : '例如：将桌上的咖啡杯替换成透明玻璃花瓶，保留光影和画面风格'} rows={2} />
-                {localReference && <p className="local-reference-note">智能定位 → 裁剪合成 → 自然融合。请为衔接处留出选区空间；框外保留原图，结果按原图尺寸保存为 PNG。</p>}
-                <div className="local-edit-panel-actions"><button className="button secondary" disabled={localEditSubmitting || localBatchSubmitting || generating} onClick={() => setLocalEditRect(null)}>重新框选</button><button className="button secondary" disabled={localEditSubmitting || localBatchSubmitting || generating} onClick={() => setLocalBatchOpen((open) => !open)}>批量修改</button><button className="button primary" disabled={(!localEditInstruction.trim() && !localReference) || localReferenceLoading || localEditSubmitting || localBatchSubmitting || generating} onClick={() => void submitLocalEdit()}>{localEditSubmitting ? '正在提交…' : localReference ? '智能替换并融合' : '应用局部修改'}</button></div>
+                <textarea aria-label={t('ws.instructionAria')} disabled={localEditSubmitting} value={localEditInstruction} onChange={(event) => setLocalEditInstruction(event.target.value)} placeholder={localReference ? t('ws.instructionPlaceholderRef') : t('ws.instructionPlaceholder')} rows={2} />
+                {localReference && <p className="local-reference-note">{t('ws.localNote')}</p>}
+                <div className="local-edit-panel-actions"><button className="button secondary" disabled={localEditSubmitting || localBatchSubmitting || generating} onClick={() => setLocalEditRect(null)}>{t('ws.reselect')}</button><button className="button secondary" disabled={localEditSubmitting || localBatchSubmitting || generating} onClick={() => setLocalBatchOpen((open) => !open)}>{t('ws.batchModify')}</button><button className="button primary" disabled={(!localEditInstruction.trim() && !localReference) || localReferenceLoading || localEditSubmitting || localBatchSubmitting || generating} onClick={() => void submitLocalEdit()}>{localEditSubmitting ? t('ws.submitting') : localReference ? t('ws.smartReplace') : t('ws.applyLocalEdit')}</button></div>
               </>}
             </section>
-              {localEditRect && localBatchOpen && <aside className="local-batch-panel" role="dialog" aria-label="批量局部修改">
-                <div className="local-edit-panel-head"><div><strong>批量局部修改</strong><span>同一选区逐张尝试多组指令，结果进入同一版本</span></div><button className="local-edit-exit" disabled={localBatchSubmitting} onClick={() => setLocalBatchOpen(false)}><Icon name="close" size={13} /> 收起</button></div>
-                <textarea aria-label="批量修改指令列表" value={localBatchText} onChange={(event) => setLocalBatchText(event.target.value)} rows={7} spellCheck={false} placeholder={'每行一条修改指令，空行自动忽略。\n例如：\n把帽子换成红色贝雷帽\n把帽子换成蓝色棒球帽'} />
-                <small className={localBatchLines.length >= 2 && !localBatchError ? 'local-batch-count valid' : 'local-batch-count'}>{localBatchLines.length ? `已识别 ${localBatchLines.length} 条指令，将生成 ${localBatchLines.length} 张；2–50 条，单条不超过 1000 字符。` : '每行一条指令，空行自动忽略；2–50 条，单条不超过 1000 字符。'}</small>
-                {localReference && <p className="local-batch-reference">已附参考图“{localReference.name || '参考图'}”，每条指令都会基于它做替换融合。</p>}
+              {localEditRect && localBatchOpen && <aside className="local-batch-panel" role="dialog" aria-label={t('ws.localBatch')}>
+                <div className="local-edit-panel-head"><div><strong>{t('ws.localBatch')}</strong><span>{t('ws.localBatchHint')}</span></div><button className="local-edit-exit" disabled={localBatchSubmitting} onClick={() => setLocalBatchOpen(false)}><Icon name="close" size={13} /> {t('ws.collapse')}</button></div>
+                <textarea aria-label={t('ws.localBatchListAria')} value={localBatchText} onChange={(event) => setLocalBatchText(event.target.value)} rows={7} spellCheck={false} placeholder={t('ws.localBatchPlaceholder')} />
+                <small className={localBatchLines.length >= 2 && !localBatchError ? 'local-batch-count valid' : 'local-batch-count'}>{localBatchLines.length ? t('ws.localBatchCount', { count: localBatchLines.length }) : t('ws.localBatchCountEmpty')}</small>
+                {localReference && <p className="local-batch-reference">{t('ws.localBatchReference', { name: localReference.name || t('ws.referenceFallback') })}</p>}
                 {localBatchLines.length > 0 && localBatchError && <p className="batch-validation-error">{localBatchError}</p>}
-                <div className="local-edit-panel-actions"><button className="button secondary" disabled={localBatchSubmitting} onClick={() => setLocalBatchOpen(false)}>收起</button><button className="button primary" disabled={Boolean(localBatchError) || localBatchSubmitting || generating || localReferenceLoading} onClick={() => void submitLocalBatch()}>{localBatchSubmitting ? '正在创建批次…' : `开始批量修改 ${localBatchLines.length} 张`}</button></div>
+                <div className="local-edit-panel-actions"><button className="button secondary" disabled={localBatchSubmitting} onClick={() => setLocalBatchOpen(false)}>{t('ws.collapse')}</button><button className="button primary" disabled={Boolean(localBatchError) || localBatchSubmitting || generating || localReferenceLoading} onClick={() => void submitLocalBatch()}>{localBatchSubmitting ? t('ws.creatingBatch') : t('ws.localBatchStart', { count: localBatchLines.length })}</button></div>
               </aside>}
             </div>}
-            {outpaintMode && currentImage && <section className="outpaint-panel"><div className="outpaint-panel-head"><div><strong>扩图</strong><span>选择当前模型支持的目标画布比例</span></div><button className="outpaint-exit" onClick={closeOutpaint}><Icon name="close" size={13} /> 退出</button></div><div className="outpaint-size-list">{sizesForProvider(selectedModel).map((option) => <button key={option.value} className={option.value === outpaintSize ? 'active' : ''} onClick={() => setOutpaintSize(option.value)}><strong>{option.ratio}</strong><span>{option.value}</span></button>)}</div><p className="outpaint-summary">原图将居中保留，绿色虚线框内的新增区域会由模型自然延展补全。</p><div className="outpaint-panel-actions"><button className="button secondary" onClick={closeOutpaint}>取消</button><button className="button primary" disabled={!outpaintSize || outpaintSubmitting || generating} onClick={() => void submitOutpaint()}>{outpaintSubmitting ? '正在创建扩图任务…' : '确认扩图'}</button></div></section>}
-            {(extractMode || extractRect) && !extractDragging && currentImage && <section className="extract-panel"><div className="extract-panel-head"><div><strong>提取素材</strong><span>{extractRect ? '识别模型会聚焦框选主体，并剔除圈入的边缘干扰' : '可从图片内外起拖，框选想提取的内容'}</span></div><button className="extract-exit" onClick={closeExtract}><Icon name="close" size={13} /> 退出</button></div>{extractRect && <><div className="extract-preview">{extractPreview ? <img src={extractPreview.dataUrl} alt="提取区域截图预览" /> : <span className="extract-preview-loading"><span className="spinner" />正在生成截图…</span>}{extractPreview && <small>{extractPreview.padded ? '已自动补边 · ' : ''}{extractPreview.width} × {extractPreview.height}</small>}</div><textarea value={extractHint} onChange={(event) => setExtractHint(event.target.value)} placeholder="可选补充说明，例如：只要中间的银幕，去掉两侧的座椅" rows={2} /><div className="extract-panel-actions"><button className="button secondary" onClick={() => { setExtractRect(null); setExtractPreview(null); }}>重新框选</button><button className="button primary" disabled={!extractPreview || extractSubmitting || generating} onClick={() => void submitExtract()}>{extractSubmitting ? '正在识别与规划…' : '提取为独立素材'}</button></div></>}</section>}
+            {outpaintMode && currentImage && <section className="outpaint-panel"><div className="outpaint-panel-head"><div><strong>{t('ws.outpaint')}</strong><span>{t('ws.outpaintPickRatio')}</span></div><button className="outpaint-exit" onClick={closeOutpaint}><Icon name="close" size={13} /> {t('common.exit')}</button></div><div className="outpaint-size-list">{sizesForProvider(selectedModel).map((option) => <button key={option.value} className={option.value === outpaintSize ? 'active' : ''} onClick={() => setOutpaintSize(option.value)}><strong>{option.ratio}</strong><span>{option.value}</span></button>)}</div><p className="outpaint-summary">{t('ws.outpaintSummary')}</p><div className="outpaint-panel-actions"><button className="button secondary" onClick={closeOutpaint}>{t('common.cancel')}</button><button className="button primary" disabled={!outpaintSize || outpaintSubmitting || generating} onClick={() => void submitOutpaint()}>{outpaintSubmitting ? t('ws.outpaintSubmitting') : t('ws.confirmOutpaint')}</button></div></section>}
+            {(extractMode || extractRect) && !extractDragging && currentImage && <section className="extract-panel"><div className="extract-panel-head"><div><strong>{t('ws.extract')}</strong><span>{extractRect ? t('ws.extractHintRect') : t('ws.extractHintNoRect')}</span></div><button className="extract-exit" onClick={closeExtract}><Icon name="close" size={13} /> {t('common.exit')}</button></div>{extractRect && <><div className="extract-preview">{extractPreview ? <img src={extractPreview.dataUrl} alt={t('ws.extractPreviewAlt')} /> : <span className="extract-preview-loading"><span className="spinner" />{t('ws.cropping')}</span>}{extractPreview && <small>{extractPreview.padded ? t('ws.autoPadded') : ''}{extractPreview.width} × {extractPreview.height}</small>}</div><textarea value={extractHint} onChange={(event) => setExtractHint(event.target.value)} placeholder={t('ws.extractInputPlaceholder')} rows={2} /><div className="extract-panel-actions"><button className="button secondary" onClick={() => { setExtractRect(null); setExtractPreview(null); }}>{t('ws.reselect')}</button><button className="button primary" disabled={!extractPreview || extractSubmitting || generating} onClick={() => void submitExtract()}>{extractSubmitting ? t('ws.extractSubmitting') : t('ws.extractSubmit')}</button></div></>}</section>}
           </div>
           {batchProgress && <section className={`batch-progress-panel ${batchProgress.status}`} aria-live="polite">
             <div className="batch-progress-head">
-              <div><strong>{batchProgress.textBatch ? '批量文生图' : batchProgress.localEdit ? '批量局部修改' : '批量处理'} · {batchProgress.completed}/{batchProgress.total}</strong><span>{batchProgress.status === 'generating' ? `剩余 ${batchProgress.remaining} 张 · ${formatRemainingTime(batchProgress.estimatedRemainingSeconds)}` : batchProgress.status === 'success' ? '全部生成完成' : batchProgress.status === 'partial' ? `已结束 · ${batchProgress.failed} 张失败` : batchProgress.status === 'canceled' ? '已取消' : '生成失败'}</span></div>
-              {batchProgress.status === 'generating' ? <button className="button secondary" onClick={() => void cancelActiveTask()}>取消批次</button> : <button className="icon-button" title="收起批量结果" onClick={() => setBatchProgress(null)}><Icon name="close" size={14} /></button>}
+              <div><strong>{batchProgress.textBatch ? t('ws.batchText') : batchProgress.localEdit ? t('ws.batchLocal') : t('ws.batchEdit')} · {batchProgress.completed}/{batchProgress.total}</strong><span>{batchProgress.status === 'generating' ? t('ws.remaining', { count: batchProgress.remaining, eta: formatRemainingTime(batchProgress.estimatedRemainingSeconds) }) : batchProgress.status === 'success' ? t('ws.allDone') : batchProgress.status === 'partial' ? t('ws.endedPartial', { count: batchProgress.failed }) : batchProgress.status === 'canceled' ? t('ws.canceled') : t('ws.failed')}</span></div>
+              {batchProgress.status === 'generating' ? <button className="button secondary" onClick={() => void cancelActiveTask()}>{t('ws.cancelBatch')}</button> : <button className="icon-button" title={t('ws.collapseBatch')} onClick={() => setBatchProgress(null)}><Icon name="close" size={14} /></button>}
             </div>
             <div className="batch-progress-track"><span style={{ width: `${Math.round(((batchProgress.completed + batchProgress.failed) / Math.max(1, batchProgress.total)) * 100)}%` }} /></div>
             <div className="batch-result-list">
               {batchProgress.items.map((item) => {
                 const valueLabel = batchItemValueLabel(item.values);
                 return item.image
-                  ? <button key={item.index} className="batch-result-item success" title={valueLabel} onClick={() => useImage(item.image!)}><img src={thumbUrl(item.image, 220)} alt={`${valueLabel} 批量结果`} /><span>{item.index + 1}. {valueLabel}</span></button>
-                  : <div key={item.index} className={`batch-result-item ${item.status}`} title={item.error || undefined}><span className="batch-result-placeholder">{item.status === 'generating' ? <span className="spinner" /> : item.status === 'failed' ? '!' : item.status === 'canceled' ? '×' : item.index + 1}</span><span>{item.index + 1}. {valueLabel}</span>{item.status === 'failed' && <small>失败</small>}{item.status === 'canceled' && <small>取消</small>}</div>;
+                  ? <button key={item.index} className="batch-result-item success" title={valueLabel} onClick={() => useImage(item.image!)}><img src={thumbUrl(item.image, 220)} alt={`${valueLabel} ${t('ws.batchResultAlt')}`} /><span>{item.index + 1}. {valueLabel}</span></button>
+                  : <div key={item.index} className={`batch-result-item ${item.status}`} title={item.error || undefined}><span className="batch-result-placeholder">{item.status === 'generating' ? <span className="spinner" /> : item.status === 'failed' ? '!' : item.status === 'canceled' ? '×' : item.index + 1}</span><span>{item.index + 1}. {valueLabel}</span>{item.status === 'failed' && <small>{t('ws.failedShort')}</small>}{item.status === 'canceled' && <small>{t('ws.canceledShort')}</small>}</div>;
               })}
             </div>
           </section>}
-          {currentVersion && currentVersion.outputs.length > 1 && batchProgress?.versionId !== currentVersion.id && <div className="candidate-strip"><span>本轮候选</span>{currentVersion.outputs.map((image, index) => <button key={image.id} className={image.id === currentImageId ? 'active' : ''} title="查看并使用这张候选图继续创作" onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt={`候选结果 ${index + 1}`} loading="lazy" /></button>)}</div>}
+          {currentVersion && currentVersion.outputs.length > 1 && batchProgress?.versionId !== currentVersion.id && <div className="candidate-strip"><span>{t('ws.candidates')}</span>{currentVersion.outputs.map((image, index) => <button key={image.id} className={image.id === currentImageId ? 'active' : ''} title={t('ws.candidateTitle')} onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt={t('ws.candidateAltResult', { index: index + 1 })} loading="lazy" /></button>)}</div>}
         </section>
 
         <aside className={`conversation-panel ${rightMode === 'batch' ? 'batch-mode' : ''}`}>
           <div className="conversation-title">
-            <div><p className="eyebrow">{rightMode === 'batch' ? 'BATCH STUDIO' : 'CONVERSATION'}</p><h2>{rightMode === 'batch' ? '批量生成' : '项目对话'}</h2></div>
+            <div><p className="eyebrow">{rightMode === 'batch' ? 'BATCH STUDIO' : 'CONVERSATION'}</p><h2>{rightMode === 'batch' ? t('ws.batchStudio') : t('ws.chatTitle')}</h2></div>
             <div className="conversation-title-actions">
-              <div className="panel-mode-tabs" role="tablist" aria-label="右侧面板模式">
-                <button type="button" role="tab" aria-selected={rightMode === 'chat'} className={rightMode === 'chat' ? 'active' : ''} onClick={() => setRightMode('chat')}>对话</button>
-                <button type="button" role="tab" aria-selected={rightMode === 'batch'} className={rightMode === 'batch' ? 'active' : ''} onClick={() => setRightMode('batch')}>批量</button>
+              <div className="panel-mode-tabs" role="tablist" aria-label={t('ws.panelModeAria')}>
+                <button type="button" role="tab" aria-selected={rightMode === 'chat'} className={rightMode === 'chat' ? 'active' : ''} onClick={() => setRightMode('chat')}>{t('ws.chatTab')}</button>
+                <button type="button" role="tab" aria-selected={rightMode === 'batch'} className={rightMode === 'batch' ? 'active' : ''} onClick={() => setRightMode('batch')}>{t('ws.batchTab')}</button>
               </div>
-              {rightMode === 'chat' && <button className="icon-button" title="定位最新消息" onClick={() => messagesEnd.current?.scrollIntoView({ behavior: 'smooth' })}><Icon name="down" size={16} /></button>}
+              {rightMode === 'chat' && <button className="icon-button" title={t('ws.scrollLatest')} onClick={() => messagesEnd.current?.scrollIntoView({ behavior: 'smooth' })}><Icon name="down" size={16} /></button>}
             </div>
           </div>
           {rightMode === 'chat' ? <>
           <div className="message-list">
             {bundle.messages.map((message) => {
-              if (message.role === 'system') return <div className="system-message" key={message.id}>{message.content.text}</div>;
+              if (message.role === 'system') return <div className="system-message" key={message.id}>{persistedText(message.content, message.content.text || '')}</div>;
               if (message.role === 'user') {
                 const attached = message.content.inputImageId ? imageMap.get(message.content.inputImageId) : null;
-                return <article className="message user-message" key={message.id}><div className="message-meta"><strong>你</strong><span>{formatTime(message.createdAt)}</span></div>{attached && <img className="message-attachment" src={thumbUrl(attached)} alt="输入图片" loading="lazy" />}<p>{message.content.prompt || '基于所选图片继续创作'}</p><div className="message-params"><span>{operationLabels[message.content.operation || 'auto']}</span><span>{message.content.modelName}</span>{message.content.batch?.values && <span>{message.content.batch.values.length} 个变量值</span>}{message.content.batch?.prompts && <span>{message.content.batch.local ? `${message.content.batch.prompts.length} 条指令` : `${message.content.batch.prompts.length} 条提示词`}</span>}{message.content.splitPrompts && <span>每张不同</span>}</div></article>;
+                return <article className="message user-message" key={message.id}><div className="message-meta"><strong>{t('ws.you')}</strong><span>{formatTime(message.createdAt, language)}</span></div>{attached && <img className="message-attachment" src={thumbUrl(attached)} alt={t('ws.inputImageAlt')} loading="lazy" />}<p>{message.content.prompt || t('ws.defaultPrompt')}</p><div className="message-params"><span>{message.content.operation && operationKeys[message.content.operation] ? t(operationKeys[message.content.operation]) : message.content.operation || t('op.auto')}</span><span>{message.content.modelName}</span>{message.content.batch?.values && <span>{t('ws.variableCount', { count: message.content.batch.values.length })}</span>}{message.content.batch?.prompts && <span>{message.content.batch.local ? t('ws.instructionCount', { count: message.content.batch.prompts.length }) : t('ws.promptCount', { count: message.content.batch.prompts.length })}</span>}{message.content.splitPrompts && <span>{t('ws.perImageDifferent')}</span>}</div></article>;
               }
-              if (message.type === 'canceled') return <article className="message canceled-message" key={message.id}><div className="message-meta"><strong>已取消</strong><span>{formatTime(message.createdAt)}</span></div><p>{message.content.message}</p>{message.content.prompt && <button onClick={() => setPrompt(message.content.prompt || '')}>恢复提示词</button>}</article>;
-              if (message.type === 'error') return <article className="message error-message" key={message.id}><div className="message-meta"><strong>生成失败</strong><span>{formatTime(message.createdAt)}</span></div><p>{message.content.message}</p><button onClick={() => setPrompt(message.content.prompt || '')}>恢复提示词</button></article>;
+              if (message.type === 'canceled') return <article className="message canceled-message" key={message.id}><div className="message-meta"><strong>{t('ws.canceledTitle')}</strong><span>{formatTime(message.createdAt, language)}</span></div><p>{persistedText(message.content, message.content.message || '')}</p>{message.content.prompt && <button onClick={() => setPrompt(message.content.prompt || '')}>{t('ws.restorePrompt')}</button>}</article>;
+              if (message.type === 'error') return <article className="message error-message" key={message.id}><div className="message-meta"><strong>{t('ws.failedTitle')}</strong><span>{formatTime(message.createdAt, language)}</span></div><p>{persistedText(message.content, message.content.message || '')}</p><button onClick={() => setPrompt(message.content.prompt || '')}>{t('ws.restorePrompt')}</button></article>;
               const outputs = (message.content.outputImageIds || []).map((id) => imageMap.get(id)).filter(Boolean) as ProjectImage[];
-              return <article className="message assistant-message" key={message.id}><div className="message-meta"><strong>Layerive</strong><span>V{message.content.versionNumber} · {formatTime(message.createdAt)}</span></div><p>{message.content.batch?.local ? `批量局部修改已生成 ${outputs.length} 张${message.content.batch?.failed ? `，${message.content.batch.failed} 张失败` : ''}。` : message.content.operation === 'batch_generate' ? `批量文生图已生成 ${outputs.length} 张${message.content.batch?.failed ? `，${message.content.batch.failed} 张失败` : ''}。` : message.content.operation === 'batch_edit' ? `批量处理已生成 ${outputs.length} 张${message.content.batch?.failed ? `，${message.content.batch.failed} 张失败` : ''}。` : `已完成生成，得到 ${outputs.length} 张候选图片。`}</p><div className={`message-gallery count-${outputs.length}`}>{outputs.map((image, index) => <button key={image.id} title={message.content.prompts?.[index] ? `本张提示词：${message.content.prompts[index]}` : '查看并使用这张候选图继续创作'} onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt="生成结果" loading="lazy" /></button>)}</div><div className="message-actions"><button onClick={() => { const first = outputs[0]; if (first) useImage(first); }}>使用此轮继续</button><button onClick={() => setPrompt(message.content.prompt || '')}>复用提示词</button></div></article>;
+              const batchFailed = message.content.batch?.failed || 0;
+              const resultParagraph = message.content.batch?.local
+                ? batchFailed ? t('ws.msgLocalBatchPartial', { count: outputs.length, failed: batchFailed }) : t('ws.msgLocalBatchAll', { count: outputs.length })
+                : message.content.operation === 'batch_generate'
+                  ? batchFailed ? t('ws.msgTextBatchPartial', { count: outputs.length, failed: batchFailed }) : t('ws.msgTextBatchAll', { count: outputs.length })
+                  : message.content.operation === 'batch_edit'
+                    ? batchFailed ? t('ws.msgEditBatchPartial', { count: outputs.length, failed: batchFailed }) : t('ws.msgEditBatchAll', { count: outputs.length })
+                    : t('ws.msgGenerateAll', { count: outputs.length });
+              return <article className="message assistant-message" key={message.id}><div className="message-meta"><strong>Layerive</strong><span>V{message.content.versionNumber} · {formatTime(message.createdAt, language)}</span></div><p>{resultParagraph}</p><div className={`message-gallery count-${outputs.length}`}>{outputs.map((image, index) => <button key={image.id} title={message.content.prompts?.[index] ? t('ws.msgPromptTitle', { prompt: message.content.prompts[index] }) : t('ws.candidateTitle')} onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt={t('ws.generatedAlt')} loading="lazy" /></button>)}</div><div className="message-actions"><button onClick={() => { const first = outputs[0]; if (first) useImage(first); }}>{t('ws.useThisRound')}</button><button onClick={() => setPrompt(message.content.prompt || '')}>{t('ws.reusePrompt')}</button></div></article>;
             })}
-            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? '正在生成' : '正在准备'}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind === 'batch-edit' ? `${batchProgress?.textBatch ? '批量文生图' : batchProgress?.localEdit ? '批量局部修改' : '批量处理'}正在逐张处理${batchProgress ? `，已完成 ${batchProgress.completed}/${batchProgress.total} 张` : ''}。结果会实时显示在画布下方。` : activeTask?.kind === 'local-edit' ? localEditStages[activeTask.stage || 'planning'] : activeTask?.kind === 'text-edit' && !activeTask.id ? '视觉模型正在整理文字修改要求，随后将自动开始改图。' : activeTask?.kind === 'generate' && activeTask.stage === 'planning' ? '视觉模型正在判断多图意图，随后会自动选择普通候选或分别生成。' : `${selectedModel?.name || '图片模型'} 正在创作 ${count} 张图片，完成后会自动保存为同一版本的候选图。`}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>取消任务</button>}</article>}
+            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? t('ws.generating') : t('ws.preparing')}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind === 'batch-edit' ? (batchProgress ? t('ws.msgBatchProcessingDone', { label: batchProgress.textBatch ? t('ws.batchText') : batchProgress.localEdit ? t('ws.batchLocal') : t('ws.batchEdit'), done: `${batchProgress.completed}/${batchProgress.total}` }) : t('ws.msgBatchProcessing', { label: t('ws.batchEdit') })) : activeTask?.kind === 'local-edit' ? t(localEditStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-element' ? t(removeElementStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'text-edit' && !activeTask.id ? t('ws.msgTextPreparing') : activeTask?.kind === 'generate' && activeTask.stage === 'planning' ? t('ws.msgPlanning') : t('ws.msgCreating', { model: selectedModel?.name || t('ws.imageModelFallback'), count })}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</article>}
             <div ref={messagesEnd} />
           </div>
 
           <div className="composer-wrap">
             <details className="style-prompt" open={Boolean(stylePrompt)}>
-              <summary>项目风格提示词{stylePrompt ? <em>已设置</em> : <span>可选</span>}</summary>
-              <textarea value={stylePrompt} onChange={(event) => setStylePrompt(event.target.value)} placeholder="例如：扁平插画风格，柔和马卡龙配色，粗描边，留白构图。仅用于文生图时统一风格，改图不会生效。" rows={2} />
+              <summary>{t('ws.stylePromptTitle')}{stylePrompt ? <em>{t('ws.styleSet')}</em> : <span>{t('ws.styleOptional')}</span>}</summary>
+              <textarea value={stylePrompt} onChange={(event) => setStylePrompt(event.target.value)} placeholder={t('ws.stylePlaceholder')} rows={2} />
             </details>
-            {inputImage && <div className="input-context"><img src={thumbUrl(inputImage)} alt="本次输入" loading="lazy" /><div><strong>基于这张图片继续</strong><span>{inputVersion ? `正在修改 V${inputVersion.number}` : '项目上传素材'}</span></div><button onClick={() => setInputImageId(null)} aria-label="清除输入图片"><Icon name="close" size={13} /></button></div>}
-            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={inputImage ? '描述你希望如何修改这张图片…' : '描述你想生成的画面…'} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void send(); }} />
+            {inputImage && <div className="input-context"><img src={thumbUrl(inputImage)} alt={t('ws.currentInputAlt')} loading="lazy" /><div><strong>{t('ws.basedOnImage')}</strong><span>{inputVersion ? t('ws.editingVersion', { number: inputVersion.number }) : t('ws.uploadAsset')}</span></div><button onClick={() => setInputImageId(null)} aria-label={t('ws.clearInputAria')}><Icon name="close" size={13} /></button></div>}
+            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={inputImage ? t('ws.promptPlaceholderEdit') : t('ws.promptPlaceholderGenerate')} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void send(); }} />
             <div className="composer-tools">
               <div className="composer-left">
-                <button className="attach-button" onClick={() => fileRef.current?.click()} disabled={uploading} aria-label="上传图片">{uploading ? '…' : <Icon name="plus" size={16} />}</button>
-                <select value={operation} onChange={(event) => setOperation(event.target.value)}><option value="auto">自动识别</option><option value="text_to_image">文生图</option><option value="image_to_image">图生图</option><option value="edit_prompt">提示词改图</option></select>
-                <select value={size} onChange={(event) => setSize(event.target.value)} title="生成尺寸（宽高比）">
+                <button className="attach-button" onClick={() => fileRef.current?.click()} disabled={uploading} aria-label={t('ws.uploadImageAria')}>{uploading ? '…' : <Icon name="plus" size={16} />}</button>
+                <select value={operation} onChange={(event) => setOperation(event.target.value)}><option value="auto">{t('op.auto')}</option><option value="text_to_image">{t('op.text_to_image')}</option><option value="image_to_image">{t('op.image_to_image')}</option><option value="edit_prompt">{t('op.edit_prompt')}</option></select>
+                <select value={size} onChange={(event) => setSize(event.target.value)} title={t('ws.sizeTitle')}>
                   {sizesForProvider(selectedModel).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}
                   {!isValidSizeForProvider(selectedModel, size) && <option value={size}>{size}</option>}
                 </select>
-                <select value={count} onChange={(event) => setCount(Number(event.target.value))} aria-label="生成图片数量" title="选择多张时，视觉模型会根据提示词自动判断生成普通候选还是每张分别不同；单图接口会自动拆成多次请求" disabled={generating}>{Array.from({ length: maxImageCount }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1} 张</option>)}</select>
+                <select value={count} onChange={(event) => setCount(Number(event.target.value))} aria-label={t('ws.countAria')} title={t('ws.countTitle')} disabled={generating}>{Array.from({ length: maxImageCount }, (_, index) => <option key={index + 1} value={index + 1}>{t('common.countImages', { count: index + 1 })}</option>)}</select>
                 {(canChooseOutputFormat || canUseTransparentBackground) && <>
-                  {canChooseOutputFormat && <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as OutputFormat)} title="输出格式">{availableOutputFormats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select>}
-                  {canUseTransparentBackground && <button type="button" className={`bg-toggle ${transparentBg ? 'active' : ''}`} disabled={outputFormat === 'jpeg'} title={outputFormat === 'jpeg' ? 'JPEG 不支持透明背景' : '生成透明背景图片'} onClick={() => setTransparentBg((value) => !value)}>透明</button>}
+                  {canChooseOutputFormat && <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as OutputFormat)} title={t('ws.formatTitle')}>{availableOutputFormats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select>}
+                  {canUseTransparentBackground && <button type="button" className={`bg-toggle ${transparentBg ? 'active' : ''}`} disabled={outputFormat === 'jpeg'} title={outputFormat === 'jpeg' ? t('ws.transparentJpeg') : t('ws.transparentTitle')} onClick={() => setTransparentBg((value) => !value)}>{t('ws.transparent')}</button>}
                 </>}
               </div>
-              <button className="send-button" disabled={generating || (!prompt.trim() && !inputImageId)} onClick={() => void send()} aria-label="发送生成请求"><Icon name="up" size={17} /></button>
+              <button className="send-button" disabled={generating || (!prompt.trim() && !inputImageId)} onClick={() => void send()} aria-label={t('ws.sendAria')}><Icon name="up" size={17} /></button>
             </div>
             <input ref={fileRef} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => event.target.files?.[0] && void upload(event.target.files[0])} />
           </div>
           </> : <div className="batch-panel">
             <div className="batch-panel-scroll">
-            <div className="batch-type-tabs" role="tablist" aria-label="批量类型">
-              <button type="button" role="tab" aria-selected={batchType === 'edit'} className={batchType === 'edit' ? 'active' : ''} disabled={!batchEditSupported} title={!batchEditSupported ? '当前模型不支持提示词改图' : '以画布当前图片为基准逐张改图'} onClick={() => setBatchType('edit')}><strong>批量改图</strong><small>基于画布图片</small></button>
-              <button type="button" role="tab" aria-selected={batchType === 'text'} className={batchType === 'text' ? 'active' : ''} disabled={!batchTextSupported} title={!batchTextSupported ? '当前模型不支持文生图' : '每行提示词独立出图，可统一风格'} onClick={() => setBatchType('text')}><strong>批量文生图</strong><small>纯提示词 · 统一风格</small></button>
+            <div className="batch-type-tabs" role="tablist" aria-label={t('ws.batchTypeAria')}>
+              <button type="button" role="tab" aria-selected={batchType === 'edit'} className={batchType === 'edit' ? 'active' : ''} disabled={!batchEditSupported} title={!batchEditSupported ? t('ws.modelNoEditPrompt') : t('ws.tabEditTitleAttr')} onClick={() => setBatchType('edit')}><strong>{t('op.batch_edit')}</strong><small>{t('ws.tabEditSubtitle')}</small></button>
+              <button type="button" role="tab" aria-selected={batchType === 'text'} className={batchType === 'text' ? 'active' : ''} disabled={!batchTextSupported} title={!batchTextSupported ? t('ws.modelNoTextToImage') : t('ws.tabTextTitleAttr')} onClick={() => setBatchType('text')}><strong>{t('op.batch_generate')}</strong><small>{t('ws.tabTextSubtitle')}</small></button>
             </div>
             {batchType === 'edit'
               ? currentImage
-                ? <div className="batch-edit-source"><img src={thumbUrl(currentImage)} alt="批量处理参考图" /><div><strong>统一参考图</strong><span>{currentImage.width || '—'} × {currentImage.height || '—'} · {selectedModel?.name || '当前图片模型'}</span></div></div>
-                : <div className="batch-panel-hint">请先在画布中选择一张图片，作为批量改图的统一参考图。</div>
+                ? <div className="batch-edit-source"><img src={thumbUrl(currentImage)} alt={t('ws.batchSourceAlt')} /><div><strong>{t('ws.unifiedReference')}</strong><span>{currentImage.width || '—'} × {currentImage.height || '—'} · {selectedModel?.name || t('ws.currentImageModel')}</span></div></div>
+                : <div className="batch-panel-hint">{t('ws.needCanvasImage')}</div>
               : <div className="batch-generate-params">
-                  <label className="batch-param"><span>尺寸</span><select value={size} onChange={(event) => setSize(event.target.value)} title="批量文生图输出尺寸（宽高比）">{sizesForProvider(selectedModel).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}{!isValidSizeForProvider(selectedModel, size) && <option value={size}>{size}</option>}</select></label>
-                  {canChooseOutputFormat && <label className="batch-param"><span>格式</span><select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as OutputFormat)} title="输出格式">{availableOutputFormats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label>}
-                  {canUseTransparentBackground && <button type="button" className={`batch-transparent-toggle ${transparentBg ? 'active' : ''}`} disabled={outputFormat === 'jpeg'} title={outputFormat === 'jpeg' ? 'JPEG 不支持透明背景' : '生成透明背景图片'} onClick={() => setTransparentBg((value) => !value)}>透明</button>}
+                  <label className="batch-param"><span>{t('ws.sizeLabel')}</span><select value={size} onChange={(event) => setSize(event.target.value)} title={t('ws.batchSizeTitle')}>{sizesForProvider(selectedModel).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}{!isValidSizeForProvider(selectedModel, size) && <option value={size}>{size}</option>}</select></label>
+                  {canChooseOutputFormat && <label className="batch-param"><span>{t('ws.formatLabel')}</span><select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as OutputFormat)} title={t('ws.formatTitle')}>{availableOutputFormats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label>}
+                  {canUseTransparentBackground && <button type="button" className={`batch-transparent-toggle ${transparentBg ? 'active' : ''}`} disabled={outputFormat === 'jpeg'} title={outputFormat === 'jpeg' ? t('ws.transparentJpeg') : t('ws.transparentTitle')} onClick={() => setTransparentBg((value) => !value)}>{t('ws.transparent')}</button>}
                 </div>}
-            <div className="batch-tabs" role="tablist" aria-label="提示词录入方式">
-              <button type="button" role="tab" aria-selected={batchPromptTab === 'template'} className={batchPromptTab === 'template' ? 'active' : ''} onClick={() => setBatchPromptTab('template')}><strong>变量模板</strong><small>插入变量 · 矩阵填值</small></button>
-              <button type="button" role="tab" aria-selected={batchPromptTab === 'list'} className={batchPromptTab === 'list' ? 'active' : ''} onClick={() => setBatchPromptTab('list')}><strong>提示词列表</strong><small>每行一条 · 可导入 TXT</small></button>
+            <div className="batch-tabs" role="tablist" aria-label={t('ws.inputModeAria')}>
+              <button type="button" role="tab" aria-selected={batchPromptTab === 'template'} className={batchPromptTab === 'template' ? 'active' : ''} onClick={() => setBatchPromptTab('template')}><strong>{t('ws.tabTemplate')}</strong><small>{t('ws.tabTemplateSub')}</small></button>
+              <button type="button" role="tab" aria-selected={batchPromptTab === 'list'} className={batchPromptTab === 'list' ? 'active' : ''} onClick={() => setBatchPromptTab('list')}><strong>{t('ws.tabList')}</strong><small>{t('ws.tabListSub')}</small></button>
             </div>
             {batchPromptTab === 'template' ? <>
               <div className="field batch-template-field">
-                <div className="batch-field-heading"><span>提示词模板</span><div className="batch-heading-actions"><button type="button" disabled={detectedBatchVariables.length >= 10} onMouseDown={(event) => event.preventDefault()} onClick={insertBatchVariable}><Icon name="plus" size={13} /> 插入变量</button></div></div>
-                <div ref={batchTemplateEditorRef} className="batch-template-editor" contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label="批量提示词模板" data-placeholder="例如：生成一致的怪物，头部为［变量］，服装为［变量］" onInput={syncBatchTemplateEditor} onClick={handleBatchTemplateClick} onPaste={handleBatchTemplatePaste} />
-                <small>在光标处可插入多个紫色变量标签；标签本身不可编辑，点击标签内的 × 可移除。所有张共用这一个模板，仅替换变量内容。</small>
+                <div className="batch-field-heading"><span>{t('ws.templateLabel')}</span><div className="batch-heading-actions"><button type="button" disabled={detectedBatchVariables.length >= 10} onMouseDown={(event) => event.preventDefault()} onClick={insertBatchVariable}><Icon name="plus" size={13} /> {t('ws.insertVariable')}</button></div></div>
+                <div ref={batchTemplateEditorRef} className="batch-template-editor" contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={t('ws.templateAria')} data-placeholder={t('ws.templatePlaceholder')} onInput={syncBatchTemplateEditor} onClick={handleBatchTemplateClick} onPaste={handleBatchTemplatePaste} />
+                <small>{t('ws.templateHint')}</small>
               </div>
-              <label className="field batch-quantity-field"><span>生成数量</span><input type="number" min="2" max="50" value={batchQuantity} onChange={(event) => changeBatchQuantity(Number(event.target.value))} /><small>支持 2–50 张；数量会同步增减下方输入框。</small></label>
-              <div className="field batch-values-field"><span>变量值</span>{detectedBatchVariables.length
-                ? <div className="batch-value-table"><div className="batch-value-row batch-value-header" style={{ gridTemplateColumns: `64px repeat(${detectedBatchVariables.length}, minmax(132px, 1fr))` }}><span>图片</span>{detectedBatchVariables.map((name) => <strong key={name}>{name}</strong>)}</div>{batchRows.map((row, index) => <div key={index} className="batch-value-row" style={{ gridTemplateColumns: `64px repeat(${detectedBatchVariables.length}, minmax(132px, 1fr))` }}><span>第 {index + 1} 张</span>{detectedBatchVariables.map((name) => <input key={name} className={row[name] ? 'filled' : ''} value={batchVariableValues[name]?.[index] || ''} onChange={(event) => updateBatchValue(name, index, event.target.value)} placeholder={index === 0 ? `输入${name}` : ''} aria-label={`第 ${index + 1} 张的${name}`} />)}</div>)}</div>
-                : <div className="batch-values-empty">插入变量后，这里会按“图片 × 变量”生成输入框。</div>}<small className={batchExpectedValueCount > 0 && batchFilledCount === batchExpectedValueCount ? 'valid' : ''}>已填写 {batchFilledCount} / {batchExpectedValueCount} 个输入框</small></div>
+              <label className="field batch-quantity-field"><span>{t('ws.quantityLabel')}</span><input type="number" min="2" max="50" value={batchQuantity} onChange={(event) => changeBatchQuantity(Number(event.target.value))} /><small>{t('ws.quantityHint')}</small></label>
+              <div className="field batch-values-field"><span>{t('ws.valuesLabel')}</span>{detectedBatchVariables.length
+                ? <div className="batch-value-table"><div className="batch-value-row batch-value-header" style={{ gridTemplateColumns: `64px repeat(${detectedBatchVariables.length}, minmax(132px, 1fr))` }}><span>{t('ws.imageHeader')}</span>{detectedBatchVariables.map((name) => <strong key={name}>{name}</strong>)}</div>{batchRows.map((row, index) => <div key={index} className="batch-value-row" style={{ gridTemplateColumns: `64px repeat(${detectedBatchVariables.length}, minmax(132px, 1fr))` }}><span>{t('ws.rowHeader', { index: index + 1 })}</span>{detectedBatchVariables.map((name) => <input key={name} className={row[name] ? 'filled' : ''} value={batchVariableValues[name]?.[index] || ''} onChange={(event) => updateBatchValue(name, index, event.target.value)} placeholder={index === 0 ? t('ws.valuePlaceholder', { name }) : ''} aria-label={t('ws.valueAria', { index: index + 1, name })} />)}</div>)}</div>
+                : <div className="batch-values-empty">{t('ws.valuesEmpty')}</div>}<small className={batchExpectedValueCount > 0 && batchFilledCount === batchExpectedValueCount ? 'valid' : ''}>{t('ws.valuesFilled', { filled: batchFilledCount, expected: batchExpectedValueCount })}</small></div>
             </> : <div className="field batch-template-field">
-              <div className="batch-field-heading"><span>提示词内容</span><div className="batch-heading-actions"><button type="button" title="导入 txt 文件批量生成：每行一条提示词，空行忽略，行数即生成数量（单批 2–50 条，单条不超过 1000 字符）" onMouseDown={(event) => event.preventDefault()} onClick={() => batchImportFileRef.current?.click()}><Icon name="download" size={13} /> 导入 TXT</button></div></div>
-              <textarea className="batch-prompts-editor" value={batchPromptsText} onChange={(event) => setBatchPromptsText(event.target.value)} rows={8} spellCheck={false} aria-label="批量提示词列表" placeholder={'每行一条提示词，空行会自动忽略；也可直接粘贴多行文本。\n例如：\n给主体戴上红色贝雷帽，保持背景与光影不变\n把背景替换成雪夜街道，主体保持一致'} />
-              <small className={batchValidationError === null ? 'valid' : ''}>{batchPromptLines.length ? `已识别 ${batchPromptLines.length} 条提示词，将生成 ${batchPromptLines.length} 张；数量按行数自动确定。` : '每行一条提示词，空行会自动忽略；可点击“导入 TXT”选择 txt 文件。'}</small>
+              <div className="batch-field-heading"><span>{t('ws.listLabel')}</span><div className="batch-heading-actions"><button type="button" title={t('ws.importTitle')} onMouseDown={(event) => event.preventDefault()} onClick={() => batchImportFileRef.current?.click()}><Icon name="download" size={13} /> {t('ws.importTxt')}</button></div></div>
+              <textarea className="batch-prompts-editor" value={batchPromptsText} onChange={(event) => setBatchPromptsText(event.target.value)} rows={8} spellCheck={false} aria-label={t('ws.listAria')} placeholder={t('ws.listPlaceholder')} />
+              <small className={batchValidationError === null ? 'valid' : ''}>{batchPromptLines.length ? t('ws.listCount', { count: batchPromptLines.length }) : t('ws.listCountEmpty')}</small>
               <details className="batch-import-help">
-                <summary>导入格式说明</summary>
+                <summary>{t('ws.importHelpTitle')}</summary>
                 <ul>
-                  <li>txt 文件每行一条提示词，空行会自动忽略；也可以直接在上方文本框粘贴多行文本。</li>
-                  <li>识别到多少行就生成多少张（单批 2–50 条；超过 50 行时仅保留前 50 行）。</li>
-                  <li>单条提示词不超过 1000 字符，超限行会标明行号。</li>
-                  <li>每行会直接作为该张图片的完整提示词；导入后仍可手动增删改，再开始生成。</li>
+                  <li>{t('ws.importHelp1')}</li>
+                  <li>{t('ws.importHelp2')}</li>
+                  <li>{t('ws.importHelp3')}</li>
+                  <li>{t('ws.importHelp4')}</li>
                 </ul>
               </details>
             </div>}
-            {batchType === 'text' && <label className="field batch-style-field"><span>统一风格提示词（可选）</span><textarea value={batchStylePrompt} onChange={(event) => setBatchStylePrompt(event.target.value)} rows={2} placeholder="例如：扁平插画风格，柔和马卡龙配色，粗描边。会追加到每条提示词末尾，保证整批画风统一。" /><small>默认带入项目风格提示词，可单独修改；留空则每条提示词独立生效。</small></label>}
+            {batchType === 'text' && <label className="field batch-style-field"><span>{t('ws.batchStyleLabel')}</span><textarea value={batchStylePrompt} onChange={(event) => setBatchStylePrompt(event.target.value)} rows={2} placeholder={t('ws.batchStylePlaceholder')} /><small>{t('ws.batchStyleHint')}</small></label>}
             <div className="batch-edit-note"><Icon name="sparkle" size={15} /><span>{batchType === 'edit'
               ? batchPromptTab === 'list'
-                ? '任务会按列表顺序逐张生成，每行都会以画布图片为输入独立调用一次模型，可能按张计费。每完成一张就立即保存并展示，失败项不会阻断后续图片。'
-                : '任务会按词条顺序逐张生成。每完成一张就立即保存并展示，失败项不会阻断后续图片；每个词条都会独立调用一次模型，可能按张计费。'
+                ? t('ws.noteEditList')
+                : t('ws.noteEditTemplate')
               : batchPromptTab === 'list'
-                ? '每行提示词独立生成一张文生图，互不影响；统一风格提示词会追加到每条提示词末尾。每完成一张立即保存，失败项不会阻断后续图片。'
-                : '每个变量词条组合独立生成一张文生图；统一风格提示词会追加到每条提示词末尾。每完成一张立即保存，失败项不会阻断后续图片。'}</span></div>
+                ? t('ws.noteTextList')
+                : t('ws.noteTextTemplate')}</span></div>
             {batchValidationError && <p className="batch-validation-error">{batchValidationError}</p>}
             </div>
             <div className="batch-panel-footer">
               <div className="batch-panel-actions">
-                <button className="button primary" disabled={Boolean(batchValidationError) || batchSubmitting || generating || (batchType === 'edit' && !currentImage)} onClick={() => void submitBatch()}>{batchSubmitting ? '正在创建批次…' : `开始生成 ${batchPromptTab === 'list' ? batchPromptLines.length : batchQuantity} 张`}</button>
+                <button className="button primary" disabled={Boolean(batchValidationError) || batchSubmitting || generating || (batchType === 'edit' && !currentImage)} onClick={() => void submitBatch()}>{batchSubmitting ? t('ws.creatingBatch') : t('ws.startGenerate', { count: batchPromptTab === 'list' ? batchPromptLines.length : batchQuantity })}</button>
               </div>
             </div>
             <input ref={batchImportFileRef} hidden type="file" accept=".txt,text/plain" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importBatchPromptFile(file); }} />
@@ -1660,32 +1761,32 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       {compareOpen && currentImage && compareImage && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setCompareOpen(false)}>
         <section className="compare-modal" role="dialog" aria-modal="true" aria-labelledby="compare-title">
           <div className="modal-heading">
-            <div><p className="eyebrow">COMPARE</p><h2 id="compare-title">图片对比</h2></div>
+            <div><p className="eyebrow">COMPARE</p><h2 id="compare-title">{t('ws.compareTitle')}</h2></div>
             <div className="compare-mode-switch">
-              <button className={compareMode === 'side' ? 'active' : ''} onClick={() => setCompareMode('side')}>并排</button>
-              <button className={compareMode === 'slider' ? 'active' : ''} onClick={() => setCompareMode('slider')}>前后对比</button>
+              <button className={compareMode === 'side' ? 'active' : ''} onClick={() => setCompareMode('side')}>{t('ws.sideBySide')}</button>
+              <button className={compareMode === 'slider' ? 'active' : ''} onClick={() => setCompareMode('slider')}>{t('ws.slider')}</button>
               <button className="icon-button" onClick={() => setCompareOpen(false)}><Icon name="close" size={16} /></button>
             </div>
           </div>
           {compareMode === 'side' ? (
             <div className="compare-grid">
-              <article><div className="compare-image"><img src={currentImage.url} alt="当前画布" /></div><div className="compare-caption"><strong>当前画布</strong><button className="button secondary" onClick={() => { useImage(currentImage); setCompareOpen(false); }}>使用这张继续</button></div></article>
-              <article><div className="compare-image"><img src={compareImage.url} alt="对比图片" /></div><div className="compare-caption"><strong>{compareImage.versionId ? '历史版本图片' : '项目素材'}</strong><button className="button primary" onClick={() => { useImage(compareImage); setCompareOpen(false); }}>使用这张继续</button></div></article>
+              <article><div className="compare-image"><img src={currentImage.url} alt={t('ws.currentCanvasAlt')} /></div><div className="compare-caption"><strong>{t('ws.currentCanvas')}</strong><button className="button secondary" onClick={() => { useImage(currentImage); setCompareOpen(false); }}>{t('ws.useThis')}</button></div></article>
+              <article><div className="compare-image"><img src={compareImage.url} alt={t('ws.compareImageAlt')} /></div><div className="compare-caption"><strong>{compareImage.versionId ? t('ws.historyImage') : t('ws.projectAsset')}</strong><button className="button primary" onClick={() => { useImage(compareImage); setCompareOpen(false); }}>{t('ws.useThis')}</button></div></article>
             </div>
           ) : (
             <div className="compare-slider-block">
               <div className="compare-slider">
-                <img src={compareImage.url} alt="对比图片" />
-                <img src={currentImage.url} alt="当前画布" style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }} />
+                <img src={compareImage.url} alt={t('ws.compareImageAlt')} />
+                <img src={currentImage.url} alt={t('ws.currentCanvasAlt')} style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }} />
                 <div className="slider-divider" style={{ left: `${sliderPosition}%` }} />
-                <span className="slider-tag left">修改前</span>
-                <span className="slider-tag right">修改后</span>
+                <span className="slider-tag left">{t('ws.before')}</span>
+                <span className="slider-tag right">{t('ws.after')}</span>
               </div>
-              <input type="range" min={0} max={100} value={sliderPosition} onChange={(event) => setSliderPosition(Number(event.target.value))} aria-label="对比分隔位置" />
-              <div className="compare-caption inline"><strong>{parentImage?.id === compareImage.id ? '修改前 · 父版本' : '对比图片'}</strong><button className="button primary" onClick={() => { useImage(compareImage); setCompareOpen(false); }}>使用前图继续</button></div>
+              <input type="range" min={0} max={100} value={sliderPosition} onChange={(event) => setSliderPosition(Number(event.target.value))} aria-label={t('ws.sliderAria')} />
+              <div className="compare-caption inline"><strong>{parentImage?.id === compareImage.id ? t('ws.beforeParent') : t('ws.compareImage')}</strong><button className="button primary" onClick={() => { useImage(compareImage); setCompareOpen(false); }}>{t('ws.useBefore')}</button></div>
             </div>
           )}
-          <div className="compare-picker"><span>选择要对比的历史图片</span><div>{bundle.images.filter((image) => image.id !== currentImage.id).map((image) => <button key={image.id} className={image.id === compareImage.id ? 'active' : ''} onClick={() => { setCompareImageId(image.id); setSliderPosition(50); }}><img src={thumbUrl(image)} alt="选择对比图片" loading="lazy" /></button>)}</div></div>
+          <div className="compare-picker"><span>{t('ws.pickCompare')}</span><div>{bundle.images.filter((image) => image.id !== currentImage.id).map((image) => <button key={image.id} className={image.id === compareImage.id ? 'active' : ''} onClick={() => { setCompareImageId(image.id); setSliderPosition(50); }}><img src={thumbUrl(image)} alt={t('ws.pickCompareAlt')} loading="lazy" /></button>)}</div></div>
         </section>
       </div>}
 
@@ -1695,36 +1796,36 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
 
       {textEditorOpen && textImage && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !textEditSubmitting && !generating && setTextEditorOpen(false)}>
         <section className="text-editor-modal" role="dialog" aria-modal="true" aria-labelledby="text-editor-title">
-          <div className="modal-heading"><div><p className="eyebrow">TEXT EDIT</p><h2 id="text-editor-title">编辑图片文字</h2><small>{recognitionModel ? `由 ${recognitionModel} 识别` : '正在使用视觉识别模型分析图片'}</small></div><button className="icon-button" disabled={textEditSubmitting || generating} onClick={() => setTextEditorOpen(false)}><Icon name="close" size={16} /></button></div>
+          <div className="modal-heading"><div><p className="eyebrow">TEXT EDIT</p><h2 id="text-editor-title">{t('ws.textEditorTitle')}</h2><small>{recognitionModel ? t('ws.recognizedBy', { model: recognitionModel }) : t('ws.recognizingShort')}</small></div><button className="icon-button" disabled={textEditSubmitting || generating} onClick={() => setTextEditorOpen(false)}><Icon name="close" size={16} /></button></div>
           <div className="text-editor-layout">
             <div className={`text-editor-preview ${boxMode ? 'box-mode' : ''}`} onMouseDown={onBoxStart} onMouseMove={onBoxMove} onMouseUp={onBoxEnd} onMouseLeave={onBoxEnd}>
-              <img src={textImage.url} alt="待编辑文字的图片" draggable={false} />
+              <img src={textImage.url} alt={t('ws.textEditImageAlt')} draggable={false} />
               {textSegments.filter((segment) => segment.rect).map((segment) => <span key={segment.id} className="manual-rect" style={{ left: `${segment.rect!.x}%`, top: `${segment.rect!.y}%`, width: `${segment.rect!.width}%`, height: `${segment.rect!.height}%` }} />)}
               {draftRect && <span className="manual-rect drafting" style={{ left: `${draftRect.x}%`, top: `${draftRect.y}%`, width: `${draftRect.width}%`, height: `${draftRect.height}%` }} />}
               <span>{textImage.width || '—'} × {textImage.height || '—'}</span>
-              <button className={`box-mode-toggle ${boxMode ? 'active' : ''}`} onClick={() => { setBoxMode((mode) => !mode); setDraftRect(null); }}>{boxMode ? '完成框选' : <><Icon name="box" size={13} /> 手动框选</>}</button>
+              <button className={`box-mode-toggle ${boxMode ? 'active' : ''}`} onClick={() => { setBoxMode((mode) => !mode); setDraftRect(null); }}>{boxMode ? t('ws.finishBox') : <><Icon name="box" size={13} /> {t('ws.manualBox')}</>}</button>
             </div>
             <div className="text-segment-list">
-              {recognizingText && <div className="text-editor-status"><span className="spinner" />正在识别图片中的文字与排版区域…</div>}
-              {textEditorError && <div className="text-editor-status error"><strong>识别失败</strong><p>{textEditorError}</p><button className="button secondary" onClick={() => void openTextEditor()}>重新识别</button></div>}
+              {recognizingText && <div className="text-editor-status"><span className="spinner" />{t('ws.recognizingText')}</div>}
+              {textEditorError && <div className="text-editor-status error"><strong>{t('ws.recognizeFailed')}</strong><p>{textEditorError}</p><button className="button secondary" onClick={() => void openTextEditor()}>{t('ws.reRecognize')}</button></div>}
               {!recognizingText && !textEditorError && <>
-                <p className="text-editor-tip">修改需要替换的文字；开启「手动框选」可在图上拖拽圈出区域并填写要添加或替换的文字。提交后只会调整改动的文字，并尽量保留原有位置、样式与其他画面内容。</p>
+                <p className="text-editor-tip">{t('ws.textEditorTip')}</p>
                 {textSegments.map((segment, index) => <div className="text-segment-field" key={segment.id}>
-                  <span>{segment.manual ? '框选区域' : `文字 ${index + 1}`} · {segment.context || '图片文字区域'}</span>
-                  {(segment.manual || segment.originalText) && <input className="segment-original" value={segment.originalText} placeholder={segment.manual ? '原文字（可留空表示新增）' : ''} onChange={(event) => updateTextSegment(segment.id, { originalText: event.target.value })} />}
-                  <input value={segment.text} placeholder={segment.manual ? '新文字' : ''} onChange={(event) => updateTextSegment(segment.id, { text: event.target.value })} />
-                  <small>{segment.manual ? '手动框选的区域' : `原文：${segment.originalText}`}</small>
-                  {segment.manual && <button className="segment-remove" onClick={() => removeTextSegment(segment.id)}>移除</button>}
+                  <span>{segment.manual ? t('ws.manualArea') : t('ws.textIndex', { index: index + 1 })} · {segment.context || t('ws.imageTextArea')}</span>
+                  {(segment.manual || segment.originalText) && <input className="segment-original" value={segment.originalText} placeholder={segment.manual ? t('ws.originalPlaceholder') : ''} onChange={(event) => updateTextSegment(segment.id, { originalText: event.target.value })} />}
+                  <input value={segment.text} placeholder={segment.manual ? t('ws.newTextPlaceholder') : ''} onChange={(event) => updateTextSegment(segment.id, { text: event.target.value })} />
+                  <small>{segment.manual ? t('ws.manualAreaSmall') : t('ws.originalTextValue', { text: segment.originalText })}</small>
+                  {segment.manual && <button className="segment-remove" onClick={() => removeTextSegment(segment.id)}>{t('common.remove')}</button>}
                 </div>)}
               </>}
             </div>
           </div>
-          <div className="modal-actions text-editor-actions"><button className="button secondary" disabled={textEditSubmitting || generating} onClick={() => setTextEditorOpen(false)}>取消</button><button className="button primary" disabled={recognizingText || Boolean(textEditorError) || textEditSubmitting || generating || !hasTextChanges} onClick={() => void submitTextEdit()}>{generating ? '正在排队生成…' : textEditSubmitting ? '正在提交…' : '提交并改图'}</button></div>
+          <div className="modal-actions text-editor-actions"><button className="button secondary" disabled={textEditSubmitting || generating} onClick={() => setTextEditorOpen(false)}>{t('common.cancel')}</button><button className="button primary" disabled={recognizingText || Boolean(textEditorError) || textEditSubmitting || generating || !hasTextChanges} onClick={() => void submitTextEdit()}>{generating ? t('ws.queued') : textEditSubmitting ? t('ws.submitting') : t('ws.submitTextEdit')}</button></div>
         </section>
       </div>}
 
       {contextMenu && <div className="image-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
-        <button onClick={() => void saveContextImageToGallery()}><Icon name="gallery" size={14} /> {savingToGallery ? '正在提炼提示词…' : '收藏到提示词画廊'}</button>
+        <button onClick={() => void saveContextImageToGallery()}><Icon name="gallery" size={14} /> {savingToGallery ? t('ws.distilling') : t('ws.saveToGallery')}</button>
       </div>}
     </main>
   );

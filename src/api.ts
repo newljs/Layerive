@@ -1,3 +1,4 @@
+import { tf } from './i18n';
 import type { BatchEditProgress, BatchEditResult, GenerateResult, GenerationTask, GalleryEntryItem, LocalEditReference, ModelConfig, ModelExecutionLog, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -6,7 +7,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     headers: init?.body ? { 'Content-Type': 'application/json', ...init.headers } : init?.headers,
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || `请求失败（${response.status}）`);
+  if (!response.ok) {
+    const status = response.status;
+    const serverText: string = payload.error || tf('api.requestFailed', '请求失败', { status });
+    // 服务端错误码化后按 err.<code> 取词；字典缺码时回退服务端原文（含旧版纯文本）。
+    throw new Error(payload.code ? tf(`err.${payload.code}`, serverText, payload.params) : serverText);
+  }
   return payload as T;
 }
 
@@ -64,6 +70,8 @@ export const api = {
     request<GenerateResult>(`/api/projects/${id}/edit-text`, { method: 'POST', body: JSON.stringify(input) }),
   localEdit: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; instruction: string; reference?: LocalEditReference; rect: { x: number; y: number; width: number; height: number }; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/local-edit`, { method: 'POST', body: JSON.stringify(input) }),
+  removeElement: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; params?: Record<string, unknown> }) =>
+    request<GenerateResult>(`/api/projects/${id}/remove-element`, { method: 'POST', body: JSON.stringify(input) }),
   localEditBatch: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; instructions: string[]; reference?: LocalEditReference; params?: Record<string, unknown> }) =>
     request<BatchEditResult>(`/api/projects/${id}/local-edit-batch`, { method: 'POST', body: JSON.stringify(input) }),
   outpaint: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; size: string; params?: Record<string, unknown> }) =>
@@ -93,15 +101,15 @@ export const api = {
   deleteModel: (id: string) => request<{ ok: boolean }>(`/api/models/${id}`, { method: 'DELETE' }),
   activateModel: (id: string) => request<{ ok: boolean }>(`/api/models/${id}/activate`, { method: 'POST' }),
   activateVisionModel: (id: string) => request<{ ok: boolean }>(`/api/models/${id}/activate-vision`, { method: 'POST' }),
-  testModel: (id: string) => request<{ ok: boolean; latency: number; message: string }>(`/api/models/${id}/test`, { method: 'POST' }),
-  testModelConfig: (input: Partial<ModelConfig>) => request<{ ok: boolean; latency: number; message: string }>('/api/models/test-config', { method: 'POST', body: JSON.stringify(input) }),
+  testModel: (id: string) => request<{ ok: boolean; latency: number; message: string; code?: string }>(`/api/models/${id}/test`, { method: 'POST' }),
+  testModelConfig: (input: Partial<ModelConfig>) => request<{ ok: boolean; latency: number; message: string; code?: string }>('/api/models/test-config', { method: 'POST', body: JSON.stringify(input) }),
 };
 
 export function readFileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('读取图片失败'));
+    reader.onerror = () => reject(new Error(tf('api.readImageFailed', '读取图片失败')));
     reader.readAsDataURL(file);
   });
 }

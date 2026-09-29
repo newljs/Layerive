@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const { mkdirSync } = require('node:fs');
 const { createServer } = require('node:net');
@@ -8,6 +8,22 @@ let mainWindow;
 let serverProcess;
 let serverUrl;
 let quitting = false;
+let menuLanguage = 'zh';
+
+// 菜单与对话框文案。启动期（渲染进程就绪前）的错误对话框始终使用中文回退；
+// 页面加载后渲染进程会通过 preload 把界面语言同步过来。
+const MENU_TEXT = {
+  zh: {
+    file: '文件', openData: '打开数据文件夹', quit: '退出 Layerive', edit: '编辑', view: '视图',
+    undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
+    reload: '重新加载', toggleDevTools: '切换开发者工具', resetZoom: '重置缩放', zoomIn: '放大', zoomOut: '缩小', fullscreen: '进入全屏',
+  },
+  en: {
+    file: 'File', openData: 'Open data folder', quit: 'Quit Layerive', edit: 'Edit', view: 'View',
+    undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All',
+    reload: 'Reload', toggleDevTools: 'Toggle Developer Tools', resetZoom: 'Reset Zoom', zoomIn: 'Zoom In', zoomOut: 'Zoom Out', fullscreen: 'Enter Full Screen',
+  },
+};
 
 function desktopRoot() {
   return app.isPackaged ? path.join(process.resourcesPath, 'app') : path.resolve(__dirname, '..');
@@ -87,6 +103,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: path.join(__dirname, 'preload.cjs'),
     },
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
@@ -97,21 +114,41 @@ function createWindow() {
   mainWindow.loadURL(serverUrl);
 }
 
-function installMenu() {
+function installMenu(language = menuLanguage) {
+  const text = MENU_TEXT[language] || MENU_TEXT.zh;
   const template = [
     {
-      label: '文件',
+      label: text.file,
       submenu: [
-        { label: '打开数据文件夹', click: () => shell.openPath(app.getPath('userData')) },
+        { label: text.openData, click: () => shell.openPath(app.getPath('userData')) },
         { type: 'separator' },
-        { role: 'quit', label: '退出 Layerive' },
+        { role: 'quit', label: text.quit },
       ],
     },
-    { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { label: '视图', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' }] },
+    {
+      label: text.edit,
+      submenu: [
+        { role: 'undo', label: text.undo }, { role: 'redo', label: text.redo }, { type: 'separator' },
+        { role: 'cut', label: text.cut }, { role: 'copy', label: text.copy }, { role: 'paste', label: text.paste }, { role: 'selectAll', label: text.selectAll },
+      ],
+    },
+    {
+      label: text.view,
+      submenu: [
+        { role: 'reload', label: text.reload }, { role: 'toggleDevTools', label: text.toggleDevTools }, { type: 'separator' },
+        { role: 'resetZoom', label: text.resetZoom }, { role: 'zoomIn', label: text.zoomIn }, { role: 'zoomOut', label: text.zoomOut }, { type: 'separator' },
+        { role: 'togglefullscreen', label: text.fullscreen },
+      ],
+    },
   ];
+  menuLanguage = language;
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
+
+ipcMain.on('language-changed', (_event, language) => {
+  if (language !== 'zh' && language !== 'en') return;
+  if (language !== menuLanguage) installMenu(language);
+});
 
 const singleInstance = app.requestSingleInstanceLock();
 if (!singleInstance) app.quit();

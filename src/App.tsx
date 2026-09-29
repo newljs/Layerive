@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
+import { useLanguage } from './i18n';
 import { HomeView } from './HomeView';
 import { ModelConfigView } from './ModelConfigView';
 import { WorkspaceView } from './WorkspaceView';
@@ -7,8 +8,24 @@ import type { ModelConfig, Project } from './types';
 
 type View = { name: 'home' } | { name: 'models'; backTo?: string } | { name: 'workspace'; projectId: string };
 
+const VIEW_SESSION_KEY = 'layerive-current-view';
+
+function restoreView(): View {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(VIEW_SESSION_KEY) || 'null') as Partial<View> | null;
+    if (saved?.name === 'workspace' && typeof saved.projectId === 'string' && saved.projectId) {
+      return { name: 'workspace', projectId: saved.projectId };
+    }
+    if (saved?.name === 'models') {
+      return { name: 'models', backTo: typeof saved.backTo === 'string' && saved.backTo ? saved.backTo : undefined };
+    }
+  } catch { /* session storage may be unavailable or contain stale data */ }
+  return { name: 'home' };
+}
+
 export default function App() {
-  const [view, setView] = useState<View>({ name: 'home' });
+  const { t, tf } = useLanguage();
+  const [view, setView] = useState<View>(restoreView);
   const [projects, setProjects] = useState<Project[]>([]);
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [activeModel, setActiveModel] = useState('');
@@ -21,10 +38,12 @@ export default function App() {
     window.setTimeout(() => setToast(null), 3200);
   }, []);
 
-  const refreshProjects = useCallback(async () => {
+  const loadProjects = useCallback(async () => {
     const data = await api.listProjects();
     setProjects(data.projects);
+    return data.projects;
   }, []);
+  const refreshProjects = useCallback(async () => { await loadProjects(); }, [loadProjects]);
 
   const refreshModels = useCallback(async () => {
     const data = await api.models();
@@ -35,61 +54,80 @@ export default function App() {
   const handleProjectChanged = useCallback(() => { void refreshProjects(); }, [refreshProjects]);
 
   useEffect(() => {
-    Promise.all([refreshProjects(), refreshModels()])
-      .catch(() => notify('无法连接本地服务，请确认应用服务已经启动。', 'error'))
+    try { sessionStorage.setItem(VIEW_SESSION_KEY, JSON.stringify(view)); }
+    catch { /* session storage may be unavailable */ }
+  }, [view]);
+
+  useEffect(() => {
+    Promise.all([loadProjects(), refreshModels()])
+      .then(([availableProjects]) => {
+        setView((current) => {
+          if (current.name === 'workspace' && !availableProjects.some((project) => project.id === current.projectId)) {
+            return { name: 'home' };
+          }
+          if (current.name === 'models' && current.backTo && !availableProjects.some((project) => project.id === current.backTo)) {
+            return { name: 'models' };
+          }
+          return current;
+        });
+      })
+      .catch(() => notify(t('app.connectionFailed'), 'error'))
       .finally(() => setLoading(false));
-  }, [refreshProjects, refreshModels, notify]);
+  }, [loadProjects, refreshModels, notify]);
 
   async function createProject(input: { name: string; description: string }) {
     try {
       const bundle = await api.createProject({ ...input, defaultModelId: activeModel });
       await refreshProjects();
       setView({ name: 'workspace', projectId: bundle.project.id });
-      notify('项目已创建，内容会自动保存在本机。');
+      notify(t('app.projectCreated'));
     } catch (error) { notify((error as Error).message, 'error'); }
   }
 
   async function deleteProject(id: string) {
-    try { await api.deleteProject(id); await refreshProjects(); notify('项目已移入回收状态'); }
+    try { await api.deleteProject(id); await refreshProjects(); notify(t('app.projectDeleted')); }
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
   async function duplicateProject(id: string) {
-    try { await api.duplicateProject(id); await refreshProjects(); notify('项目已复制'); }
+    try { await api.duplicateProject(id); await refreshProjects(); notify(t('app.projectDuplicated')); }
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
   async function importProject(file: File) {
-    try { const bundle = await api.importProject(file); await refreshProjects(); notify('项目导入成功，已生成新的项目。'); setView({ name: 'workspace', projectId: bundle.project.id }); }
+    try { const bundle = await api.importProject(file); await refreshProjects(); notify(t('app.projectImported')); setView({ name: 'workspace', projectId: bundle.project.id }); }
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
   async function saveModel(model: Partial<ModelConfig>, id?: string) {
     try {
       const result = id ? await api.updateModel(id, model) : await api.createModel(model);
-      await refreshModels(); notify('模型配置已保存');
+      await refreshModels(); notify(t('app.modelSaved'));
       return result.model;
     } catch (error) { notify((error as Error).message, 'error'); }
   }
 
   async function deleteModel(id: string) {
-    try { await api.deleteModel(id); await refreshModels(); notify('模型配置已删除'); }
+    try { await api.deleteModel(id); await refreshModels(); notify(t('app.modelDeleted')); }
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
   async function activateModel(id: string) {
-    try { await api.activateModel(id); await refreshModels(); notify('默认模型已更新'); }
+    try { await api.activateModel(id); await refreshModels(); notify(t('app.defaultModelUpdated')); }
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
   async function activateVisionModel(id: string) {
-    try { await api.activateVisionModel(id); await refreshModels(); notify('默认视觉识别模型已更新'); }
+    try { await api.activateVisionModel(id); await refreshModels(); notify(t('app.defaultVisionModelUpdated')); }
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
   async function testModelConfig(model: Partial<ModelConfig>) {
-    try { const result = await api.testModelConfig(model); return `✓ ${result.message} · ${result.latency}ms`; }
-    catch (error) { return `连接失败：${(error as Error).message}`; }
+    try {
+      const result = await api.testModelConfig(model);
+      const message = result.code ? tf(`msg.${result.code}`, result.message) : result.message;
+      return t('app.testOk', { message, latency: result.latency });
+    } catch (error) { return t('app.testFailed', { message: (error as Error).message }); }
   }
 
   async function revealModelApiKey(id: string) {

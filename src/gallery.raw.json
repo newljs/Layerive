@@ -4,187 +4,218 @@
       "id": "anime-manga",
       "zh": "动漫与漫画",
       "emoji": "🎌",
-      "count": 12
+      "count": 12,
+      "en": "Anime & Manga"
     },
     {
       "id": "gaming",
       "zh": "游戏",
       "emoji": "🎮",
-      "count": 10
+      "count": 10,
+      "en": "Gaming"
     },
     {
       "id": "retro-cyberpunk",
       "zh": "复古与赛博朋克",
       "emoji": "🤖",
-      "count": 3
+      "count": 3,
+      "en": "Retro & Cyberpunk"
     },
     {
       "id": "cinematic-animation",
       "zh": "电影与动画",
       "emoji": "🎬",
-      "count": 5
+      "count": 5,
+      "en": "Cinematic & Animation"
     },
     {
       "id": "character-design",
       "zh": "角色设计",
       "emoji": "👤",
-      "count": 2
+      "count": 2,
+      "en": "Character Design"
     },
     {
       "id": "typography-posters",
       "zh": "排版与海报",
       "emoji": "📝",
-      "count": 13
+      "count": 13,
+      "en": "Typography & Posters"
     },
     {
       "id": "illustration",
       "zh": "插画",
       "emoji": "🎨",
-      "count": 2
+      "count": 2,
+      "en": "Illustration"
     },
     {
       "id": "watercolor",
       "zh": "水彩",
       "emoji": "💧",
-      "count": 2
+      "count": 2,
+      "en": "Watercolor"
     },
     {
       "id": "ink-chinese",
       "zh": "墨与中国",
       "emoji": "🖌️",
-      "count": 2
+      "count": 2,
+      "en": "Ink & Chinese Art"
     },
     {
       "id": "pixel-art",
       "zh": "像素艺术",
       "emoji": "🕹️",
-      "count": 2
+      "count": 2,
+      "en": "Pixel Art"
     },
     {
       "id": "isometric",
       "zh": "等距视图",
       "emoji": "📐",
-      "count": 2
+      "count": 2,
+      "en": "Isometric"
     },
     {
       "id": "product-food",
       "zh": "产品与食品",
       "emoji": "📦",
-      "count": 4
+      "count": 4,
+      "en": "Product & Food"
     },
     {
       "id": "brand-systems-identity",
       "zh": "品牌系统与识别",
       "emoji": "🧩",
-      "count": 3
+      "count": 3,
+      "en": "Brand & Identity"
     },
     {
       "id": "photography",
       "zh": "摄影",
       "emoji": "📷",
-      "count": 4
+      "count": 4,
+      "en": "Photography"
     },
     {
       "id": "infographics-field-guides",
       "zh": "信息图表与指南",
       "emoji": "📊",
-      "count": 8
+      "count": 8,
+      "en": "Infographics & Field Guides"
     },
     {
       "id": "research-paper-figures",
       "zh": "研究论文图示",
       "emoji": "📚",
-      "count": 21
+      "count": 21,
+      "en": "Research Paper Figures"
     },
     {
       "id": "official-openai-cookbook",
       "zh": "官方 Cookbook",
       "emoji": "🏢",
-      "count": 4
+      "count": 4,
+      "en": "Official Cookbook"
     },
     {
       "id": "edit-endpoint-showcase",
       "zh": "编辑端点展示",
       "emoji": "✨",
-      "count": 1
+      "count": 1,
+      "en": "Edits Endpoint Showcase"
     },
     {
       "id": "uiux-mockups",
       "zh": "UI/UX 原型图",
       "emoji": "📱",
-      "count": 5
+      "count": 5,
+      "en": "UI/UX Mockups"
     },
     {
       "id": "data-visualization",
       "zh": "数据可视化",
       "emoji": "📊",
-      "count": 5
+      "count": 5,
+      "en": "Data Visualization"
     },
     {
       "id": "technical-illustration",
       "zh": "技术插图",
       "emoji": "⚙️",
-      "count": 5
+      "count": 5,
+      "en": "Technical Illustration"
     },
     {
       "id": "architecture-interior",
       "zh": "建筑与室内",
       "emoji": "🏛️",
-      "count": 5
+      "count": 5,
+      "en": "Architecture & Interior"
     },
     {
       "id": "scientific-educational",
       "zh": "科学与教育",
       "emoji": "🔬",
-      "count": 7
+      "count": 7,
+      "en": "Science & Education"
     },
     {
       "id": "fashion-editorial",
       "zh": "时尚与编辑",
       "emoji": "👗",
-      "count": 7
+      "count": 7,
+      "en": "Fashion & Editorial"
     },
     {
       "id": "fine-art-painting",
       "zh": "纯艺绘画",
       "emoji": "🎨",
-      "count": 5
+      "count": 5,
+      "en": "Fine Art Painting"
     },
     {
       "id": "more-illustration-styles",
       "zh": "更多插画风格",
       "emoji": "✏️",
-      "count": 6
+      "count": 6,
+      "en": "More Illustration Styles"
     },
     {
       "id": "cinematic-film-references",
       "zh": "电影风格参考",
       "emoji": "🎥",
-      "count": 6
+      "count": 6,
+      "en": "Cinematic Film References"
     },
     {
       "id": "beauty-lifestyle",
       "zh": "美妆与生活方式",
       "emoji": "💄",
-      "count": 2
+      "count": 2,
+      "en": "Beauty & Lifestyle"
     },
     {
       "id": "events-experience",
       "zh": "活动与体验",
       "emoji": "🎟️",
-      "count": 2
+      "count": 2,
+      "en": "Events & Experience"
     },
     {
       "id": "tattoo-design",
       "zh": "纹身设计",
       "emoji": "🖋️",
-      "count": 4
+      "count": 4,
+      "en": "Tattoo Design"
     },
     {
       "id": "screen-photography",
       "zh": "屏幕摄影",
       "emoji": "🖥️",
-      "count": 2
+      "count": 2,
+      "en": "Screen Photography"
     }
   ],
   "entries": [

@@ -70,6 +70,8 @@ export type Message = {
     versionNumber?: number;
     message?: string;
     params?: Record<string, unknown>;
+    /** 服务端持久化消息的稳定码（msg.* 字典），历史消息可能缺失；params 复用为插值参数。 */
+    code?: string;
     batch?: { variableName?: string; variableNames?: string[]; values?: string[]; variables?: Array<{ name: string; values: string[] }>; prompts?: string[]; local?: boolean; completed?: number; failed?: number; canceled?: boolean };
   };
   createdAt: string;
@@ -111,6 +113,9 @@ export type GenerationTask = {
   operationType?: string;
   stage?: 'planning' | 'compositing' | 'generating' | 'preserving' | null;
   error: string | null;
+  /** 服务端错误码（error_json.code），配合 msg.* 字典本地化。 */
+  errorCode?: string | null;
+  errorParams?: Record<string, string | number> | null;
   createdAt: string;
   finishedAt: string | null;
 };
@@ -167,6 +172,8 @@ export type BatchEditProgress = {
   estimatedRemainingSeconds: number | null;
   items: BatchEditItem[];
   error: string | null;
+  errorCode?: string | null;
+  errorParams?: Record<string, string | number> | null;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;

@@ -95,6 +95,23 @@ export function pixelRect(rect, width, height) {
   return { left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
 }
 
+// Give the vision model a magnified view of the user's selection in addition
+// to the full image. Small wearable items (shoes, glasses, jewellery) are easy
+// to miss in a full-resolution scene even when the percentage coordinates are
+// correct. The crop remains a visual aid only; reported coordinates still use
+// the full image coordinate system.
+export async function cropLocalSelection(source, rect) {
+  const crop = pixelRect(rect, source.width, source.height);
+  const minSide = Math.min(crop.width, crop.height);
+  const maxSide = Math.max(crop.width, crop.height);
+  const scale = Math.max(1, Math.min(4, 512 / Math.max(1, minSide), 2048 / Math.max(1, maxSide)));
+  const width = Math.max(1, Math.round(crop.width * scale));
+  const height = Math.max(1, Math.round(crop.height * scale));
+  const buffer = await sharp(source.buffer, decodeOptions).extract(crop)
+    .resize(width, height, { fit: 'fill', kernel: sharp.kernel.lanczos3 }).png().toBuffer();
+  return { buffer, mime_type: 'image/png', width, height };
+}
+
 export function referenceBytes(reference) {
   if (!reference || !['image/png', 'image/jpeg', 'image/webp'].includes(reference.mimeType) || typeof reference.data !== 'string') {
     throw invalid('参考图仅支持 PNG、JPEG、WebP');

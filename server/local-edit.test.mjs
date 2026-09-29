@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
-import { composeLocalReference, normalizeLocalImage, normalizeSenseNovaInput, pixelRect, preserveOutsideRegion, referenceBytes, validatePlacement, validateRect } from './local-edit.mjs';
+import { composeLocalReference, cropLocalSelection, normalizeLocalImage, normalizeSenseNovaInput, pixelRect, preserveOutsideRegion, referenceBytes, validatePlacement, validateRect } from './local-edit.mjs';
 
 const rect = { x: 25, y: 20, width: 50, height: 60 };
 const plan = { intent: '将目标替换为参考主体', target_rect: { x: 30, y: 25, width: 30, height: 40 }, reference_rect: { x: 20, y: 10, width: 60, height: 70 }, edit_prompt: '自然融合参考主体，修复边缘与光影，保留框外内容。' };
@@ -47,6 +47,10 @@ test('PNG/JPEG/WebP decoding, orientation, crop placement and original outside p
   assert.equal(oriented.height, 120);
   await assert.rejects(normalizeLocalImage(Buffer.from('not an image')));
   const source = await normalizeLocalImage(input);
+  const selectionDetail = await cropLocalSelection(source, rect);
+  assert.ok(selectionDetail.width >= pixelRect(rect, source.width, source.height).width);
+  assert.ok(selectionDetail.height >= pixelRect(rect, source.width, source.height).height);
+  assert.ok(Math.max(selectionDetail.width, selectionDetail.height) <= 2048);
   const reference = await normalizeLocalImage(await solid(100, 100, 'red'));
   const composed = await composeLocalReference(source, reference, validatePlacement(plan, rect));
   assertOutside(await raw(source.buffer), await raw(composed.buffer), 120, 90, rect);
@@ -100,7 +104,12 @@ test('local edit API: all vision formats, composed provider input, history, fail
         return;
       }
       if (mode === 'hold-vision') await new Promise((resolve) => { releaseVision = resolve; });
-      const content = JSON.stringify(mode === 'bad-plan' ? { ...plan, target_rect: { x: 0, y: 0, width: 5, height: 5 } } : plan);
+      const content = JSON.stringify(
+        mode === 'bad-plan' ? { ...plan, target_rect: { x: 0, y: 0, width: 5, height: 5 } }
+          : mode === 'remove-plan' ? { target: '选区中央的蓝色杯子', target_rect: { x: 32, y: 28, width: 24, height: 30 }, confidence: 0.96, background: '延续桌面木纹和杯子后方墙面', edit_prompt: '删除蓝色杯子和杯子投下的阴影，自然补全桌面木纹与墙面。' }
+            : mode === 'remove-ambiguous' ? { error: '选区内有两个同样显眼的杯子，无法判断要删除哪一个' }
+              : plan,
+      );
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify(req.url.endsWith('/messages') ? { content: [{ type: 'text', text: content }] } : req.url.endsWith('/responses') ? { output_text: content } : { choices: [{ message: { content } }] }));
     } catch (error) { res.writeHead(500); res.end(String(error)); }
@@ -178,6 +187,54 @@ test('local edit API: all vision formats, composed provider input, history, fail
   assert.equal((await finished(badFixture.projectId, bad.taskId)).status, 'failed');
   assert.ok(!calls.slice(beforeBad).some((item) => item.url.endsWith('/images/edits')));
   assert.equal((await request(`/projects/${badFixture.projectId}`)).project.currentImageId, badFixture.imageId);
+
+  // 删除元素：视觉模型先确认唯一目标和精确范围，图片模型只生成一张，随后恢复选区外原像素。
+  mode = 'remove-plan';
+  {
+    const fixture = await fixtureProject();
+    const first = calls.length;
+    const started = await request(`/projects/${fixture.projectId}/remove-element`, {
+      imageId: fixture.imageId,
+      modelId: 'image',
+      visionModelId: visionFormats[0],
+      rect,
+      params: { size: '1024x1024', count: 4, outputFormat: 'jpeg' },
+    }, 202);
+    const task = await finished(fixture.projectId, started.taskId);
+    assert.equal(task.status, 'success', task.error);
+    const visionCall = JSON.parse(calls[first].bytes);
+    assert.match(JSON.stringify(visionCall), /矩形只是指向提示/);
+    assert.match(JSON.stringify(visionCall), /一双鞋/);
+    assert.equal(visionCall.messages.at(-1).content.filter((item) => item.type === 'image_url').length, 2);
+    const modelCall = calls.slice(first).find((item) => item.url.endsWith('/images/edits'));
+    const form = await new Response(modelCall.bytes, { headers: { 'Content-Type': modelCall.contentType } }).formData();
+    assert.match(form.get('prompt'), /选区中央的蓝色杯子/);
+    assert.match(form.get('prompt'), /不要清空整个矩形/);
+    const bundle = await request(`/projects/${fixture.projectId}`);
+    const version = bundle.versions.find((item) => item.operation === 'remove_element');
+    assert.equal(version.outputs.length, 1);
+    const output = version.outputs[0];
+    assert.equal(output.mimeType, 'image/png');
+    assert.equal(output.width, 120); assert.equal(output.height, 90);
+    assertOutside(await raw(sourceBytes), await raw(Buffer.from(await (await fetch(base + output.url)).arrayBuffer())), 120, 90, rect);
+  }
+
+  mode = 'remove-ambiguous';
+  {
+    const fixture = await fixtureProject();
+    const first = calls.length;
+    const started = await request(`/projects/${fixture.projectId}/remove-element`, {
+      imageId: fixture.imageId,
+      modelId: 'image',
+      visionModelId: visionFormats[0],
+      rect,
+    }, 202);
+    const task = await finished(fixture.projectId, started.taskId);
+    assert.equal(task.status, 'failed');
+    assert.equal(task.errorCode, 'removeElement.ambiguous');
+    assert.ok(!calls.slice(first).some((item) => item.url.endsWith('/images/edits')));
+  }
+
   for (const hold of ['hold-vision', 'hold-generation']) {
     mode = hold;
     const fixture = await fixtureProject();
