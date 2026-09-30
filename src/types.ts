@@ -111,7 +111,7 @@ export type GenerationTask = {
   id: string;
   status: 'generating' | 'success' | 'partial' | 'failed' | 'canceled';
   operationType?: string;
-  stage?: 'planning' | 'compositing' | 'generating' | 'preserving' | null;
+  stage?: 'planning' | 'compositing' | 'generating' | 'preserving' | 'validating' | null;
   error: string | null;
   /** 服务端错误码（error_json.code），配合 msg.* 字典本地化。 */
   errorCode?: string | null;

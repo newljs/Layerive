@@ -18,11 +18,12 @@ type Props = {
   onProjectChanged: () => void;
   notify: (message: string, kind?: 'success' | 'error') => void;
 };
-type TaskKind = 'generate' | 'batch-edit' | 'text-edit' | 'local-edit' | 'remove-element' | 'outpaint' | 'enhance' | 'remove-watermark' | 'extract-asset';
+type TaskKind = 'generate' | 'batch-edit' | 'text-edit' | 'local-edit' | 'remove-element' | 'outpaint' | 'enhance' | 'remove-watermark' | 'remove-background' | 'extract-asset';
 const localEditStageKeys: Record<string, TranslationKey> = { planning: 'ws.stagePlanning', compositing: 'ws.stageCompositing', generating: 'ws.stageGenerating', preserving: 'ws.stagePreserving' };
 const removeElementStageKeys: Record<string, TranslationKey> = { planning: 'ws.removeElementStagePlanning', generating: 'ws.removeElementStageGenerating', preserving: 'ws.removeElementStagePreserving' };
+const removeBackgroundStageKeys: Record<string, TranslationKey> = { planning: 'ws.removeBackgroundStagePlanning', generating: 'ws.removeBackgroundStageGenerating', validating: 'ws.removeBackgroundStageValidating' };
 
-const operationKeys: Record<string, TranslationKey> = { auto: 'op.auto', upload: 'op.upload', text_to_image: 'op.text_to_image', image_to_image: 'op.image_to_image', edit_prompt: 'op.edit_prompt', batch_edit: 'op.batch_edit', batch_generate: 'op.batch_generate', edit_text: 'op.edit_text', recognize_text: 'op.recognize_text', local_edit: 'op.local_edit', remove_element: 'op.remove_element', outpaint: 'op.outpaint', enhance: 'op.enhance', remove_watermark: 'op.remove_watermark', extract_asset: 'op.extract_asset', gallery_analyze: 'op.gallery_analyze' };
+const operationKeys: Record<string, TranslationKey> = { auto: 'op.auto', upload: 'op.upload', text_to_image: 'op.text_to_image', image_to_image: 'op.image_to_image', edit_prompt: 'op.edit_prompt', batch_edit: 'op.batch_edit', batch_generate: 'op.batch_generate', edit_text: 'op.edit_text', recognize_text: 'op.recognize_text', local_edit: 'op.local_edit', remove_element: 'op.remove_element', outpaint: 'op.outpaint', enhance: 'op.enhance', remove_watermark: 'op.remove_watermark', remove_background: 'op.remove_background', extract_asset: 'op.extract_asset', gallery_analyze: 'op.gallery_analyze' };
 const localeFor = (language: Language) => (language === 'zh' ? 'zh-CN' : 'en-US');
 const formatTime = (value: string, language: Language) => new Intl.DateTimeFormat(localeFor(language), { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 
@@ -462,6 +463,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [outpaintSubmitting, setOutpaintSubmitting] = useState(false);
   const [enhancing, setEnhancing] = useState(false);
   const [removingWatermark, setRemovingWatermark] = useState(false);
+  const [removingBackground, setRemovingBackground] = useState(false);
   const [extractMode, setExtractMode] = useState(false);
   const [extractRect, setExtractRect] = useState<TextSegment['rect'] | null>(null);
   const [extractHint, setExtractHint] = useState('');
@@ -498,12 +500,13 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   };
   const persistedText = (content: { code?: string; params?: unknown; text?: string; message?: string }, raw: string) =>
     content.code ? tf(`msg.${content.code}`, raw, (content.params as Record<string, string | number>) || {}) : raw;
-  const visionBusy = generating || recognizingText || textEditSubmitting || localEditSubmitting || removeElementSubmitting || extractSubmitting || removingWatermark || savingToGallery;
+  const visionBusy = generating || recognizingText || textEditSubmitting || localEditSubmitting || removeElementSubmitting || extractSubmitting || removingWatermark || removingBackground || savingToGallery;
   const imageMap = useMemo(() => new Map((bundle?.images || []).map((image) => [image.id, image])), [bundle?.images]);
   const currentImage = currentImageId ? imageMap.get(currentImageId) || null : null;
   const inputImage = inputImageId ? imageMap.get(inputImageId) || null : null;
   const currentVersion = bundle?.versions.find((version) => version.outputs.some((image) => image.id === currentImageId));
   const selectedModel = imageModels.find((model) => model.id === modelId);
+  const backgroundRemovalSupported = Boolean(selectedModel?.transparentBackground && selectedModel.outputFormats?.includes('png'));
   const batchEditSupported = Boolean(selectedModel?.capabilities.includes('edit_prompt'));
   const batchTextSupported = Boolean(selectedModel?.capabilities.includes('text_to_image'));
   const selectedVisionModel = visionModels.find((model) => model.id === visionModelId);
@@ -654,6 +657,8 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
             notify(tRef.current('ws.savedEnhance', { number: data.versions[0]?.number }), 'success');
           } else if (kind === 'remove-watermark') {
             notify(tRef.current('ws.savedWatermark', { number: data.versions[0]?.number }), 'success');
+          } else if (kind === 'remove-background') {
+            notify(tRef.current('ws.savedBackgroundRemoval', { number: data.versions[0]?.number }), 'success');
           } else if (kind === 'extract-asset') {
             notify(tRef.current('ws.savedExtract', { number: data.versions[0]?.number }), 'success');
           } else {
@@ -711,7 +716,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       setInputImageId(cachedInputImageId);
       initialized.current = true;
       const task = taskData.tasks[0];
-      if (task) startPolling(task.id, task.operationType === 'batch_edit' || task.operationType === 'batch_generate' ? 'batch-edit' : task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'remove_element' ? 'remove-element' : task.operationType === 'outpaint' ? 'outpaint' : task.operationType === 'enhance' ? 'enhance' : task.operationType === 'remove_watermark' ? 'remove-watermark' : task.operationType === 'extract_asset' ? 'extract-asset' : 'generate');
+      if (task) startPolling(task.id, task.operationType === 'batch_edit' || task.operationType === 'batch_generate' ? 'batch-edit' : task.operationType === 'edit_text' ? 'text-edit' : task.operationType === 'local_edit' ? 'local-edit' : task.operationType === 'remove_element' ? 'remove-element' : task.operationType === 'outpaint' ? 'outpaint' : task.operationType === 'enhance' ? 'enhance' : task.operationType === 'remove_watermark' ? 'remove-watermark' : task.operationType === 'remove_background' ? 'remove-background' : task.operationType === 'extract_asset' ? 'extract-asset' : 'generate');
     }).catch((error) => notify(error.message, 'error')).finally(() => setLoading(false));
   }, [projectId, activeModel, activeVisionModel, startPolling, notify, draftCacheKey]);
 
@@ -1245,6 +1250,33 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     finally { setRemovingWatermark(false); }
   }
 
+  async function removeBackground() {
+    if (!currentImage || removingBackground || generating) return;
+    if (!backgroundRemovalSupported) return notify(t('ws.backgroundRequiresTransparentModel'), 'error');
+    setRightMode('chat');
+    closeLocalEdit();
+    closeRemoveElement();
+    closeExtract();
+    closeOutpaint();
+    setRemovingBackground(true);
+    setActiveTask({ id: null, kind: 'remove-background', stage: 'planning' });
+    try {
+      const result = await api.removeBackground(projectId, {
+        imageId: currentImage.id,
+        modelId,
+        visionModelId,
+        parentVersionId: currentVersion?.id || null,
+        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count: 1, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: 'png', transparent: true },
+      });
+      startPolling(result.taskId, 'remove-background');
+    } catch (error) {
+      setActiveTask(null);
+      notify((error as Error).message, 'error');
+    } finally {
+      setRemovingBackground(false);
+    }
+  }
+
   async function submitTextEdit() {
     if (!textImage || textEditSubmitting || generating) return;
     if (!hasTextChanges) return notify(t('ws.textNoChanges'), 'error');
@@ -1579,8 +1611,20 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
 
         <section className="canvas-panel">
           <div className="canvas-toolbar">
+            <div className="canvas-toolbar-main">
               <div className="canvas-context">{currentVersion ? <><strong>V{currentVersion.number}</strong><span>{currentVersion.operation && operationKeys[currentVersion.operation] ? t(operationKeys[currentVersion.operation]) : currentVersion.operation}</span></> : <span>{t('ws.projectCanvas')}</span>}</div>
-            <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label={t('common.zoomOut')}><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label={t('common.zoomIn')}><Icon name="plus" size={14} /></button><button className={`local-edit-launch ${localEditMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={localEditMode || localEditRect ? t('ws.exitLocalEditTitle') : t('ws.localEditTitle')} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit}>{localEditMode || localEditRect ? <><Icon name="close" size={14} /> {t('ws.exitLocalEdit')}</> : <><Icon name="box" size={14} /> {t('ws.localEdit')}</>}</button><button className={`remove-element-launch ${(removeElementMode || removeElementRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={(removeElementMode || removeElementRect) ? t('ws.exitRemoveElementTitle') : t('ws.removeElementTitle')} onClick={(removeElementMode || removeElementRect) ? closeRemoveElement : startRemoveElement}>{(removeElementMode || removeElementRect) ? <><Icon name="close" size={14} /> {t('ws.exitRemoveElement')}</> : <><Icon name="trash" size={14} /> {t('ws.removeElement')}</>}</button><button className={`extract-launch ${(extractMode || extractRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={(extractMode || extractRect) ? t('ws.exitExtractTitle') : t('ws.extractTitle')} onClick={(extractMode || extractRect) ? closeExtract : startExtract}>{(extractMode || extractRect) ? <><Icon name="close" size={14} /> {t('ws.exitExtract')}</> : <><Icon name="extract" size={14} /> {t('ws.extract')}</>}</button><button className={`outpaint-launch ${outpaintMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || enhancing} title={outpaintMode ? t('ws.exitOutpaintTitle') : t('ws.outpaintTitle')} onClick={outpaintMode ? closeOutpaint : startOutpaint}>{outpaintMode ? <><Icon name="close" size={14} /> {t('ws.exitOutpaint')}</> : <><Icon name="image" size={14} /> {t('ws.outpaint')}</>}</button><button className="enhance-launch" disabled={!currentImage || generating || removingWatermark || enhancing} title={t('ws.enhanceTitle')} onClick={() => void enhanceImage()}>{enhancing ? t('ws.processing') : <><Icon name="sparkle" size={14} /> {t('ws.enhance')}</>}</button><button className="watermark-remove-launch" disabled={!currentImage || generating || removingWatermark || enhancing} title={t('ws.watermarkTitle')} onClick={() => void removeWatermark()}>{removingWatermark ? t('ws.recognizing') : <><Icon name="sparkle" size={14} /> {t('ws.removeWatermark')}</>}</button><button disabled={!currentImage || generating || removingWatermark || enhancing} onClick={() => void openTextEditor()}>{t('ws.editText')}</button><button disabled={!currentImage} onClick={openCompare}>{t('ws.compare')}</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>{t('common.download')}</a>{currentVersion && currentVersion.outputs.length > 1 && <button className="download-version-zip" title={t('ws.downloadZipTitle', { count: currentVersion.outputs.length })} onClick={() => api.downloadVersionImages(projectId, currentVersion.id)}><Icon name="download" size={13} /> ZIP</button>}</div>
+              <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label={t('common.zoomOut')}><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label={t('common.zoomIn')}><Icon name="plus" size={14} /></button><button disabled={!currentImage} onClick={openCompare}>{t('ws.compare')}</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>{t('common.download')}</a>{currentVersion && currentVersion.outputs.length > 1 && <button className="download-version-zip" title={t('ws.downloadZipTitle', { count: currentVersion.outputs.length })} onClick={() => api.downloadVersionImages(projectId, currentVersion.id)}><Icon name="download" size={13} /> ZIP</button>}</div>
+            </div>
+            <nav className="canvas-edit-menu" aria-label={t('ws.imageEditTools')}>
+              <button className={`local-edit-launch ${localEditMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={localEditMode || localEditRect ? t('ws.exitLocalEditTitle') : t('ws.localEditTitle')} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit}>{localEditMode || localEditRect ? <><Icon name="close" size={17} /> {t('ws.exitLocalEdit')}</> : <><Icon name="box" size={17} /> {t('ws.localEdit')}</>}</button>
+              <button className={`remove-element-launch ${(removeElementMode || removeElementRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={(removeElementMode || removeElementRect) ? t('ws.exitRemoveElementTitle') : t('ws.removeElementTitle')} onClick={(removeElementMode || removeElementRect) ? closeRemoveElement : startRemoveElement}>{(removeElementMode || removeElementRect) ? <><Icon name="close" size={17} /> {t('ws.exitRemoveElement')}</> : <><Icon name="trash" size={17} /> {t('ws.removeElement')}</>}</button>
+              <button className={`extract-launch ${(extractMode || extractRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={(extractMode || extractRect) ? t('ws.exitExtractTitle') : t('ws.extractTitle')} onClick={(extractMode || extractRect) ? closeExtract : startExtract}>{(extractMode || extractRect) ? <><Icon name="close" size={17} /> {t('ws.exitExtract')}</> : <><Icon name="extract" size={17} /> {t('ws.extract')}</>}</button>
+              <button className="background-remove-launch" disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={backgroundRemovalSupported ? t('ws.removeBackgroundTitle') : t('ws.backgroundRequiresTransparentModel')} onClick={() => void removeBackground()}>{removingBackground ? t('ws.recognizing') : <><Icon name="background" size={17} /> {t('ws.removeBackground')}</>}</button>
+              <button className={`outpaint-launch ${outpaintMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={outpaintMode ? t('ws.exitOutpaintTitle') : t('ws.outpaintTitle')} onClick={outpaintMode ? closeOutpaint : startOutpaint}>{outpaintMode ? <><Icon name="close" size={17} /> {t('ws.exitOutpaint')}</> : <><Icon name="image" size={17} /> {t('ws.outpaint')}</>}</button>
+              <button className="enhance-launch" disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={t('ws.enhanceTitle')} onClick={() => void enhanceImage()}>{enhancing ? t('ws.processing') : <><Icon name="sparkle" size={17} /> {t('ws.enhance')}</>}</button>
+              <button className="watermark-remove-launch" disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={t('ws.watermarkTitle')} onClick={() => void removeWatermark()}>{removingWatermark ? t('ws.recognizing') : <><Icon name="sparkle" size={17} /> {t('ws.removeWatermark')}</>}</button>
+              <button className="text-edit-launch" disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} onClick={() => void openTextEditor()}><Icon name="edit" size={17} /> {t('ws.editText')}</button>
+            </nav>
           </div>
           <div className={`canvas-stage ${(localEditMode || removeElementMode || extractMode) ? 'selection-mode' : ''}`} onPointerDown={onCanvasSelectionStart} onPointerMove={onCanvasSelectionMove} onPointerUp={onCanvasSelectionEnd} onPointerCancel={onCanvasSelectionCancel}>
             {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(removeElementMode || removeElementRect) ? 'removing-element' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined} onContextMenu={(event) => openImageContextMenu(event, currentImage.id)}>{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={t('ws.outpaintPreviewAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} /><span>{t('ws.newCanvasArea')}</span></div> : <img src={currentImage.url} alt={t('ws.projectImageAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} />}{(localEditMode || localEditRect) && <div className="local-edit-surface">{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>{t('ws.editArea')}</em></span>}</div>}{(removeElementMode || removeElementRect) && <div className="remove-element-surface">{removeElementRect && <span className="remove-element-rect" style={{ left: `${removeElementRect.x}%`, top: `${removeElementRect.y}%`, width: `${removeElementRect.width}%`, height: `${removeElementRect.height}%` }}><em>{t('ws.removeElementArea')}</em></span>}</div>}{(extractMode || extractRect) && <div className="extract-surface">{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>{t('ws.extractArea')}</em></span>}</div>}<span className="image-chip">{outpaintMode ? t('ws.targetSize', { size: outpaintSize }) : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
@@ -1666,7 +1710,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
                     : t('ws.msgGenerateAll', { count: outputs.length });
               return <article className="message assistant-message" key={message.id}><div className="message-meta"><strong>Layerive</strong><span>V{message.content.versionNumber} · {formatTime(message.createdAt, language)}</span></div><p>{resultParagraph}</p><div className={`message-gallery count-${outputs.length}`}>{outputs.map((image, index) => <button key={image.id} title={message.content.prompts?.[index] ? t('ws.msgPromptTitle', { prompt: message.content.prompts[index] }) : t('ws.candidateTitle')} onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt={t('ws.generatedAlt')} loading="lazy" /></button>)}</div><div className="message-actions"><button onClick={() => { const first = outputs[0]; if (first) useImage(first); }}>{t('ws.useThisRound')}</button><button onClick={() => setPrompt(message.content.prompt || '')}>{t('ws.reusePrompt')}</button></div></article>;
             })}
-            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? t('ws.generating') : t('ws.preparing')}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind === 'batch-edit' ? (batchProgress ? t('ws.msgBatchProcessingDone', { label: batchProgress.textBatch ? t('ws.batchText') : batchProgress.localEdit ? t('ws.batchLocal') : t('ws.batchEdit'), done: `${batchProgress.completed}/${batchProgress.total}` }) : t('ws.msgBatchProcessing', { label: t('ws.batchEdit') })) : activeTask?.kind === 'local-edit' ? t(localEditStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-element' ? t(removeElementStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'text-edit' && !activeTask.id ? t('ws.msgTextPreparing') : activeTask?.kind === 'generate' && activeTask.stage === 'planning' ? t('ws.msgPlanning') : t('ws.msgCreating', { model: selectedModel?.name || t('ws.imageModelFallback'), count })}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</article>}
+            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? t('ws.generating') : t('ws.preparing')}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind === 'batch-edit' ? (batchProgress ? t('ws.msgBatchProcessingDone', { label: batchProgress.textBatch ? t('ws.batchText') : batchProgress.localEdit ? t('ws.batchLocal') : t('ws.batchEdit'), done: `${batchProgress.completed}/${batchProgress.total}` }) : t('ws.msgBatchProcessing', { label: t('ws.batchEdit') })) : activeTask?.kind === 'local-edit' ? t(localEditStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-element' ? t(removeElementStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-background' ? t(removeBackgroundStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'text-edit' && !activeTask.id ? t('ws.msgTextPreparing') : activeTask?.kind === 'generate' && activeTask.stage === 'planning' ? t('ws.msgPlanning') : t('ws.msgCreating', { model: selectedModel?.name || t('ws.imageModelFallback'), count })}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</article>}
             <div ref={messagesEnd} />
           </div>
 

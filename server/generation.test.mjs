@@ -21,6 +21,9 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
   await mkdir(configRoot);
   const sourceBytes = await solid(120, 90, '#264560');
   const generated = await solid(128, 128, '#49b974');
+  const transparentGenerated = await sharp({ create: { width: 128, height: 128, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .composite([{ input: await solid(54, 82, '#49b974'), left: 37, top: 23 }]).png().toBuffer();
+  let imageResponse = generated;
   const calls = [];
   let visionPrompts = null;
   let visionDifferent = false;
@@ -59,7 +62,7 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
           // The gateway ignores `n`: exactly one image per request, so the
           // native batch path must fill the shortfall with count=1 requests.
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ data: [{ b64_json: generated.toString('base64') }] }));
+          res.end(JSON.stringify({ data: [{ b64_json: imageResponse.toString('base64') }] }));
           return;
         } finally {
           inFlight -= 1;
@@ -76,6 +79,8 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
         ] });
       } else if (instruction.includes('根据图片内容和下面的文字替换项')) {
         content = JSON.stringify({ edit_prompt: '按清单精确修改文字，其余内容保持不变' });
+      } else if (instruction.includes('判断用户一键去除背景时最可能希望保留')) {
+        content = JSON.stringify({ keep_subjects: ['画面中央牵狗的人', '与人物互动的狗', '连接二者的牵引绳'], discard_as_background: ['海滩、天空和远处建筑'], reason: '人物和狗共同构成前景主要事件', confidence: 0.96, edit_prompt: '完整保留人物、狗和牵引绳，移除其余背景并输出透明 PNG。' });
       } else {
         content = JSON.stringify({ different: visionDifferent, prompts: visionPrompts });
       }
@@ -86,7 +91,7 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
   await new Promise((resolve) => stub.listen(0, '127.0.0.1', resolve));
   const stubUrl = `http://127.0.0.1:${stub.address().port}`;
   await writeFile(path.join(configRoot, 'models.json'), JSON.stringify({ active_model: 'image', active_vision_model: 'vision', models: [
-    { id: 'image', name: 'Batch image stub', provider: 'openai', type: 'image', model: 'fixture', baseUrl: stubUrl, apiKey: 'local-test-placeholder', capabilities: ['text_to_image', 'edit_prompt'], defaultParams: { size: '1024x1024' } },
+    { id: 'image', name: 'Batch image stub', provider: 'openai', type: 'image', model: 'fixture', baseUrl: stubUrl, apiKey: 'local-test-placeholder', capabilities: ['text_to_image', 'edit_prompt'], defaultParams: { size: '1024x1024' }, outputFormats: ['png'], transparentBackground: true },
     { id: 'sensenova', name: 'SenseNova image stub', provider: 'sensenova', type: 'image', model: 'sensenova-u1.5-lite', baseUrl: stubUrl, apiKey: 'local-test-placeholder', capabilities: ['text_to_image', 'edit_prompt'], defaultParams: { size: '2048x2048' } },
     { id: 'vision', name: 'Vision stub', provider: 'openai', type: 'vision', apiFormat: 'chat_completions', model: 'fixture', baseUrl: stubUrl, apiKey: 'local-test-placeholder' },
   ] }));
@@ -320,6 +325,56 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
     const result = bundle.messages.find((message) => message.type === 'result');
     assert.equal(result.content.promptMode, 'same');
     assert.equal(bundle.versions.find((item) => item.operation === 'text_to_image').outputs.length, 2);
+  }
+
+  // 9b) 一键去背景：视觉模型判断主要主体组，图片模型强制透明 PNG，
+  // 服务端拒绝不支持透明输出的模型以及实际没有 Alpha 背景的结果。
+  {
+    const fixture = await fixtureProject();
+    const mark = calls.length;
+    imageResponse = transparentGenerated;
+    const started = await request(`/projects/${fixture.projectId}/remove-background`, {
+      imageId: fixture.imageId,
+      modelId: 'image',
+      visionModelId: 'vision',
+      params: { size: '1024x1024', count: 4, outputFormat: 'jpeg', transparent: false },
+    }, 202);
+    const task = await finished(fixture.projectId, started.taskId);
+    imageResponse = generated;
+    assert.equal(task.status, 'success', task.error);
+    const visionCall = JSON.parse(calls.slice(mark).find((item) => item.url.endsWith('/chat/completions')).bytes);
+    assert.match(JSON.stringify(visionCall), /一个人牵着一条狗/);
+    assert.match(JSON.stringify(visionCall), /背景中只有几只很小/);
+    const imageCall = calls.slice(mark).find((item) => item.url.endsWith('/images/edits'));
+    const form = await new Response(imageCall.bytes, { headers: { 'Content-Type': imageCall.contentType } }).formData();
+    assert.equal(form.get('n'), '1');
+    assert.equal(form.get('output_format'), 'png');
+    assert.equal(form.get('background'), 'transparent');
+    assert.match(form.get('prompt'), /人物、狗和牵引绳/);
+    assert.match(form.get('prompt'), /真实 Alpha 通道/);
+    const bundle = await request(`/projects/${fixture.projectId}`);
+    const version = bundle.versions.find((item) => item.operation === 'remove_background');
+    assert.equal(version.outputs.length, 1);
+    assert.equal(version.outputs[0].mimeType, 'image/png');
+    const outputBytes = Buffer.from(await (await fetch(base + version.outputs[0].url)).arrayBuffer());
+    const metadata = await sharp(outputBytes).metadata();
+    const stats = await sharp(outputBytes).stats();
+    assert.equal(metadata.hasAlpha, true);
+    assert.equal(stats.channels[3].min, 0);
+    assert.equal(stats.channels[3].max, 255);
+    const logsForTask = (await request(`/projects/${fixture.projectId}/model-logs?limit=20`)).logs.filter((item) => item.taskId === started.taskId);
+    assert.ok(logsForTask.some((item) => item.modelType === 'vision' && item.phase === '主要主体识别与透明背景规划'));
+    assert.ok(logsForTask.some((item) => item.modelType === 'image' && item.phase === '去除背景并生成透明 PNG'));
+
+    const unsupported = await request(`/projects/${fixture.projectId}/remove-background`, { imageId: fixture.imageId, modelId: 'sensenova', visionModelId: 'vision' }, 400);
+    assert.equal(unsupported.code, 'backgroundRemoval.requiresTransparentModel');
+
+    const opaqueStarted = await request(`/projects/${fixture.projectId}/remove-background`, { imageId: fixture.imageId, modelId: 'image', visionModelId: 'vision' }, 202);
+    const opaqueTask = await finished(fixture.projectId, opaqueStarted.taskId);
+    assert.equal(opaqueTask.status, 'failed');
+    assert.equal(opaqueTask.errorCode, 'backgroundRemoval.invalidOutput');
+    const afterOpaque = await request(`/projects/${fixture.projectId}`);
+    assert.equal(afterOpaque.versions.filter((item) => item.operation === 'remove_background').length, 1);
   }
 
   // 10) 变量批量处理逐张入库：第一张完成时即可查询，最终归入同一个版本。

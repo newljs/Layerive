@@ -80,6 +80,8 @@ export const api = {
     request<GenerateResult>(`/api/projects/${id}/enhance`, { method: 'POST', body: JSON.stringify(input) }),
   removeWatermark: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/remove-watermark`, { method: 'POST', body: JSON.stringify(input) }),
+  removeBackground: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; params?: Record<string, unknown> }) =>
+    request<GenerateResult>(`/api/projects/${id}/remove-background`, { method: 'POST', body: JSON.stringify(input) }),
   extractAsset: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; crop: { data: string; mimeType: string; padded?: boolean }; hint?: string; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/extract-asset`, { method: 'POST', body: JSON.stringify(input) }),
   uploadImage: (id: string, input: { data: string; mimeType: string; name: string }) =>
