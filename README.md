@@ -8,9 +8,11 @@
 
 **A local image-creation workspace for work that grows beyond a single prompt.**
 
-![Layerive product tour](docs/assets/layerive-overview.gif)
+[![Layerive product tour](docs/assets/layerive-overview.gif)](docs/演示视频.mp4?raw=1)
 
-**1:47 product tour** — projects, text-to-image, regional editing, text editing, asset extraction, reference-image replacement, batch generation, version history, comparison, and the prompt gallery.
+**1-minute product tour** — projects, text-to-image, regional editing, text editing, asset extraction, reference-image replacement, batch generation, version history, comparison, and the prompt gallery.
+
+[▶ Watch the full demo video (MP4, about 14 MB)](docs/演示视频.mp4?raw=1)
 
 Layerive keeps iterative image work in one local project. Start from a prompt or an existing image, then refine it: change text, replace a region, outpaint, or extract an asset. Every result becomes a version you can revisit, compare, or branch from—rather than another file or prompt lost in a chat history.
 
@@ -45,6 +47,7 @@ The work stays in one project. Each generation or edit creates a version that ca
 
 ### Image creation and editing
 
+- **Fusion** — open Fusion at the end of the canvas toolbar to collapse project chat and expand the canvas. Choose Basic fusion (default), Change outfit, Transfer pose, or Group photo in the right sidebar. A prominent Exit fusion button stays at the top of the sidebar and restores project chat and editing. Upload, paste, or select generated project images in the vertical reference list beside the canvas. Adding references keeps the main image in place. Drag a reference onto a target in the main image, or select a reference and click a target; optional instructions can refine the intent. A vision model interprets both images and the drop position before the image model edits them. Invalid references or ambiguous intent stop with an explanation. Requires a vision model and an image service that supports two-image editing. Results become new versions; tasks can be canceled, and failures keep the original and references. Static PNG/JPEG/WebP references are limited to 10MB each.
 - **Text to image** — generate 1–4 images from one prompt. Multiple results belong to the same version, and any candidate can be selected for further editing. Providers that return one image per call are split into multiple requests and may bill each request separately; rate-limited requests retry automatically with backoff. No separate “distinct per image” switch is needed: for multi-image requests, the vision model automatically decides whether the prompt asks for normal same-content candidates or explicit per-image variants such as different emotions or concepts.
 - **Image to image and prompt-based editing** — start from an uploaded, pasted, or historical image and describe the next change. The app chooses the supported output size closest to the source aspect ratio. SenseNova U1.5 Lite requests use a temporary provider-compliant copy without altering the local original.
 - **Batch mode** — the right-hand conversation panel has “对话 / 批量” (chat / batch) mode tabs; picking “批量” defaults to batch text-to-image, and batch mode moves the former batch dialog into the sidebar. Batch workflows now enter through this tab only.

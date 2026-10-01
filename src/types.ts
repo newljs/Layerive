@@ -42,7 +42,7 @@ export type ProjectImage = {
   projectId: string;
   versionId: string | null;
   taskId: string | null;
-  sourceType: 'upload' | 'generated' | 'edited' | 'mask' | 'extract' | 'local_reference' | 'local_composite';
+  sourceType: 'upload' | 'generated' | 'edited' | 'mask' | 'extract' | 'local_reference' | 'local_composite' | 'fusion_reference';
   url: string;
   mimeType: string;
   width: number | null;
@@ -192,3 +192,5 @@ export type GalleryEntryItem = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type FusionMode = 'basic' | 'outfit' | 'pose' | 'group';

@@ -7,9 +7,15 @@ export type IconName =
   | 'grid' | 'list' | 'models' | 'data' | 'settings' | 'search' | 'plus' | 'minus'
   | 'close' | 'star' | 'starFilled' | 'duplicate' | 'export' | 'image' | 'branch'
   | 'tree' | 'up' | 'down' | 'left' | 'sparkle' | 'box' | 'edit' | 'download' | 'gallery' | 'extract'
-  | 'sun' | 'moon' | 'sliders' | 'logs' | 'eye' | 'eyeOff' | 'github' | 'trash' | 'background';
+  | 'sun' | 'moon' | 'sliders' | 'logs' | 'eye' | 'eyeOff' | 'github' | 'trash' | 'background'
+  | 'layers' | 'shirt' | 'pose' | 'users' | 'check';
 
 const paths: Record<IconName, React.ReactNode> = {
+  layers: <><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5" /></>,
+  shirt: <path d="m8 4-5 3 3 5 2-1v9h8v-9l2 1 3-5-5-3c0 2-1.5 3-4 3S8 6 8 4Z" />,
+  pose: <><circle cx="13" cy="4" r="2" /><path d="m5 8 6 2 5-2 4-3M11 10l-2 6-4 4M9 16l6-1 3 5" /></>,
+  users: <><circle cx="9" cy="8" r="3" /><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2" /></>,
+  check: <path d="m5 12 4 4L19 6" />,
   grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.6" /><rect x="13.5" y="13.5" width="7" height="7" rx="1.6" /></>,
   list: <><path d="M9 6h11M9 12h11M9 18h11" /><circle cx="4.8" cy="6" r="1.1" fill="currentColor" stroke="none" /><circle cx="4.8" cy="12" r="1.1" fill="currentColor" stroke="none" /><circle cx="4.8" cy="18" r="1.1" fill="currentColor" stroke="none" /></>,
   models: <><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="M12 12 20 7.5M12 12v9M12 12 4 7.5" /></>,

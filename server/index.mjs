@@ -1,3 +1,4 @@
+import { fusionModes, validateFusionInput, fusionPlanningInstruction, validateFusionPlan, fusionEditPrompt } from './fusion.mjs';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
@@ -298,6 +299,7 @@ function archivePathWithin(root, relative, label) {
 
 function remapProjectDraft(value, maps) {
   const draft = parseJson(value, {});
+  if (Array.isArray(draft.fusionImageIds)) draft.fusionImageIds = draft.fusionImageIds.map(id => maps.images.get(id)).filter(Boolean);
   if (draft.inputImageId) draft.inputImageId = maps.images.get(draft.inputImageId) || null;
   if (draft.currentImageId) draft.currentImageId = maps.images.get(draft.currentImageId) || null;
   if (draft.currentVersionId) draft.currentVersionId = maps.versions.get(draft.currentVersionId) || null;
@@ -432,6 +434,14 @@ function isSenseNovaImageModel(model) {
   return model.provider === 'sensenova' && imageApiFormat(model) === 'openai_images';
 }
 
+async function providerInputBytes(image) {
+  return image.buffer || readFile(path.join(PROJECTS_ROOT, image.project_id, image.file_path));
+}
+
+function providerInputs(image) {
+  return image ? [image, ...(image.referenceImages || [])] : [];
+}
+
 async function callOpenAi(model, prompt, params, inputImage, signal) {
   const count = requestedImageCount(params);
   const size = params.size || '1024x1024';
@@ -444,19 +454,21 @@ async function callOpenAi(model, prompt, params, inputImage, signal) {
   const outputFormat = ['png', 'jpeg', 'webp'].includes(String(params.outputFormat)) ? String(params.outputFormat) : 'png';
   const background = params.transparent && outputFormat !== 'jpeg' ? 'transparent' : 'opaque';
   if (inputImage && isSenseNova) {
-    const absolute = path.join(PROJECTS_ROOT, inputImage.project_id, inputImage.file_path);
-    const normalized = await normalizeSenseNovaInput(await readFile(absolute), size);
-    const encoded = normalized.buffer.toString('base64');
+    const images = await Promise.all(providerInputs(inputImage).map(async (image) => {
+      const normalized = await normalizeSenseNovaInput(await providerInputBytes(image), size);
+      return { image_url: `data:${normalized.mime_type};base64,${normalized.buffer.toString('base64')}` };
+    }));
     headers['Content-Type'] = 'application/json';
-    requestBody = JSON.stringify({ model: model.model, prompt, n: 1, size: 'auto', images: [{ image_url: `data:${normalized.mime_type};base64,${encoded}` }], response_format: 'b64_json', output_format: 'png', prompt_extend: true, watermark: false });
+    requestBody = JSON.stringify({ model: model.model, prompt, n: 1, size: 'auto', images, response_format: 'b64_json', output_format: 'png', prompt_extend: true, watermark: false });
   } else if (inputImage) {
-    const absolute = path.join(PROJECTS_ROOT, inputImage.project_id, inputImage.file_path);
     const form = new FormData();
     form.append('model', model.model);
     form.append('prompt', prompt);
     form.append('n', String(count));
     form.append('size', size);
-    form.append('image', new Blob([await readFile(absolute)], { type: inputImage.mime_type }), path.basename(inputImage.file_path));
+    for (const [index, image] of providerInputs(inputImage).entries()) {
+      form.append(inputImage.referenceImages?.length ? 'image[]' : 'image', new Blob([await providerInputBytes(image)], { type: image.mime_type }), image.file_path ? path.basename(image.file_path) : `input-${index + 1}.png`);
+    }
     form.append('output_format', outputFormat);
     form.append('background', background);
     requestBody = form;
@@ -500,7 +512,7 @@ function outputMimeType(outputFormat) {
 async function callGemini(model, prompt, params, inputImage, signal) {
   const outputFormat = ['png', 'jpeg'].includes(String(params.outputFormat)) ? String(params.outputFormat) : 'png';
   const input = inputImage
-    ? [{ type: 'text', text: prompt }, { type: 'image', mime_type: inputImage.mime_type, data: (await readFile(path.join(PROJECTS_ROOT, inputImage.project_id, inputImage.file_path))).toString('base64') }]
+    ? [{ type: 'text', text: prompt }, ...await Promise.all(providerInputs(inputImage).map(async (image) => ({ type: 'image', mime_type: image.mime_type, data: (await providerInputBytes(image)).toString('base64') })))]
     : prompt;
   const response = await fetch(`${normalizeBaseUrl(model.baseUrl)}/interactions`, {
     method: 'POST',
@@ -536,8 +548,9 @@ async function callGrok(model, prompt, params, inputImage, signal) {
   if (['low', 'medium'].includes(String(params.quality))) body.quality = String(params.quality);
   const endpoint = inputImage ? 'images/edits' : 'images/generations';
   if (inputImage) {
-    const encoded = (await readFile(path.join(PROJECTS_ROOT, inputImage.project_id, inputImage.file_path))).toString('base64');
-    body.image = { url: `data:${inputImage.mime_type};base64,${encoded}`, type: 'image_url' };
+    const images = await Promise.all(providerInputs(inputImage).map(async (image) => ({ url: `data:${image.mime_type};base64,${(await providerInputBytes(image)).toString('base64')}`, type: 'image_url' })));
+    if (images.length > 1) body.images = images;
+    else body.image = images[0];
   }
   const response = await fetch(`${normalizeBaseUrl(model.baseUrl)}/${endpoint}`, {
     method: 'POST',
@@ -614,6 +627,7 @@ async function callImageWithRetry(model, prompt, params, inputImage, signal, log
       model: model.model,
       params,
       hasInputImage: Boolean(inputImage),
+      inputImageCount: providerInputs(inputImage).length,
       inputDimensions: inputImage?.width && inputImage?.height ? { width: inputImage.width, height: inputImage.height } : null,
     },
   });
@@ -971,6 +985,35 @@ async function editImageRegion(projectId, input) {
   const image = imageOrThrow(projectId, input.imageId);
   if (!visionModel.apiKey) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
   return startGeneration(projectId, { prompt: instruction || '根据参考图智能替换框选主体并自然融合', operation: 'local_edit', modelId: input.modelId, inputImageId: image.id, parentVersionId: image.version_id || null, params: reference ? { ...(input.params || {}), outputFormat: 'png', transparent: false } : input.params || {} }, { rect, instruction, reference, visionModel });
+}
+
+async function fuseImages(projectId, input) {
+  projectOrThrow(projectId);
+  const settings = validateFusionInput(input);
+  const source = imageOrThrow(projectId, input.imageId);
+  if (!input.referenceImageId) throw httpError(400, 'fusion.referenceRequired', '请先添加并拖入一张融合参考图');
+  const reference = imageOrThrow(projectId, input.referenceImageId);
+  if (reference.id === source.id) throw httpError(400, 'fusion.sameImage', '请选择与主图不同的参考图');
+  const visionModel = visionModelOrThrow(readModels(), input.visionModelId);
+  if (!visionModel.apiKey) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
+  return startGeneration(projectId, {
+    prompt: `${fusionModes[settings.mode]}：参考图拖放到主图 (${settings.point.x.toFixed(1)}%, ${settings.point.y.toFixed(1)}%)${settings.instruction ? '；' + settings.instruction : ''}`,
+    operation: 'fusion', modelId: input.modelId, inputImageId: source.id,
+    parentVersionId: source.version_id || null,
+    params: { ...(input.params || {}), count: 1, transparent: false },
+  }, null, null, null, { ...settings, reference, visionModel });
+}
+
+async function prepareFusion(projectId, taskId, sourceImage, fusion, signal) {
+  signal.throwIfAborted();
+  const source = await normalizeLocalImage(await providerInputBytes(sourceImage));
+  const reference = await normalizeLocalImage(await providerInputBytes(fusion.reference), true);
+  signal.throwIfAborted();
+  const plan = validateFusionPlan(parseVisionJson(await callVision(fusion.visionModel, [source, reference], fusionPlanningInstruction(fusion), signal, { projectId, taskId, operationType: 'fusion', phase: '融合意图与落点识别' })));
+  signal.throwIfAborted();
+  const prompt = fusionEditPrompt(plan, fusion);
+  updateTaskInput(taskId, { stage: 'generating', effectivePrompt: prompt, fusion: { mode: fusion.mode, point: fusion.point, instruction: fusion.instruction, referenceImageId: fusion.reference.id, visionModelId: fusion.visionModel.id, intent: plan.intent } });
+  return { prompt, image: { ...source, referenceImages: [reference] } };
 }
 
 async function removeImageElement(projectId, input) {
@@ -1384,7 +1427,7 @@ async function planGenerationPrompts(inputImage, prompt, count, visionModel, sig
   return { mode: 'different', prompts };
 }
 
-function startGeneration(projectId, input, localEdit = null, textEdit = null, backgroundRemoval = null) {
+function startGeneration(projectId, input, localEdit = null, textEdit = null, backgroundRemoval = null, fusion = null) {
   if (restoreInProgress) throw restoringError();
   projectOrThrow(projectId);
   ensureProjectDirs(projectId);
@@ -1401,7 +1444,7 @@ function startGeneration(projectId, input, localEdit = null, textEdit = null, ba
   // initial version so the original image is kept in the version history.
   if (inputImage) inputImage = ensureUploadVersion(projectId, inputImage);
   const operation = input.operation === 'auto' ? (inputImage ? 'edit_prompt' : 'text_to_image') : input.operation || (inputImage ? 'edit_prompt' : 'text_to_image');
-  if (!model.capabilities.includes(operation) && !(['image_to_image', 'edit_text', 'local_edit', 'remove_element', 'outpaint', 'enhance', 'remove_watermark', 'remove_background', 'extract_asset'].includes(operation) && model.capabilities.includes('edit_prompt'))) {
+  if (!model.capabilities.includes(operation) && !(['fusion', 'image_to_image', 'edit_text', 'local_edit', 'remove_element', 'outpaint', 'enhance', 'remove_watermark', 'remove_background', 'extract_asset'].includes(operation) && model.capabilities.includes('edit_prompt'))) {
     throw httpError(400, 'model.unsupportedOperation', '当前模型不支持这个操作');
   }
   const params = normalizeGenerationParams(model, input.params);
@@ -1419,6 +1462,7 @@ function startGeneration(projectId, input, localEdit = null, textEdit = null, ba
     ...(backgroundRemoval ? { stage: 'planning', backgroundRemoval: { visionModelId: backgroundRemoval.visionModel.id } } : {}),
     ...(!localEdit && autoPromptMode ? { stage: 'planning', promptMode: 'auto', visionModelId: promptVisionModel.id } : {}),
     ...(textEdit ? { textEdit } : {}),
+    ...(fusion ? { stage: 'planning', fusion: { mode: fusion.mode, point: fusion.point, instruction: fusion.instruction, referenceImageId: fusion.reference.id, visionModelId: fusion.visionModel.id } } : {}),
   };
   db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, started_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generating', ?, ?)`)
@@ -1427,8 +1471,8 @@ function startGeneration(projectId, input, localEdit = null, textEdit = null, ba
   const controller = new AbortController();
   // Batches fan out under a concurrency cap and may absorb rate-limit backoff,
   // so the total budget grows with the requested image count.
-  const timer = setTimeout(() => controller.abort(new Error('timeout')), localEdit ? 300000 : 120000 + (params.count - 1) * 30000 + (autoPromptMode || backgroundRemoval ? 60000 : 0));
-  trackTask(taskId, controller, timer, () => runGenerationTask(projectId, taskId, { model, prompt, operation, params, inputImage, parentVersionId: input.parentVersionId || null, controller, localEdit, textEdit, backgroundRemoval, autoPromptMode, promptVisionModel }));
+  const timer = setTimeout(() => controller.abort(new Error('timeout')), (localEdit || fusion) ? 300000 : 120000 + (params.count - 1) * 30000 + (autoPromptMode || backgroundRemoval ? 60000 : 0));
+  trackTask(taskId, controller, timer, () => runGenerationTask(projectId, taskId, { model, prompt, operation, params, inputImage, parentVersionId: input.parentVersionId || null, controller, localEdit, textEdit, backgroundRemoval, fusion, autoPromptMode, promptVisionModel }));
   return { taskId, status: 'generating', userMessageId };
 }
 
@@ -1441,6 +1485,11 @@ async function runGenerationTask(projectId, taskId, context) {
     let effectivePrompt = prompt;
     let providerImage = inputImage;
     let localSource = null;
+    if (context.fusion) {
+      const prepared = await prepareFusion(projectId, taskId, inputImage, context.fusion, controller.signal);
+      effectivePrompt = prepared.prompt;
+      providerImage = prepared.image;
+    }
     if (context.backgroundRemoval) {
       const plan = await planBackgroundRemoval(projectId, taskId, inputImage, context.backgroundRemoval.visionModel, controller.signal);
       effectivePrompt = plan.editPrompt;
@@ -1545,6 +1594,7 @@ async function runGenerationTask(projectId, taskId, context) {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(versionId, projectId, taskId, parentVersionId, versionNumber, operation, outputIds[0], status, finishedAt);
       if (inputImage) db.prepare('INSERT OR IGNORE INTO version_inputs VALUES (?, ?, ?)').run(versionId, inputImage.id, 'source');
+      if (context.fusion) db.prepare('INSERT OR IGNORE INTO version_inputs VALUES (?, ?, ?)').run(versionId, context.fusion.reference.id, 'fusion_reference');
       if (context.localEdit) {
         for (const material of db.prepare("SELECT id, source_type FROM images WHERE task_id = ? AND source_type IN ('local_reference', 'local_composite')").all(taskId)) {
           db.prepare('INSERT OR IGNORE INTO version_inputs VALUES (?, ?, ?)').run(versionId, material.id, material.source_type);
@@ -2309,6 +2359,7 @@ function remapTaskInputJson(value, maps) {
   const next = parseJson(value, {});
   if (next.inputImageId) next.inputImageId = maps.images.get(next.inputImageId) || next.inputImageId;
   if (next.versionId) next.versionId = maps.versions.get(next.versionId) || next.versionId;
+  if (next.fusion?.referenceImageId) next.fusion = { ...next.fusion, referenceImageId: maps.images.get(next.fusion.referenceImageId) || next.fusion.referenceImageId };
   if (next.batch && Array.isArray(next.batch.items)) {
     next.batch = {
       ...next.batch,
@@ -2864,15 +2915,17 @@ const server = http.createServer(async (req, res) => {
       if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw httpError(400, 'image.tooLarge', '图片不能为空且不能超过 10MB');
       const dimensions = readImageDimensions(bytes, mime);
       if (!dimensions) throw httpError(400, 'image.unreadable', '无法读取图片尺寸，请重新选择有效的 PNG、JPG 或 WebP 图片');
+      if (input.referenceOnly === true) await normalizeLocalImage(bytes, true);
       ensureProjectDirs(projectId);
       const imageId = uid();
       const extension = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
       const relative = path.join('uploads', `${imageId}.${extension}`);
       await writeFile(path.join(PROJECTS_ROOT, projectId, relative), bytes);
       db.prepare(`INSERT INTO images (id, project_id, source_type, file_path, mime_type, width, height, file_size, created_at)
-        VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, ?)`)
-        .run(imageId, projectId, relative, mime, dimensions.width, dimensions.height, bytes.length, now());
-      db.prepare('UPDATE projects SET current_image_id = ?, updated_at = ? WHERE id = ?').run(imageId, now(), projectId);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(imageId, projectId, input.referenceOnly === true ? 'fusion_reference' : 'upload', relative, mime, dimensions.width, dimensions.height, bytes.length, now());
+      if (input.referenceOnly !== true) db.prepare('UPDATE projects SET current_image_id = ?, updated_at = ? WHERE id = ?').run(imageId, now(), projectId);
+      else db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(now(), projectId);
       return json(res, 201, bundle(projectId));
     }
 
@@ -2882,6 +2935,8 @@ const server = http.createServer(async (req, res) => {
     if (recognizeTextMatch && req.method === 'POST') return json(res, 200, await recognizeImageText(recognizeTextMatch[1], await body(req)));
     const editTextMatch = pathname.match(/^\/api\/projects\/([^/]+)\/edit-text$/);
     if (editTextMatch && req.method === 'POST') return json(res, 202, await editImageText(editTextMatch[1], await body(req)));
+    const fusionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/fusion$/);
+    if (fusionMatch && req.method === 'POST') return json(res, 202, await fuseImages(fusionMatch[1], await body(req)));
     const localEditMatch = pathname.match(/^\/api\/projects\/([^/]+)\/local-edit$/);
     if (localEditMatch && req.method === 'POST') return json(res, 202, await editImageRegion(localEditMatch[1], await body(req)));
     const removeElementMatch = pathname.match(/^\/api\/projects\/([^/]+)\/remove-element$/);
