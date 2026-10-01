@@ -144,26 +144,14 @@ export function validatePlacement(planned, selection) {
   const y = Math.max(selection.y, target.y);
   const right = Math.min(selection.x + selection.width, target.x + target.width);
   const bottom = Math.min(selection.y + selection.height, target.y + target.height);
-  // Reject a misplaced prediction instead of silently pasting a sliver at an edge.
+  // Reject a misplaced prediction before asking the model to replace a subject.
   if (right <= x || bottom <= y || (right - x) * (bottom - y) < target.width * target.height * 0.8) {
     throw new Error('视觉模型定位的目标超出框选范围，请扩大选区或补充说明后重试');
   }
   if (typeof planned.intent !== 'string' || !planned.intent.trim() || typeof planned.edit_prompt !== 'string' || !planned.edit_prompt.trim()) {
-    throw new Error('视觉模型未返回完整的替换意图和融合提示词，请重试');
+    throw new Error('视觉模型未返回完整的替换意图和双图编辑提示词，请重试');
   }
   return { referenceRect, targetRect: { x, y, width: right - x, height: bottom - y }, intent: planned.intent.trim(), editPrompt: planned.edit_prompt.trim() };
-}
-
-export async function composeLocalReference(source, reference, plan) {
-  const crop = pixelRect(plan.referenceRect, reference.width, reference.height);
-  const target = pixelRect(plan.targetRect, source.width, source.height);
-  // Contain preserves the subject's proportions; transparent padding avoids
-  // stretching a head or cropping ears to fit the target bounding box.
-  const patch = await sharp(reference.buffer, decodeOptions).extract(crop)
-    .resize(target.width, target.height, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
-  const buffer = await sharp(source.buffer, decodeOptions)
-    .composite([{ input: patch, left: target.left, top: target.top }]).png().toBuffer();
-  return { buffer, mime_type: 'image/png', width: source.width, height: source.height, crop, target };
 }
 
 // Copy only the generated region into decoded source pixels. Blend inward at

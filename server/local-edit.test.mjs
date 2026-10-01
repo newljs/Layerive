@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
-import { composeLocalReference, cropLocalSelection, normalizeLocalImage, normalizeSenseNovaInput, pixelRect, preserveOutsideRegion, referenceBytes, validatePlacement, validateRect } from './local-edit.mjs';
+import { cropLocalSelection, normalizeLocalImage, normalizeSenseNovaInput, pixelRect, preserveOutsideRegion, referenceBytes, validatePlacement, validateRect } from './local-edit.mjs';
 
 const rect = { x: 25, y: 20, width: 50, height: 60 };
 const plan = { intent: '将目标替换为参考主体', target_rect: { x: 30, y: 25, width: 30, height: 40 }, reference_rect: { x: 20, y: 10, width: 60, height: 70 }, edit_prompt: '自然融合参考主体，修复边缘与光影，保留框外内容。' };
@@ -26,7 +26,7 @@ function assertOutside(original, changed, width, height, selection) {
   assert.ok(insideChanged, 'the selected area must actually change');
 }
 
-test('reject invalid uploads and model coordinates before compositing', () => {
+test('reject invalid uploads and model coordinates before dual-image editing', () => {
   for (const bad of [null, { ...rect, width: NaN }, { ...rect, x: '25' }, { ...rect, x: 99 }, { ...rect, height: 0 }]) assert.throws(() => validateRect(bad));
   assert.throws(() => validatePlacement({ ...plan, target_rect: { x: 0, y: 0, width: 10, height: 10 } }, rect), /超出/);
   assert.throws(() => validatePlacement({ ...plan, reference_rect: { x: -1, y: 0, width: 10, height: 10 } }, rect));
@@ -35,7 +35,7 @@ test('reject invalid uploads and model coordinates before compositing', () => {
   assert.throws(() => referenceBytes({ data: 'A'.repeat(14 * 1024 * 1024), mimeType: 'image/png' }));
 });
 
-test('PNG/JPEG/WebP decoding, orientation, crop placement and original outside pixels', async () => {
+test('PNG/JPEG/WebP decoding, orientation, selection detail and original outside pixels', async () => {
   const input = await solid(120, 90, { r: 80, g: 110, b: 140, alpha: 0.5 });
   for (const format of ['png', 'jpeg', 'webp']) {
     const image = await normalizeLocalImage(await sharp(input).toFormat(format).toBuffer());
@@ -51,9 +51,6 @@ test('PNG/JPEG/WebP decoding, orientation, crop placement and original outside p
   assert.ok(selectionDetail.width >= pixelRect(rect, source.width, source.height).width);
   assert.ok(selectionDetail.height >= pixelRect(rect, source.width, source.height).height);
   assert.ok(Math.max(selectionDetail.width, selectionDetail.height) <= 2048);
-  const reference = await normalizeLocalImage(await solid(100, 100, 'red'));
-  const composed = await composeLocalReference(source, reference, validatePlacement(plan, rect));
-  assertOutside(await raw(source.buffer), await raw(composed.buffer), 120, 90, rect);
   // Simulate a model that changes the entire image and returns the wrong size.
   const output = await preserveOutsideRegion(source, { bytes: await solid(300, 300, 'green') }, rect);
   assert.equal(output.mimeType, 'image/png');
@@ -76,7 +73,7 @@ test('SenseNova provider copies use a valid 32px-aligned canvas without changing
   assert.ok(Math.max(automatic.width / automatic.height, automatic.height / automatic.width) <= 3);
 });
 
-test('local edit API: all vision formats, composed provider input, history, failures and cancellation', { timeout: 60000 }, async (t) => {
+test('local edit API: ordered dual-image inputs across providers, history, failures and cancellation', { timeout: 60000 }, async (t) => {
   // Only generated fixtures and a loopback model stub; never read user data/config.
   const root = path.resolve(import.meta.dirname, '..');
   await mkdir(path.join(root, 'work'), { recursive: true });
@@ -97,15 +94,25 @@ test('local edit API: all vision formats, composed provider input, history, fail
       for await (const chunk of req) chunks.push(chunk);
       const bytes = Buffer.concat(chunks);
       calls.push({ url: req.url, bytes, contentType: req.headers['content-type'] });
-      if (req.url.endsWith('/images/edits')) {
+      if (req.url.endsWith('/images/edits') || req.url.endsWith('/interactions')) {
         if (mode === 'hold-generation') await new Promise((resolve) => { releaseGeneration = resolve; });
         res.setHeader('Content-Type', 'application/json');
+        if (mode === 'reject-images') {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: { message: 'Dual-image editing rejected by fixture' } }));
+          return;
+        }
+        if (req.url.endsWith('/interactions')) {
+          res.end(JSON.stringify({ output_image: { data: generated.toString('base64'), mime_type: 'image/png' } }));
+          return;
+        }
         res.end(JSON.stringify({ data: [{ b64_json: generated.toString('base64') }, { b64_json: generated.toString('base64') }] }));
         return;
       }
       if (mode === 'hold-vision') await new Promise((resolve) => { releaseVision = resolve; });
       const content = JSON.stringify(
         mode === 'bad-plan' ? { ...plan, target_rect: { x: 0, y: 0, width: 5, height: 5 } }
+          : mode === 'ambiguous-plan' ? { error: '无法确认要替换的主体，请补充要求' }
           : mode === 'remove-plan' ? { target: '选区中央的蓝色杯子', target_rect: { x: 32, y: 28, width: 24, height: 30 }, confidence: 0.96, background: '延续桌面木纹和杯子后方墙面', edit_prompt: '删除蓝色杯子和杯子投下的阴影，自然补全桌面木纹与墙面。' }
             : mode === 'remove-ambiguous' ? { error: '选区内有两个同样显眼的杯子，无法判断要删除哪一个' }
               : plan,
@@ -117,8 +124,10 @@ test('local edit API: all vision formats, composed provider input, history, fail
   await new Promise((resolve) => stub.listen(0, '127.0.0.1', resolve));
   const stubUrl = `http://127.0.0.1:${stub.address().port}`;
   const visionFormats = ['chat_completions', 'anthropic_messages', 'responses'];
+  const imageProtocols = ['openai_images', 'gemini_interactions', 'grok_images', 'sensenova'];
   await writeFile(path.join(configRoot, 'models.json'), JSON.stringify({ active_model: 'image', active_vision_model: visionFormats[0], models: [
     { id: 'image', name: 'Local image stub', provider: 'openai', type: 'image', model: 'fixture', baseUrl: stubUrl, apiKey: 'local-test-placeholder', capabilities: ['edit_prompt'], defaultParams: { size: '1024x1024' } },
+    ...imageProtocols.slice(1).map(id => ({ id, name: id, provider: id === 'sensenova' ? 'sensenova' : 'custom', imageApiFormat: id === 'sensenova' ? 'openai_images' : id, type: 'image', model: 'fixture', baseUrl: stubUrl, apiKey: 'local-test-placeholder', capabilities: ['edit_prompt'], sizeOptions: ['1024x1024'], outputFormats: ['png'], maxCount: 2, defaultParams: { size: '1024x1024' } })),
     ...visionFormats.map((apiFormat) => ({ id: apiFormat, name: apiFormat, provider: 'openai', type: 'vision', apiFormat, model: 'fixture', baseUrl: stubUrl, apiKey: 'local-test-placeholder' })),
   ] }));
   const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, windowsHide: true, env: { ...process.env, PIXELFLOW_API_PORT: '0', LAYERIVE_DATA_ROOT: dataRoot, LAYERIVE_CONFIG_ROOT: configRoot }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -150,6 +159,40 @@ test('local edit API: all vision formats, composed provider input, history, fail
     await waitUntil(async () => { task = await request(`/projects/${projectId}/tasks/${taskId}`); return task.status !== 'generating'; });
     return task;
   }
+  async function assertDualImageCall(call, protocol = 'openai_images') {
+    let images;
+    let prompt;
+    if (protocol === 'openai_images') {
+      const form = await new Response(call.bytes, { headers: { 'Content-Type': call.contentType } }).formData();
+      assert.equal(form.get('image'), null);
+      images = await Promise.all(form.getAll('image[]').map(async image => Buffer.from(await image.arrayBuffer())));
+      prompt = form.get('prompt');
+    } else {
+      const body = JSON.parse(call.bytes);
+      prompt = protocol === 'gemini_interactions' ? body.input.find(item => item.type === 'text').text : body.prompt;
+      if (protocol === 'gemini_interactions') images = body.input.filter(item => item.type === 'image').map(item => Buffer.from(item.data, 'base64'));
+      else {
+        assert.equal(body.image, undefined);
+        images = body.images.map(item => Buffer.from((item.image_url || item.url).split(',')[1], 'base64'));
+      }
+    }
+    assert.equal(images.length, 2);
+    // Both full images must reach the provider in order, with no crop or pasted subject.
+    const normalized = [await normalizeLocalImage(sourceBytes), await normalizeLocalImage(referenceBytes(reference), true)];
+    for (const [index, image] of normalized.entries()) {
+      const expected = protocol === 'sensenova' ? await normalizeSenseNovaInput(image.buffer, '1024x1024') : image;
+      const actualMetadata = await sharp(images[index]).metadata();
+      assert.equal(actualMetadata.width, expected.width);
+      assert.equal(actualMetadata.height, expected.height);
+      assert.deepEqual(await raw(images[index]), await raw(expected.buffer));
+    }
+    assert.match(prompt, /图1是待编辑原图，图2是完整参考图/);
+    assert.match(prompt, /保留图2主体的身份/);
+    assert.match(prompt, /不要引入图2背景或照搬图2阴影/);
+    assert.ok(prompt.includes(JSON.stringify(plan.target_rect)));
+    assert.ok(prompt.includes(JSON.stringify(plan.reference_rect)));
+    assert.doesNotMatch(prompt, /初步拼贴|裁剪源像素/);
+  }
   for (const format of visionFormats) {
     const fixture = await fixtureProject();
     const first = calls.length;
@@ -159,18 +202,37 @@ test('local edit API: all vision formats, composed provider input, history, fail
     const vision = JSON.parse(calls[first].bytes);
     const content = format === 'responses' ? vision.input[0].content : vision.messages.at(-1).content;
     assert.equal(content.filter((item) => ['image', 'image_url', 'input_image'].includes(item.type)).length, 2);
+    assert.match(JSON.stringify(content), /图片编辑模型将直接收到同样的两张完整图片/);
     const modelCall = calls.slice(first).find((item) => item.url.endsWith('/images/edits'));
-    const form = await new Response(modelCall.bytes, { headers: { 'Content-Type': modelCall.contentType } }).formData();
-    const providerInput = Buffer.from(await form.get('image').arrayBuffer());
-    assertOutside(await raw(sourceBytes), await raw(providerInput), 120, 90, rect);
-    assert.match(form.get('prompt'), /初步拼贴/);
+    await assertDualImageCall(modelCall);
     const bundle = await request(`/projects/${fixture.projectId}`);
     const version = bundle.versions.find((item) => item.operation === 'local_edit');
     assert.equal(version.outputs.length, 2);
     assert.equal(version.parentVersionId, bundle.versions.find((item) => item.operation === 'upload').id);
-    assert.deepEqual(version.inputs.map((item) => item.sourceType).sort(), ['local_composite', 'local_reference', 'upload']);
+    assert.deepEqual(version.inputs.map((item) => item.sourceType).sort(), ['local_reference', 'upload']);
+    assert.ok(!bundle.images.some(image => image.sourceType === 'local_composite'));
+    const modelLogs = await request(`/projects/${fixture.projectId}/model-logs`);
+    assert.ok(modelLogs.logs.filter(log => log.modelType === 'image').every(log => log.request.inputImageCount === 2));
     for (const image of version.outputs) {
       assert.equal(image.width, 120); assert.equal(image.height, 90); assert.equal(image.mimeType, 'image/png');
+      const bytes = Buffer.from(await (await fetch(base + image.url)).arrayBuffer());
+      assertOutside(await raw(sourceBytes), await raw(bytes), 120, 90, rect);
+    }
+  }
+  for (const protocol of imageProtocols.slice(1)) {
+    const fixture = await fixtureProject();
+    const first = calls.length;
+    const started = await submit(fixture, { modelId: protocol, instruction: '保留参考主体的花纹与耳形' });
+    const task = await finished(fixture.projectId, started.taskId);
+    assert.equal(task.status, 'success', task.error);
+    const modelCalls = calls.slice(first).filter(call => call.url.endsWith('/images/edits') || call.url.endsWith('/interactions'));
+    assert.ok(modelCalls.length > 0);
+    for (const call of modelCalls) await assertDualImageCall(call, protocol);
+    const bundle = await request(`/projects/${fixture.projectId}`);
+    const version = bundle.versions.find(item => item.operation === 'local_edit');
+    assert.equal(version.outputs.length, 2);
+    assert.deepEqual(version.inputs.map(item => item.sourceType).sort(), ['local_reference', 'upload']);
+    for (const image of version.outputs) {
       const bytes = Buffer.from(await (await fetch(base + image.url)).arrayBuffer());
       assertOutside(await raw(sourceBytes), await raw(bytes), 120, 90, rect);
     }
@@ -180,6 +242,10 @@ test('local edit API: all vision formats, composed provider input, history, fail
   const textTask = await submit(textFixture, { reference: undefined, instruction: '将选区变绿' });
   assert.equal((await finished(textFixture.projectId, textTask.taskId)).status, 'success');
   assert.equal(JSON.parse(calls[textStart].bytes).messages.at(-1).content.filter((item) => item.type === 'image_url').length, 1);
+  const textCall = calls.slice(textStart).find(item => item.url.endsWith('/images/edits'));
+  const textForm = await new Response(textCall.bytes, { headers: { 'Content-Type': textCall.contentType } }).formData();
+  assert.equal(textForm.getAll('image[]').length, 0);
+  assert.deepEqual(Buffer.from(await textForm.get('image').arrayBuffer()), sourceBytes);
   const badFixture = await fixtureProject();
   mode = 'bad-plan';
   const beforeBad = calls.length;
@@ -187,6 +253,20 @@ test('local edit API: all vision formats, composed provider input, history, fail
   assert.equal((await finished(badFixture.projectId, bad.taskId)).status, 'failed');
   assert.ok(!calls.slice(beforeBad).some((item) => item.url.endsWith('/images/edits')));
   assert.equal((await request(`/projects/${badFixture.projectId}`)).project.currentImageId, badFixture.imageId);
+  for (const failure of ['ambiguous-plan', 'reject-images']) {
+    mode = failure;
+    const fixture = await fixtureProject();
+    const first = calls.length;
+    const started = await submit(fixture, { params: { size: '1024x1024', count: 1 } });
+    assert.equal((await finished(fixture.projectId, started.taskId)).status, 'failed');
+    const imageCalls = calls.slice(first).filter(call => call.url.endsWith('/images/edits'));
+    if (failure === 'ambiguous-plan') assert.equal(imageCalls.length, 0);
+    else assert.ok(imageCalls.length > 0);
+    for (const call of imageCalls) await assertDualImageCall(call);
+    const bundle = await request(`/projects/${fixture.projectId}`);
+    assert.equal(bundle.project.currentImageId, fixture.imageId);
+    assert.ok(!bundle.versions.some(item => item.operation === 'local_edit'));
+  }
 
   // 删除元素：视觉模型先确认唯一目标和精确范围，图片模型只生成一张，随后恢复选区外原像素。
   mode = 'remove-plan';
@@ -255,6 +335,7 @@ test('local edit API: all vision formats, composed provider input, history, fail
   mode = 'success';
   {
     const fixture = await fixtureProject();
+    const first = calls.length;
     const started = await request(`/projects/${fixture.projectId}/local-edit-batch`, {
       imageId: fixture.imageId,
       modelId: 'image',
@@ -280,8 +361,12 @@ test('local edit API: all vision formats, composed provider input, history, fail
     const version = bundle.versions.filter((item) => item.operation === 'local_edit').at(-1);
     assert.equal(version.status, 'success');
     assert.equal(version.outputs.length, 2);
-    // 每个子项独立规划并保存各自的参考图 / 合成图素材，全部关联到版本。
-    assert.deepEqual(version.inputs.map((item) => item.sourceType).sort(), ['local_composite', 'local_composite', 'local_reference', 'local_reference', 'upload']);
+    // 每个子项独立规划，完整原图与参考图分别输入图片模型，不创建合成素材。
+    assert.deepEqual(version.inputs.map((item) => item.sourceType).sort(), ['local_reference', 'local_reference', 'upload']);
+    assert.ok(!bundle.images.some(image => image.sourceType === 'local_composite'));
+    const batchCalls = calls.slice(first).filter(call => call.url.endsWith('/images/edits'));
+    assert.equal(batchCalls.length, 2);
+    for (const call of batchCalls) await assertDualImageCall(call);
     for (const image of version.outputs) {
       assert.equal(image.width, 120); assert.equal(image.height, 90); assert.equal(image.mimeType, 'image/png');
       const bytes = Buffer.from(await (await fetch(base + image.url)).arrayBuffer());
