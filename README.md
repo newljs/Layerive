@@ -8,11 +8,11 @@
 
 **A local image-creation workspace for work that grows beyond a single prompt.**
 
-[![Layerive product tour](docs/assets/layerive-overview.gif)](docs/演示视频.mp4?raw=1)
+[![Layerive product tour](docs/assets/layerive-overview.gif)](https://cdn.jsdelivr.net/gh/newljs/Layerive@e187a44f3198749d3f32ed8b88049c727a14e9ba/docs/%E6%BC%94%E7%A4%BA%E8%A7%86%E9%A2%91.mp4)
 
 **1-minute product tour** — projects, text-to-image, regional editing, text editing, asset extraction, reference-image replacement, batch generation, version history, comparison, and the prompt gallery.
 
-[▶ Watch the full demo video (MP4, about 5 MB)](docs/演示视频.mp4?raw=1)
+[▶ Watch the full demo video (MP4, about 5 MB)](https://cdn.jsdelivr.net/gh/newljs/Layerive@e187a44f3198749d3f32ed8b88049c727a14e9ba/docs/%E6%BC%94%E7%A4%BA%E8%A7%86%E9%A2%91.mp4)
 
 Layerive keeps iterative image work in one local project. Start from a prompt or an existing image, then refine it: change text, replace a region, outpaint, or extract an asset. Every result becomes a version you can revisit, compare, or branch from—rather than another file or prompt lost in a chat history.
 

@@ -8,11 +8,11 @@
 
 **把反复改图的过程，留在自己的电脑里。**
 
-[![Layerive 功能演示](docs/assets/layerive-overview.gif)](docs/演示视频.mp4?raw=1)
+[![Layerive 功能演示](docs/assets/layerive-overview.gif)](https://cdn.jsdelivr.net/gh/newljs/Layerive@e187a44f3198749d3f32ed8b88049c727a14e9ba/docs/%E6%BC%94%E7%A4%BA%E8%A7%86%E9%A2%91.mp4)
 
 **1 分钟功能演示** — 创建项目、文生图、局部修改、图片改字、提取素材、参考图替换、批量生图、版本管理、图片对比和提示词画廊。
 
-[▶ 播放完整演示视频（MP4，约 5 MB）](docs/演示视频.mp4?raw=1)
+[▶ 播放完整演示视频（MP4，约 5 MB）](https://cdn.jsdelivr.net/gh/newljs/Layerive@e187a44f3198749d3f32ed8b88049c727a14e9ba/docs/%E6%BC%94%E7%A4%BA%E8%A7%86%E9%A2%91.mp4)
 
 Layerive 把需要反复修改的图片工作放进同一个本地项目。你可以从提示词或已有图片开始，继续改图、改字、局部替换、扩图和提取素材；每次结果都会成为一个版本，可随时回看、前后对比，或从旧结果继续分支，而不是让图片和提示词散落在不同对话里。
 
