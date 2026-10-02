@@ -404,6 +404,26 @@ button:disabled, a.disabled { cursor: not-allowed; opacity: .48; pointer-events:
 .extract-panel textarea:focus { border-color: #dfa857; box-shadow: 0 0 0 3px #f0a13a1a; }
 .extract-panel-actions { display: flex; justify-content: flex-end; gap: 7px; }
 .extract-panel-actions .button { padding: 7px 10px; font-size: 10px; }
+.extract-submenu > button:first-child { grid-column: 1 / -1; }
+.extract-library .fusion-library-footer { display: grid; gap: 9px; }
+.extract-library .fusion-instruction-heading { margin-bottom: 0; }
+.extract-library .extract-panel-actions { flex-wrap: wrap; }
+.extract-library .extract-panel-actions .secondary { display: inline-flex; }
+.extract-library .extract-panel-actions .primary { flex: 1; }
+.extract-showcase-note { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--accent); background: var(--canvas); }
+.extract-showcase-note strong { font-size: 11px; }
+.extract-showcase-note p { margin: 5px 0 0; color: var(--muted); font-size: 10px; line-height: 1.65; }
+.cleanup-submenu > button:first-child { grid-column: 1 / -1; }
+.cleanup-submenu button { gap: 6px; padding: 9px; font-size: 10px; }
+.cleanup-library .fusion-library-footer { display: grid; gap: 9px; }
+.cleanup-library .fusion-instruction-heading { margin-bottom: 0; }
+.cleanup-library .fusion-drop-guide { margin-bottom: 0; }
+.cleanup-library .fusion-warning { margin-top: 14px; }
+.cleanup-submit { width: 100%; justify-content: center; font-size: 11px; }
+.cleanup-clickable { cursor: crosshair; }
+.cleanup-keep-marker { position: absolute; z-index: 5; transform: translate(-50%, -50%); display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 2px solid white; border-radius: 50%; color: white; background: #31906f; box-shadow: 0 0 0 4px #31906f33; font-size: 11px; font-weight: 700; cursor: pointer; }
+.cleanup-point-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.cleanup-point-list button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font-size: 10px; }
 .outpaint-panel { position: absolute; z-index: 4; bottom: 20px; left: 50%; width: min(470px, calc(100% - 36px)); display: grid; gap: 10px; padding: 13px; border: 1px solid #bfe4dc; border-radius: 15px; background: #fffffff5; box-shadow: 0 14px 34px #1d51462b; transform: translateX(-50%); backdrop-filter: blur(12px); }
 .outpaint-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .outpaint-panel-head div { display: grid; gap: 3px; }

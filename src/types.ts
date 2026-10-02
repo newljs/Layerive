@@ -1,3 +1,6 @@
+export type ExtractionMode = 'selection' | 'clothing' | 'accessory' | 'pattern' | 'background';
+export type CleanupMode = 'selection' | 'people' | 'clutter' | 'text' | 'room';
+
 export type ModelConfig = {
   id: string;
   name: string;

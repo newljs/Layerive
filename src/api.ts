@@ -1,5 +1,5 @@
 import { tf } from './i18n';
-import type { BatchEditProgress, BatchEditResult, FusionMode, GenerateResult, GenerationTask, GalleryEntryItem, LocalEditReference, ModelConfig, ModelExecutionLog, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
+import type { BatchEditProgress, BatchEditResult, CleanupMode, ExtractionMode, FusionMode, GenerateResult, GenerationTask, GalleryEntryItem, LocalEditReference, ModelConfig, ModelExecutionLog, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -72,7 +72,7 @@ export const api = {
     request<GenerateResult>(`/api/projects/${id}/fusion`, { method: 'POST', body: JSON.stringify(input) }),
   localEdit: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; instruction: string; reference?: LocalEditReference; rect: { x: number; y: number; width: number; height: number }; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/local-edit`, { method: 'POST', body: JSON.stringify(input) }),
-  removeElement: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; params?: Record<string, unknown> }) =>
+  removeElement: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; mode?: CleanupMode; rect?: { x: number; y: number; width: number; height: number }; instruction?: string; keepPoints?: Array<{ x: number; y: number }>; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/remove-element`, { method: 'POST', body: JSON.stringify(input) }),
   localEditBatch: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; instructions: string[]; reference?: LocalEditReference; params?: Record<string, unknown> }) =>
     request<BatchEditResult>(`/api/projects/${id}/local-edit-batch`, { method: 'POST', body: JSON.stringify(input) }),
@@ -84,7 +84,7 @@ export const api = {
     request<GenerateResult>(`/api/projects/${id}/remove-watermark`, { method: 'POST', body: JSON.stringify(input) }),
   removeBackground: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/remove-background`, { method: 'POST', body: JSON.stringify(input) }),
-  extractAsset: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; crop: { data: string; mimeType: string; padded?: boolean }; hint?: string; params?: Record<string, unknown> }) =>
+  extractAsset: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; crop: { data: string; mimeType: string; padded?: boolean }; mode?: ExtractionMode; hint?: string; params?: Record<string, unknown> }) =>
     request<GenerateResult>(`/api/projects/${id}/extract-asset`, { method: 'POST', body: JSON.stringify(input) }),
   uploadImage: (id: string, input: { data: string; mimeType: string; name: string; referenceOnly?: boolean }) =>
     request<ProjectBundle>(`/api/projects/${id}/images`, { method: 'POST', body: JSON.stringify(input) }),

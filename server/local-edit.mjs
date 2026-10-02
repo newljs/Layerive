@@ -173,3 +173,34 @@ export async function preserveOutsideRegion(source, output, rect) {
   const bytes = await sharp(original, { raw: { width, height, channels: 4 } }).png().toBuffer();
   return { bytes, mimeType: 'image/png', width, height };
 }
+
+// Whole-image cleanup still only publishes pixels within identified targets.
+// Union masks avoid double-blending overlapping boxes; protected subjects win.
+export async function preserveOutsideRegions(source, output, rects, protectedRects = []) {
+  const { width, height } = source;
+  const original = await sharp(source.buffer, decodeOptions).ensureAlpha().raw().toBuffer();
+  const generated = await sharp(output.bytes, decodeOptions).autoOrient().toColourspace('srgb')
+    .resize(width, height, { fit: 'fill' }).ensureAlpha().raw().toBuffer();
+  const weights = new Uint8Array(width * height);
+  for (const rect of rects) {
+    const region = pixelRect(rect, width, height);
+    const feather = Math.max(1, Math.min(12, Math.round(Math.min(region.width, region.height) * 0.025)));
+    for (let y = 0; y < region.height; y++) for (let x = 0; x < region.width; x++) {
+      const weight = Math.round(255 * Math.min(1, (Math.min(x, y, region.width - 1 - x, region.height - 1 - y) + 1) / feather));
+      const index = (region.top + y) * width + region.left + x;
+      weights[index] = Math.max(weights[index], weight);
+    }
+  }
+  for (const rect of protectedRects) {
+    const region = pixelRect(rect, width, height);
+    for (let y = 0; y < region.height; y++) weights.fill(0, (region.top + y) * width + region.left, (region.top + y) * width + region.left + region.width);
+  }
+  for (let index = 0; index < weights.length; index++) {
+    if (!weights[index]) continue;
+    const weight = weights[index] / 255;
+    const offset = index * 4;
+    for (let c = 0; c < 4; c++) original[offset + c] = Math.round(original[offset + c] * (1 - weight) + generated[offset + c] * weight);
+  }
+  const bytes = await sharp(original, { raw: { width, height, channels: 4 } }).png().toBuffer();
+  return { bytes, mimeType: 'image/png', width, height };
+}

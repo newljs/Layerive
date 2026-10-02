@@ -6,7 +6,7 @@ import { PromptGalleryModal } from './PromptGalleryModal';
 import { sizesForProvider, defaultSizeForProvider, closestSizeForDimensions, isValidSizeForProvider, type OutputFormat } from './sizes';
 import { useTheme } from './theme';
 import type { GalleryEntry } from './gallery';
-import type { BatchEditProgress, FusionMode, GenerationTask, LocalEditReference, ModelConfig, ModelExecutionLog, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
+import type { BatchEditProgress, CleanupMode, ExtractionMode, FusionMode, GenerationTask, LocalEditReference, ModelConfig, ModelExecutionLog, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
 
 type Props = {
   projectId: string;
@@ -23,6 +23,13 @@ const localEditStageKeys: Record<string, TranslationKey> = { planning: 'ws.stage
 const removeElementStageKeys: Record<string, TranslationKey> = { planning: 'ws.removeElementStagePlanning', generating: 'ws.removeElementStageGenerating', preserving: 'ws.removeElementStagePreserving' };
 const removeBackgroundStageKeys: Record<string, TranslationKey> = { planning: 'ws.removeBackgroundStagePlanning', generating: 'ws.removeBackgroundStageGenerating', validating: 'ws.removeBackgroundStageValidating' };
 
+const cleanupModeKeys: Record<CleanupMode, TranslationKey> = { selection: 'cleanup.selection', people: 'cleanup.people', clutter: 'cleanup.clutter', text: 'cleanup.text', room: 'cleanup.room' };
+const cleanupDescriptionKeys: Record<CleanupMode, TranslationKey> = { selection: 'cleanup.selectionDescription', people: 'cleanup.peopleDescription', clutter: 'cleanup.clutterDescription', text: 'cleanup.textDescription', room: 'cleanup.roomDescription' };
+const cleanupIcons: Record<CleanupMode, IconName> = { selection: 'box', people: 'users', clutter: 'trash', text: 'edit', room: 'home' };
+const cleanupStageKeys: Record<string, TranslationKey> = { planning: 'cleanup.stagePlanning', generating: 'cleanup.stageGenerating', preserving: 'cleanup.stagePreserving' };
+const extractionModeKeys: Record<ExtractionMode, TranslationKey> = { selection: 'extract.selection', clothing: 'extract.clothing', accessory: 'extract.accessory', pattern: 'extract.pattern', background: 'extract.background' };
+const extractionDescriptionKeys: Record<ExtractionMode, TranslationKey> = { selection: 'extract.selectionDescription', clothing: 'extract.clothingDescription', accessory: 'extract.accessoryDescription', pattern: 'extract.patternDescription', background: 'extract.backgroundDescription' };
+const extractionIcons: Record<ExtractionMode, IconName> = { selection: 'box', clothing: 'shirt', accessory: 'gem', pattern: 'grid', background: 'image' };
 const operationKeys: Record<string, TranslationKey> = { fusion: 'op.fusion', auto: 'op.auto', upload: 'op.upload', text_to_image: 'op.text_to_image', image_to_image: 'op.image_to_image', edit_prompt: 'op.edit_prompt', batch_edit: 'op.batch_edit', batch_generate: 'op.batch_generate', edit_text: 'op.edit_text', recognize_text: 'op.recognize_text', local_edit: 'op.local_edit', remove_element: 'op.remove_element', outpaint: 'op.outpaint', enhance: 'op.enhance', remove_watermark: 'op.remove_watermark', remove_background: 'op.remove_background', extract_asset: 'op.extract_asset', gallery_analyze: 'op.gallery_analyze' };
 const localeFor = (language: Language) => (language === 'zh' ? 'zh-CN' : 'en-US');
 const formatTime = (value: string, language: Language) => new Intl.DateTimeFormat(localeFor(language), { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
@@ -463,6 +470,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [localEditInstruction, setLocalEditInstruction] = useState('');
   const [localEditSubmitting, setLocalEditSubmitting] = useState(false);
   const [removeElementMode, setRemoveElementMode] = useState(false);
+  const [cleanupType, setCleanupType] = useState<CleanupMode>('selection');
+  const [cleanupInstruction, setCleanupInstruction] = useState('');
+  const [cleanupKeepPoints, setCleanupKeepPoints] = useState<Array<{ x: number; y: number }>>([]);
   const [removeElementRect, setRemoveElementRect] = useState<TextSegment['rect'] | null>(null);
   const [removeElementSubmitting, setRemoveElementSubmitting] = useState(false);
   const [localReference, setLocalReference] = useState<LocalEditReference | null>(null);
@@ -476,6 +486,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [removingWatermark, setRemovingWatermark] = useState(false);
   const [removingBackground, setRemovingBackground] = useState(false);
   const [extractMode, setExtractMode] = useState(false);
+  const [extractionType, setExtractionType] = useState<ExtractionMode>('selection');
   const [extractRect, setExtractRect] = useState<TextSegment['rect'] | null>(null);
   const [extractHint, setExtractHint] = useState('');
   const [extractPreview, setExtractPreview] = useState<{ imageId: string; rect: NonNullable<TextSegment['rect']>; dataUrl: string; mimeType: 'image/png' | 'image/jpeg'; width: number; height: number; padded: boolean } | null>(null);
@@ -688,11 +699,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           }
         } else if (task.status === 'canceled') {
           if (kind === 'local-edit') setLocalEditMode(true);
-          if (kind === 'remove-element') setRemoveElementMode(true);
           notify(tRef.current('ws.canceledKeep'), 'error');
         } else {
           if (kind === 'local-edit') setLocalEditMode(true);
-          if (kind === 'remove-element') setRemoveElementMode(true);
           notify(taskErrorText(task, tRef.current('ws.generateFailed')), 'error');
         }
         onProjectChanged();
@@ -824,6 +833,8 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setLocalEditRect(null);
     setRemoveElementRect(null);
     setRemoveElementMode(false);
+    setCleanupKeepPoints([]);
+    setCleanupInstruction('');
     removeElementBoxStart.current = null;
     localReferenceRevision.current++;
     setLocalReference(null);
@@ -939,7 +950,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   }
 
   function onCanvasSelectionStart(event: React.PointerEvent<HTMLDivElement>) {
-    if ((!localEditMode && !removeElementMode && !extractMode) || event.button !== 0 || generating || localEditSubmitting || removeElementSubmitting) return;
+    if ((!localEditMode && !(removeElementMode && cleanupType === 'selection') && !extractMode) || event.button !== 0 || generating || localEditSubmitting || removeElementSubmitting || extractSubmitting) return;
     const target = event.target as Element;
     if (target.closest('.local-edit-panel, .local-edit-dock, .local-batch-panel, .remove-element-panel, .extract-panel')) return;
     const point = canvasPointerRatio(event);
@@ -1008,9 +1019,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       }
       setExtractRect(rect);
       setExtractPreview(null);
-      void cropImageRegion(currentImage!, rect)
-        .then((crop) => setExtractPreview(crop ? { rect, imageId: currentImage!.id, ...crop } : null))
-        .catch((error) => { setExtractPreview(null); notify((error as Error).message, 'error'); });
+
     }
   }
 
@@ -1117,6 +1126,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     closeLocalEdit();
     closeOutpaint();
     closeExtract();
+    setCleanupType('selection');
+    setCleanupInstruction('');
+    setCleanupKeepPoints([]);
     setRemoveElementMode(true);
     setRemoveElementRect(null);
   }
@@ -1128,7 +1140,24 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setRemoveElementDragging(false);
   }
 
-  async function submitRemoveElement(rect: NonNullable<TextSegment['rect']>) {
+  function selectCleanupMode(mode: CleanupMode) {
+    removeElementBoxStart.current = null;
+    setRemoveElementDragging(false);
+    setRemoveElementRect(null);
+    setCleanupKeepPoints([]);
+    setCleanupInstruction('');
+    setCleanupType(mode);
+  }
+
+  function markCleanupPerson(event: React.MouseEvent<HTMLDivElement>) {
+    if (!removeElementMode || cleanupType !== 'people' || generating || removeElementSubmitting) return;
+    const point = fusionDropPoint(event, event.currentTarget);
+    if (!point) return;
+    if (cleanupKeepPoints.length >= 20) return notify(t('cleanup.tooManyPoints'), 'error');
+    setCleanupKeepPoints(points => [...points, point]);
+  }
+
+  async function submitRemoveElement(rect?: NonNullable<TextSegment['rect']>) {
     if (!currentImage || removeElementSubmitting || generating) return;
     setRemoveElementSubmitting(true);
     setActiveTask({ id: null, kind: 'remove-element', stage: 'planning' });
@@ -1138,14 +1167,15 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         modelId,
         visionModelId,
         parentVersionId: currentVersion?.id || null,
-        rect,
+        mode: cleanupType,
+        rect: cleanupType === 'selection' ? rect : undefined,
+        instruction: cleanupType === 'selection' ? undefined : cleanupInstruction.trim() || undefined,
+        keepPoints: cleanupType === 'people' ? cleanupKeepPoints : undefined,
         params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count: 1, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: 'png', transparent: false },
       });
-      setRemoveElementMode(false);
       startPolling(result.taskId, 'remove-element');
     } catch (error) {
       setActiveTask(null);
-      setRemoveElementMode(true);
       notify((error as Error).message, 'error');
     } finally { setRemoveElementSubmitting(false); }
   }
@@ -1254,9 +1284,8 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     finally { setOutpaintSubmitting(false); }
   }
 
-  // 提取素材：与局部修改相同的圈选交互，但不需要文字说明——圈选完成后
-  // 直接截图送视觉模型识别主体（忽略圈入的边缘干扰），再由改图模型生成
-  // 只包含该主体的独立素材图。
+  // 提取素材：五种场景共用圈选/截图流程，默认自动判断意图；
+  // 服饰使用商品展示规划，图案/背景采用各自的提取约束。
   function startExtract() {
     setFusionMode(false);
     if (!currentImage || generating) return;
@@ -1264,11 +1293,25 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     closeLocalEdit();
     closeRemoveElement();
     closeOutpaint();
+    setExtractionType('selection');
     setExtractMode(true);
     setExtractRect(null);
     setExtractHint('');
     setExtractPreview(null);
   }
+
+  // A selection or image change invalidates any pending screenshot result.
+  useEffect(() => {
+    setExtractPreview(null);
+    if (!extractMode || !currentImage || !extractRect || extractDragging) return;
+    let stale = false;
+    const image = currentImage;
+    const rect = extractRect;
+    void cropImageRegion(image, rect)
+      .then(crop => { if (!stale) setExtractPreview(crop ? { rect, imageId: image.id, ...crop } : null); })
+      .catch(error => { if (!stale) notify((error as Error).message, 'error'); });
+    return () => { stale = true; };
+  }, [extractMode, currentImageId, extractRect, extractDragging]);
 
   function closeExtract() {
     extractBoxStart.current = null;
@@ -1282,6 +1325,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   async function submitExtract() {
     if (!currentImage || !extractRect || extractSubmitting || generating) return;
     setExtractSubmitting(true);
+    setActiveTask({ id: null, kind: 'extract-asset', stage: 'planning' });
     try {
       // 预览仅在截图时的图片与当前图片一致时才可复用，切换画布图片后必须重截。
       const cached = extractPreview && extractPreview.imageId === currentImage.id && sameRect(extractPreview.rect, extractRect) ? extractPreview : null;
@@ -1294,12 +1338,12 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         parentVersionId: currentVersion?.id || null,
         rect: extractRect,
         crop: { data: crop.dataUrl, mimeType: crop.mimeType, padded: crop.padded },
+        mode: extractionType,
         hint: extractHint.trim() || undefined,
         params: { size: closestSizeForDimensions(selectedModel, crop.width, crop.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false },
       });
-      closeExtract();
       startPolling(result.taskId, 'extract-asset');
-    } catch (error) { notify((error as Error).message, 'error'); }
+    } catch (error) { setActiveTask(null); notify((error as Error).message, 'error'); }
     finally { setExtractSubmitting(false); }
   }
 
@@ -1308,6 +1352,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     if (!currentImage || enhancing || generating) return;
     setRightMode('chat');
     closeRemoveElement();
+    closeExtract();
     setEnhancing(true);
     try {
       const result = await api.enhance(projectId, {
@@ -1326,6 +1371,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     if (!currentImage || removingWatermark || generating) return;
     setRightMode('chat');
     closeRemoveElement();
+    closeExtract();
     setRemovingWatermark(true);
     try {
       const result = await api.removeWatermark(projectId, {
@@ -1666,7 +1712,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const outpaintAspectRatio = outpaintSize ? outpaintSize.replace('x', ' / ') : undefined;
 
   return (
-    <main className={`workspace-shell ${fusionMode ? 'fusion-workspace' : ''}`}>
+    <main className={`workspace-shell ${fusionMode || extractMode || removeElementMode ? 'fusion-workspace' : ''}`}>
       <header className="workspace-topbar">
         <div className="workspace-title-group">
           <button className="back-button compact" onClick={() => void leaveWorkspace(onBack)}>← {t('ws.backToList')}</button>
@@ -1691,7 +1737,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         </div>
       </header>
 
-      <section className={`workspace-body ${fusionMode ? 'fusion-layout' : ''}`}>
+      <section className={`workspace-body ${fusionMode || extractMode || removeElementMode ? 'fusion-layout' : ''}`}>
         <aside className="versions-panel">
           <div className="workspace-panel-title"><div><p className="eyebrow">VERSIONS</p><h2>{t('ws.historyTitle')}</h2></div><span>{bundle.versions.length}</span></div>
           <div className="version-list">
@@ -1709,8 +1755,8 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
             </div>
             <nav className="canvas-edit-menu" aria-label={t('ws.imageEditTools')}>
               <button className={`local-edit-launch ${localEditMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={localEditMode || localEditRect ? t('ws.exitLocalEditTitle') : t('ws.localEditTitle')} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit}>{localEditMode || localEditRect ? <><Icon name="close" size={17} /> {t('ws.exitLocalEdit')}</> : <><Icon name="box" size={17} /> {t('ws.localEdit')}</>}</button>
-              <button className={`remove-element-launch ${(removeElementMode || removeElementRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={(removeElementMode || removeElementRect) ? t('ws.exitRemoveElementTitle') : t('ws.removeElementTitle')} onClick={(removeElementMode || removeElementRect) ? closeRemoveElement : startRemoveElement}>{(removeElementMode || removeElementRect) ? <><Icon name="close" size={17} /> {t('ws.exitRemoveElement')}</> : <><Icon name="trash" size={17} /> {t('ws.removeElement')}</>}</button>
-              <button className={`extract-launch ${(extractMode || extractRect) ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={(extractMode || extractRect) ? t('ws.exitExtractTitle') : t('ws.extractTitle')} onClick={(extractMode || extractRect) ? closeExtract : startExtract}>{(extractMode || extractRect) ? <><Icon name="close" size={17} /> {t('ws.exitExtract')}</> : <><Icon name="extract" size={17} /> {t('ws.extract')}</>}</button>
+              <button className={`remove-element-launch ${(removeElementMode || removeElementRect) ? 'active' : ''}`} disabled={!removeElementMode && (!currentImage || generating || removingWatermark || removingBackground || enhancing)} title={(removeElementMode || removeElementRect) ? t('ws.exitRemoveElementTitle') : t('ws.removeElementTitle')} onClick={(removeElementMode || removeElementRect) ? closeRemoveElement : startRemoveElement}>{(removeElementMode || removeElementRect) ? <><Icon name="close" size={17} /> {t('ws.exitRemoveElement')}</> : <><Icon name="trash" size={17} /> {t('ws.removeElement')}</>}</button>
+              <button className={`extract-launch ${(extractMode || extractRect) ? 'active' : ''}`} disabled={!extractMode && (!currentImage || generating || removingWatermark || removingBackground || enhancing)} title={(extractMode || extractRect) ? t('ws.exitExtractTitle') : t('ws.extractTitle')} onClick={(extractMode || extractRect) ? closeExtract : startExtract}>{(extractMode || extractRect) ? <><Icon name="close" size={17} /> {t('ws.exitExtract')}</> : <><Icon name="extract" size={17} /> {t('ws.extract')}</>}</button>
               <button className="background-remove-launch" disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={backgroundRemovalSupported ? t('ws.removeBackgroundTitle') : t('ws.backgroundRequiresTransparentModel')} onClick={() => void removeBackground()}>{removingBackground ? t('ws.recognizing') : <><Icon name="background" size={17} /> {t('ws.removeBackground')}</>}</button>
               <button className={`outpaint-launch ${outpaintMode ? 'active' : ''}`} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={outpaintMode ? t('ws.exitOutpaintTitle') : t('ws.outpaintTitle')} onClick={outpaintMode ? closeOutpaint : startOutpaint}>{outpaintMode ? <><Icon name="close" size={17} /> {t('ws.exitOutpaint')}</> : <><Icon name="image" size={17} /> {t('ws.outpaint')}</>}</button>
               <button className="enhance-launch" disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} title={t('ws.enhanceTitle')} onClick={() => void enhanceImage()}>{enhancing ? t('ws.processing') : <><Icon name="sparkle" size={17} /> {t('ws.enhance')}</>}</button>
@@ -1721,11 +1767,10 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           </div>
           <div className={`canvas-edit-area ${fusionMode ? 'fusion-active' : ''}`}>
             <div className="canvas-edit-body">
-          <div className={`canvas-stage ${(localEditMode || removeElementMode || extractMode) ? 'selection-mode' : ''}`} onPointerDown={onCanvasSelectionStart} onPointerMove={onCanvasSelectionMove} onPointerUp={onCanvasSelectionEnd} onPointerCancel={onCanvasSelectionCancel}>
-            {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(removeElementMode || removeElementRect) ? 'removing-element' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined} onContextMenu={(event) => openImageContextMenu(event, currentImage.id)} onDragOver={event => { if (fusionMode && fusionReady && !generating && event.dataTransfer.types.includes('application/x-layerive-fusion')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setFusionPoint(fusionDropPoint(event, event.currentTarget)); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setFusionPoint(null); }} onDrop={onFusionDrop} onClick={event => { if (fusionMode && fusionSelectedId) { const point = fusionDropPoint(event, event.currentTarget); if (point) void submitFusion(fusionSelectedId, point); } }} tabIndex={fusionMode && fusionSelectedId ? 0 : undefined} role={fusionMode && fusionSelectedId ? 'button' : undefined} aria-label={fusionMode ? t('fusion.dropHint') : undefined} onKeyDown={event => { if (fusionMode && fusionSelectedId && ['Enter', ' '].includes(event.key)) { event.preventDefault(); void submitFusion(fusionSelectedId, { x: 50, y: 50 }); } }}>{fusionMode && fusionPoint && <span className="fusion-drop-marker" style={{ left: `${fusionPoint.x}%`, top: `${fusionPoint.y}%` }}><Icon name="plus" size={20} /></span>}{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={t('ws.outpaintPreviewAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} /><span>{t('ws.newCanvasArea')}</span></div> : <img src={currentImage.url} alt={t('ws.projectImageAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} />}{(localEditMode || localEditRect) && <div className="local-edit-surface">{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>{t('ws.editArea')}</em></span>}</div>}{(removeElementMode || removeElementRect) && <div className="remove-element-surface">{removeElementRect && <span className="remove-element-rect" style={{ left: `${removeElementRect.x}%`, top: `${removeElementRect.y}%`, width: `${removeElementRect.width}%`, height: `${removeElementRect.height}%` }}><em>{t('ws.removeElementArea')}</em></span>}</div>}{(extractMode || extractRect) && <div className="extract-surface">{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>{t('ws.extractArea')}</em></span>}</div>}<span className="image-chip">{outpaintMode ? t('ws.targetSize', { size: outpaintSize }) : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
+          <div className={`canvas-stage ${(localEditMode || (removeElementMode && cleanupType === 'selection') || extractMode) ? 'selection-mode' : ''}`} onPointerDown={onCanvasSelectionStart} onPointerMove={onCanvasSelectionMove} onPointerUp={onCanvasSelectionEnd} onPointerCancel={onCanvasSelectionCancel}>
+            {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(removeElementMode || removeElementRect) ? 'removing-element' : ''} ${removeElementMode && cleanupType === 'people' ? 'cleanup-clickable' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintMode ? 'outpaint-preview-wrap' : ''}`} style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined} onContextMenu={(event) => openImageContextMenu(event, currentImage.id)} onDragOver={event => { if (fusionMode && fusionReady && !generating && event.dataTransfer.types.includes('application/x-layerive-fusion')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setFusionPoint(fusionDropPoint(event, event.currentTarget)); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setFusionPoint(null); }} onDrop={onFusionDrop} onClick={event => { markCleanupPerson(event); if (fusionMode && fusionSelectedId) { const point = fusionDropPoint(event, event.currentTarget); if (point) void submitFusion(fusionSelectedId, point); } }} tabIndex={fusionMode && fusionSelectedId ? 0 : undefined} role={fusionMode && fusionSelectedId ? 'button' : undefined} aria-label={fusionMode ? t('fusion.dropHint') : undefined} onKeyDown={event => { if (fusionMode && fusionSelectedId && ['Enter', ' '].includes(event.key)) { event.preventDefault(); void submitFusion(fusionSelectedId, { x: 50, y: 50 }); } }}>{fusionMode && fusionPoint && <span className="fusion-drop-marker" style={{ left: `${fusionPoint.x}%`, top: `${fusionPoint.y}%` }}><Icon name="plus" size={20} /></span>}{outpaintMode ? <div className="outpaint-preview" style={outpaintAspectRatio ? { aspectRatio: outpaintAspectRatio } : undefined}><img src={currentImage.url} alt={t('ws.outpaintPreviewAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} /><span>{t('ws.newCanvasArea')}</span></div> : <img src={currentImage.url} alt={t('ws.projectImageAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} />}{(localEditMode || localEditRect) && <div className="local-edit-surface">{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>{t('ws.editArea')}</em></span>}</div>}{(removeElementMode || removeElementRect) && <div className="remove-element-surface">{removeElementRect && <span className="remove-element-rect" style={{ left: `${removeElementRect.x}%`, top: `${removeElementRect.y}%`, width: `${removeElementRect.width}%`, height: `${removeElementRect.height}%` }}><em>{t('ws.removeElementArea')}</em></span>}</div>}{(extractMode || extractRect) && <div className="extract-surface">{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>{t('ws.extractArea')}</em></span>}</div>}{removeElementMode && cleanupType === 'people' && cleanupKeepPoints.map((point, index) => <button key={index} className="cleanup-keep-marker" style={{ left: point.x + '%', top: point.y + '%' }} aria-label={t('cleanup.removePoint', { index: index + 1 })} title={t('cleanup.removePoint', { index: index + 1 })} disabled={generating || removeElementSubmitting} onClick={event => { event.stopPropagation(); setCleanupKeepPoints(points => points.filter((_, i) => i !== index)); }}>{index + 1}</button>)}<span className="image-chip">{outpaintMode ? t('ws.targetSize', { size: outpaintSize }) : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : (
               <div className="canvas-empty"><div className="empty-visual"><span /><span /><span /></div><h2>{t('ws.startFirstTitle')}</h2><p>{t('ws.startFirstHint')}</p><button className="button secondary" onClick={() => fileRef.current?.click()}>{t('ws.uploadInitial')}</button></div>
             )}
-            {removeElementMode && !removeElementDragging && currentImage && <section className="remove-element-panel" role="dialog" aria-label={t('ws.removeElement')}><div><strong>{t('ws.removeElement')}</strong><span>{removeElementSubmitting ? t('ws.removeElementIdentifying') : t('ws.removeElementHint')}</span></div><button disabled={removeElementSubmitting || generating} onClick={closeRemoveElement}><Icon name="close" size={13} /> {t('common.exit')}</button></section>}
             {localEditMode && !localDragging && currentImage && <div className="local-edit-dock">
               <section className="local-edit-panel" role="dialog" aria-label={t('ws.localEdit')}>
               <div className="local-edit-panel-head"><div><strong>{t('ws.localEdit')}</strong><span>{localEditRect ? t('ws.localPanelHintRect') : t('ws.localPanelHint')}</span></div><button className="local-edit-exit" disabled={localEditSubmitting} onClick={closeLocalEdit}><Icon name="close" size={13} /> {t('common.exit')}</button></div>
@@ -1753,8 +1798,61 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
               </aside>}
             </div>}
             {outpaintMode && currentImage && <section className="outpaint-panel"><div className="outpaint-panel-head"><div><strong>{t('ws.outpaint')}</strong><span>{t('ws.outpaintPickRatio')}</span></div><button className="outpaint-exit" onClick={closeOutpaint}><Icon name="close" size={13} /> {t('common.exit')}</button></div><div className="outpaint-size-list">{sizesForProvider(selectedModel).map((option) => <button key={option.value} className={option.value === outpaintSize ? 'active' : ''} onClick={() => setOutpaintSize(option.value)}><strong>{option.ratio}</strong><span>{option.value}</span></button>)}</div><p className="outpaint-summary">{t('ws.outpaintSummary')}</p><div className="outpaint-panel-actions"><button className="button secondary" onClick={closeOutpaint}>{t('common.cancel')}</button><button className="button primary" disabled={!outpaintSize || outpaintSubmitting || generating} onClick={() => void submitOutpaint()}>{outpaintSubmitting ? t('ws.outpaintSubmitting') : t('ws.confirmOutpaint')}</button></div></section>}
-            {(extractMode || extractRect) && !extractDragging && currentImage && <section className="extract-panel"><div className="extract-panel-head"><div><strong>{t('ws.extract')}</strong><span>{extractRect ? t('ws.extractHintRect') : t('ws.extractHintNoRect')}</span></div><button className="extract-exit" onClick={closeExtract}><Icon name="close" size={13} /> {t('common.exit')}</button></div>{extractRect && <><div className="extract-preview">{extractPreview ? <img src={extractPreview.dataUrl} alt={t('ws.extractPreviewAlt')} /> : <span className="extract-preview-loading"><span className="spinner" />{t('ws.cropping')}</span>}{extractPreview && <small>{extractPreview.padded ? t('ws.autoPadded') : ''}{extractPreview.width} × {extractPreview.height}</small>}</div><textarea value={extractHint} onChange={(event) => setExtractHint(event.target.value)} placeholder={t('ws.extractInputPlaceholder')} rows={2} /><div className="extract-panel-actions"><button className="button secondary" onClick={() => { setExtractRect(null); setExtractPreview(null); }}>{t('ws.reselect')}</button><button className="button primary" disabled={!extractPreview || extractSubmitting || generating} onClick={() => void submitExtract()}>{extractSubmitting ? t('ws.extractSubmitting') : t('ws.extractSubmit')}</button></div></>}</section>}
+
           </div>
+            {removeElementMode && <aside className="fusion-library cleanup-library" aria-label={t('ws.removeElement')}>
+              <div className="fusion-library-header">
+                <div className="fusion-header-row"><strong><Icon name="trash" size={19} />{t('ws.removeElement')}</strong><button className="fusion-exit-button" onClick={closeRemoveElement}><Icon name="left" size={14} />{t('ws.exitRemoveElement')}</button></div>
+                <small>{t('cleanup.exitHint')}</small>
+              </div>
+              <div className="fusion-library-content">
+                <strong className="fusion-section-title">{t('cleanup.modeLabel')}</strong>
+                <div className="fusion-submenu cleanup-submenu" role="group" aria-label={t('cleanup.modeLabel')}>
+                  {(Object.keys(cleanupModeKeys) as CleanupMode[]).map(mode => <button key={mode} aria-pressed={cleanupType === mode} className={cleanupType === mode ? 'active' : ''} disabled={generating || removeElementSubmitting} onClick={() => selectCleanupMode(mode)}><Icon name={cleanupIcons[mode]} size={19} /><span>{t(cleanupModeKeys[mode])}</span></button>)}
+                </div>
+                <p className="fusion-mode-description">{t(cleanupDescriptionKeys[cleanupType])}</p>
+                {cleanupType !== 'selection' && <div className="extract-showcase-note"><Icon name="sparkle" size={16} /><div><strong>{t('cleanup.wholeImage')}</strong><p>{t('cleanup.wholeImageDescription')}</p></div></div>}
+                {cleanupType === 'people' && <section className="fusion-reference-section">
+                  <div className="fusion-section-heading"><strong className="fusion-section-title">{t('cleanup.keepPeople')}</strong><span className="fusion-count">{cleanupKeepPoints.length}</span></div>
+                  <p className="fusion-mode-description">{t('cleanup.keepPeopleHint')}</p>
+                  <div className="cleanup-point-list">{cleanupKeepPoints.map((_, index) => <button key={index} disabled={generating || removeElementSubmitting} onClick={() => setCleanupKeepPoints(points => points.filter((_, i) => i !== index))} aria-label={t('cleanup.removePoint', { index: index + 1 })}>{t('cleanup.personPoint', { index: index + 1 })}<Icon name="close" size={12} /></button>)}</div>
+                </section>}
+                {activeTask?.kind === 'remove-element' && <section className="fusion-task-status" role="status" aria-live="polite"><span className="spinner" /><p>{t((cleanupType === 'selection' ? removeElementStageKeys : cleanupStageKeys)[activeTask.stage || 'planning'])}</p>{activeTask.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</section>}
+                {(!selectedModel?.capabilities.includes('edit_prompt') || !visionModels.length) && <small className="fusion-warning">{t('cleanup.requiresModels')}</small>}
+              </div>
+              <div className="fusion-library-footer">
+                {cleanupType === 'selection' ? <div className="fusion-drop-guide"><Icon name="box" size={16} /><span>{t(removeElementDragging ? 'cleanup.selecting' : 'ws.removeElementHint')}</span></div> : <>
+                  <div className="fusion-instruction-heading"><label htmlFor="cleanup-instruction">{t('cleanup.instruction')}</label><small>{cleanupInstruction.length}/1000</small></div>
+                  <textarea id="cleanup-instruction" rows={2} maxLength={1000} disabled={generating || removeElementSubmitting} value={cleanupInstruction} onChange={event => setCleanupInstruction(event.target.value)} placeholder={t('cleanup.instructionPlaceholder')} />
+                  <button className="button primary cleanup-submit" disabled={generating || removeElementSubmitting || !selectedModel?.capabilities.includes('edit_prompt') || !visionModels.length} onClick={() => void submitRemoveElement()}>{removeElementSubmitting ? t('extract.starting') : t('cleanup.start')}</button>
+                </>}
+              </div>
+            </aside>}
+            {extractMode && <aside className="fusion-library extract-library" aria-label={t('ws.extract')}>
+              <div className="fusion-library-header">
+                <div className="fusion-header-row"><strong><Icon name="extract" size={19} />{t('ws.extract')}</strong><button className="fusion-exit-button" onClick={closeExtract}><Icon name="left" size={14} />{t('ws.exitExtract')}</button></div>
+                <small>{t('extract.exitHint')}</small>
+              </div>
+              <div className="fusion-library-content">
+                <strong className="fusion-section-title">{t('extract.modeLabel')}</strong>
+                <div className="fusion-submenu extract-submenu" role="group" aria-label={t('extract.modeLabel')}>
+                  {(Object.keys(extractionModeKeys) as ExtractionMode[]).map(mode => <button key={mode} aria-pressed={extractionType === mode} className={extractionType === mode ? 'active' : ''} disabled={generating || extractSubmitting} onClick={() => setExtractionType(mode)}><Icon name={extractionIcons[mode]} size={19} /><span>{t(extractionModeKeys[mode])}</span></button>)}
+                </div>
+                <p className="fusion-mode-description">{t(extractionDescriptionKeys[extractionType])}</p>
+                {(extractionType === 'clothing' || extractionType === 'accessory') && <div className="extract-showcase-note"><Icon name="sparkle" size={16} /><div><strong>{t('extract.showcase')}</strong><p>{t('extract.showcaseDescription')}</p></div></div>}
+                {activeTask?.kind === 'extract-asset' && <section className="fusion-task-status" role="status" aria-live="polite"><span className="spinner" /><p>{t(activeTask.stage === 'generating' ? 'extract.generating' : 'extract.planning')}</p>{activeTask.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</section>}
+                <section className="fusion-reference-section">
+                  <div className="fusion-section-heading"><strong className="fusion-section-title">{t('extract.preview')}</strong></div>
+                  {extractRect ? <div className="extract-preview">{extractPreview ? <img src={extractPreview.dataUrl} alt={t('ws.extractPreviewAlt')} /> : <span className="extract-preview-loading"><span className="spinner" />{t(extractDragging ? 'extract.selecting' : 'ws.cropping')}</span>}{extractPreview && <small>{extractPreview.padded ? t('ws.autoPadded') : ''}{extractPreview.width} × {extractPreview.height}</small>}</div> : <div className="fusion-empty"><Icon name="box" size={28} /><strong>{t('extract.selectFirst')}</strong><p>{t('ws.extractHintNoRect')}</p></div>}
+                  <button className="fusion-project-button" disabled={generating || extractSubmitting} onClick={() => setExtractRect({ x: 0, y: 0, width: 100, height: 100 })}><Icon name="image" size={15} />{t('extract.wholeImage')}</button>
+                </section>
+              </div>
+              <div className="fusion-library-footer">
+                <div className="fusion-instruction-heading"><label htmlFor="extract-hint">{t('extract.hint')}</label><small>{extractHint.length}/1000</small></div>
+                <textarea id="extract-hint" rows={2} maxLength={1000} disabled={generating || extractSubmitting} value={extractHint} onChange={event => setExtractHint(event.target.value)} placeholder={t('ws.extractInputPlaceholder')} />
+                <div className="extract-panel-actions"><button className="button secondary" disabled={!extractRect || generating || extractSubmitting} onClick={() => setExtractRect(null)}>{t('ws.reselect')}</button><button className="button primary" disabled={!extractPreview || extractDragging || extractSubmitting || generating || !selectedModel?.capabilities.includes('edit_prompt') || !visionModels.length} onClick={() => void submitExtract()}>{extractSubmitting ? t('extract.starting') : t('ws.extractSubmit')}</button></div>
+              </div>
+            </aside>}
             {fusionMode && <aside className="fusion-library" aria-label={t('fusion.library')}>
               <div className="fusion-library-header">
                 <div className="fusion-header-row"><strong><Icon name="layers" size={19} />{t('op.fusion')}</strong><button className="fusion-exit-button" onClick={toggleFusion} title={t('fusion.exitHint')}><Icon name="left" size={14} />{t('fusion.exit')}</button></div>
@@ -1811,7 +1909,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           {currentVersion && currentVersion.outputs.length > 1 && batchProgress?.versionId !== currentVersion.id && <div className="candidate-strip"><span>{t('ws.candidates')}</span>{currentVersion.outputs.map((image, index) => <button key={image.id} className={image.id === currentImageId ? 'active' : ''} title={t('ws.candidateTitle')} onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt={t('ws.candidateAltResult', { index: index + 1 })} loading="lazy" /></button>)}</div>}
         </section>
 
-        <aside className={`conversation-panel ${rightMode === 'batch' ? 'batch-mode' : ''}`} hidden={fusionMode}>
+        <aside className={`conversation-panel ${rightMode === 'batch' ? 'batch-mode' : ''}`} hidden={fusionMode || extractMode || removeElementMode}>
           <div className="conversation-title">
             <div><p className="eyebrow">{rightMode === 'batch' ? 'BATCH STUDIO' : 'CONVERSATION'}</p><h2>{rightMode === 'batch' ? t('ws.batchStudio') : t('ws.chatTitle')}</h2></div>
             <div className="conversation-title-actions">
@@ -1843,7 +1941,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
                     : t('ws.msgGenerateAll', { count: outputs.length });
               return <article className="message assistant-message" key={message.id}><div className="message-meta"><strong>Layerive</strong><span>V{message.content.versionNumber} · {formatTime(message.createdAt, language)}</span></div><p>{resultParagraph}</p><div className={`message-gallery count-${outputs.length}`}>{outputs.map((image, index) => <button key={image.id} title={message.content.prompts?.[index] ? t('ws.msgPromptTitle', { prompt: message.content.prompts[index] }) : t('ws.candidateTitle')} onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><img src={thumbUrl(image)} alt={t('ws.generatedAlt')} loading="lazy" /></button>)}</div><div className="message-actions"><button onClick={() => { const first = outputs[0]; if (first) useImage(first); }}>{t('ws.useThisRound')}</button><button onClick={() => setPrompt(message.content.prompt || '')}>{t('ws.reusePrompt')}</button></div></article>;
             })}
-            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? t('ws.generating') : t('ws.preparing')}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind === 'batch-edit' ? (batchProgress ? t('ws.msgBatchProcessingDone', { label: batchProgress.textBatch ? t('ws.batchText') : batchProgress.localEdit ? t('ws.batchLocal') : t('ws.batchEdit'), done: `${batchProgress.completed}/${batchProgress.total}` }) : t('ws.msgBatchProcessing', { label: t('ws.batchEdit') })) : activeTask?.kind === 'fusion' ? t(activeTask.stage === 'generating' ? 'fusion.generating' : 'fusion.planning') : activeTask?.kind === 'local-edit' ? t(localEditStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-element' ? t(removeElementStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-background' ? t(removeBackgroundStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'text-edit' && !activeTask.id ? t('ws.msgTextPreparing') : activeTask?.kind === 'generate' && activeTask.stage === 'planning' ? t('ws.msgPlanning') : t('ws.msgCreating', { model: selectedModel?.name || t('ws.imageModelFallback'), count })}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</article>}
+            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? t('ws.generating') : t('ws.preparing')}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind === 'batch-edit' ? (batchProgress ? t('ws.msgBatchProcessingDone', { label: batchProgress.textBatch ? t('ws.batchText') : batchProgress.localEdit ? t('ws.batchLocal') : t('ws.batchEdit'), done: `${batchProgress.completed}/${batchProgress.total}` }) : t('ws.msgBatchProcessing', { label: t('ws.batchEdit') })) : activeTask?.kind === 'fusion' ? t(activeTask.stage === 'generating' ? 'fusion.generating' : 'fusion.planning') : activeTask?.kind === 'extract-asset' ? t(activeTask.stage === 'generating' ? 'extract.generating' : 'extract.planning') : activeTask?.kind === 'local-edit' ? t(localEditStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-element' ? t((cleanupType === 'selection' ? removeElementStageKeys : cleanupStageKeys)[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-background' ? t(removeBackgroundStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'text-edit' && !activeTask.id ? t('ws.msgTextPreparing') : activeTask?.kind === 'generate' && activeTask.stage === 'planning' ? t('ws.msgPlanning') : t('ws.msgCreating', { model: selectedModel?.name || t('ws.imageModelFallback'), count })}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</article>}
             <div ref={messagesEnd} />
           </div>
 

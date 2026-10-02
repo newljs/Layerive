@@ -8,9 +8,11 @@ export type IconName =
   | 'close' | 'star' | 'starFilled' | 'duplicate' | 'export' | 'image' | 'branch'
   | 'tree' | 'up' | 'down' | 'left' | 'sparkle' | 'box' | 'edit' | 'download' | 'gallery' | 'extract'
   | 'sun' | 'moon' | 'sliders' | 'logs' | 'eye' | 'eyeOff' | 'github' | 'trash' | 'background'
-  | 'layers' | 'shirt' | 'pose' | 'users' | 'check';
+  | 'layers' | 'shirt' | 'pose' | 'users' | 'check' | 'gem' | 'home';
 
 const paths: Record<IconName, React.ReactNode> = {
+  home: <><path d="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" /></>,
+  gem: <><path d="m3 9 4-5h10l4 5-9 12L3 9ZM3 9h18M7 4l5 17 5-17" /></>,
   layers: <><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5" /></>,
   shirt: <path d="m8 4-5 3 3 5 2-1v9h8v-9l2 1 3-5-5-3c0 2-1.5 3-4 3S8 6 8 4Z" />,
   pose: <><circle cx="13" cy="4" r="2" /><path d="m5 8 6 2 5-2 4-3M11 10l-2 6-4 4M9 16l6-1 3 5" /></>,
