@@ -773,22 +773,22 @@ button.batch-result-item:hover { border-color: #9c8df7; box-shadow: 0 5px 14px #
    layout changes.
    ============================================================ */
 :root {
-  --ink: #17181c;
-  --muted: #878b93;
-  --line: #ececef;
-  --line-soft: #f2f2f4;
+  --ink: #343d50;
+  --muted: #7c879b;
+  --line: #e4e8f0;
+  --line-soft: #edf0f5;
   --paper: #ffffff;
   --canvas: #ffffff;
   --accent: #6d55f7;
   --accent-dark: #5842df;
   --accent-soft: #f2efff;
-  --radius-xl: 24px;
-  --radius-lg: 20px;
-  --radius-md: 14px;
-  --radius-sm: 10px;
-  --shadow-sm: 0 1px 2px #181a210a, 0 3px 12px #181a2106;
-  --shadow-md: 0 2px 6px #181a2106, 0 14px 40px #181a210d;
-  --shadow-lg: 0 8px 26px #181a2112, 0 30px 80px #181a2118;
+  --radius-xl: 16px;
+  --radius-lg: 12px;
+  --radius-md: 10px;
+  --radius-sm: 8px;
+  --shadow-sm: 0 1px 3px #35456606;
+  --shadow-md: 0 4px 18px #3545660a;
+  --shadow-lg: 0 12px 40px #35456618;
   --font-display: "Inter", "SF Pro Display", ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
@@ -1009,6 +1009,136 @@ h1 { letter-spacing: -.035em; }
 .image-context-menu { position: fixed; z-index: 90; min-width: 176px; padding: 5px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); box-shadow: var(--shadow-lg); }
 .image-context-menu button { display: flex; width: 100%; align-items: center; gap: 8px; padding: 9px 11px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font-size: 12.5px; font-weight: 600; text-align: left; }
 .image-context-menu button:hover { background: var(--accent-soft); color: var(--accent); }
+
+/* Studio-inspired finish: shared visual scale, preserving layout and image geometry.
+   Keep this before dark mode so semantic states retain their theme overrides. */
+body { font-size: 13px; }
+button, input, textarea, select { font-family: var(--font-display); }
+h1 { font-size: clamp(28px, 2.5vw, 36px); font-weight: 600; letter-spacing: -.025em; }
+.settings-topbar h1 { font-size: 28px; }
+.eyebrow { color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: .1em; }
+.modal-heading h2, .panel-heading h2, .form-title-row h2 { font-size: 18px; font-weight: 600; }
+.workspace-panel-title h2, .conversation-title h2 { font-size: 15px; font-weight: 600; }
+.project-name-input { font-size: 14px; font-weight: 600; color: var(--ink); }
+.button { padding: 9px 15px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; line-height: 1.5; }
+.button:hover, .icon-button:hover { transform: none; }
+.button.secondary { color: #59657b; box-shadow: none; }
+.button.secondary:hover { background: #f8f9fc; border-color: #cfd7e6; box-shadow: none; }
+.button.primary, .send-button { box-shadow: 0 2px 6px #6d55f718; }
+.button.primary:hover, .send-button:hover:not(:disabled) { box-shadow: 0 3px 10px #6d55f724; }
+.icon-button { border-radius: var(--radius-sm); color: #78849a; box-shadow: none; }
+.icon-button:hover { background: #f4f6fa; box-shadow: none; }
+.back-button, .tab, .text-danger { font-weight: 500; }
+button:focus-visible, a:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.brand-mark { border-radius: 11px; box-shadow: 0 3px 10px #6d55f720; }
+.nav-icon { border-radius: 9px; color: #8e9ab0; }
+.side-nav { background: #fafbfe; }
+.home-toolbar { padding-bottom: 13px; border-bottom: 1px solid var(--line-soft); }
+.tab { font-size: 13px; color: var(--muted); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab span { color: var(--muted); }
+.search-box, .gallery-search { border-radius: var(--radius-sm); height: 38px; box-shadow: none; }
+.search-box input { font-size: 12px; }
+.view-switch { border-radius: var(--radius-sm); box-shadow: none; }
+.view-switch button { height: 36px; }
+.project-card:hover .project-open-area, .new-project-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.new-project-card { border-width: 1px; border-color: #dce2ed; background: #fafbfe; }
+.new-project-plus { width: 44px; height: 44px; border-radius: 10px; }
+.new-project-card strong, .project-info h2, .row-copy strong { font-size: 13px; font-weight: 550; }
+.project-info p, .row-copy small { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.project-info { padding-top: 12px; }
+.star-button, .action-button { border-radius: 6px; }
+.project-list-head { font-weight: 500; background: #fafbfe; }
+.workspace-topbar, .canvas-toolbar { background: var(--paper); }
+.workspace-topbar { column-gap: 16px; }
+.workspace-title-group, .project-name-field { min-width: 0; }
+.project-name-input { max-width: 100%; }
+.autosave-state { white-space: nowrap; }
+.versions-panel, .conversation-panel, .model-list-panel { background: #fafbfe; }
+.canvas-panel { background: #f1f3f8; }
+.header-divider { background: var(--line); }
+.workspace-header-actions select { border-radius: 7px; font-size: 12px; color: #59657b; }
+.canvas-edit-menu { border-color: var(--line); border-radius: 9px; box-shadow: none; }
+.canvas-edit-menu button { border-radius: 6px; font-weight: 500; color: #59657b; }
+.canvas-edit-menu button + button::before { background: var(--line-soft); }
+.canvas-actions button, .canvas-actions a { border-radius: 6px; box-shadow: none; }
+.version-item { border-radius: 9px; }
+.version-item-wrap.active .version-item { box-shadow: none; }
+.version-copy strong, .model-label strong { font-weight: 550; }
+.version-copy small { font-size: 10px; }
+.version-tree-button { border-radius: 8px; font-size: 12px; font-weight: 500; box-shadow: none; }
+.message { border-radius: 11px; box-shadow: none; }
+.message p { font-size: 13px; line-height: 1.8; }
+.message-meta strong { font-weight: 550; }
+.composer-wrap { border-radius: 12px; box-shadow: var(--shadow-sm); }
+.composer-wrap:focus-within { border-color: #b8acf1; box-shadow: 0 0 0 3px #6d55f70a; }
+.composer-wrap textarea { background: transparent; font-size: 13px; line-height: 1.8; }
+.composer-left select, .composer-left .bg-toggle, .attach-button, .send-button { border-radius: 7px; }
+.style-prompt { border-radius: 8px; }
+.style-prompt summary { font-size: 11px; font-weight: 500; }
+.style-prompt textarea { font-size: 12px; line-height: 1.7; }
+.panel-mode-tabs, .batch-tabs { border-radius: 8px; }
+.panel-mode-tabs button, .batch-tabs button { border-radius: 6px; }
+.batch-tabs button strong, .batch-type-tabs button strong { font-weight: 550; }
+.batch-type-tabs button { border-radius: 8px; }
+.batch-template-editor, .batch-prompts-editor { border-radius: 8px; font-size: 13px; }
+.field .batch-value-row input { font-size: 12px; }
+.batch-field-heading button { font-weight: 500; font-size: 11px; }
+.batch-panel .field small { font-size: 11px; line-height: 1.7; }
+.panel-mode-tabs button { font-weight: 550; }
+.fusion-submenu button { border-radius: 8px; font-weight: 500; }
+.fusion-submenu button.active { box-shadow: none; }
+.fusion-header-row > strong, .fusion-section-title, .fusion-instruction-heading label { font-weight: 550; }
+.fusion-exit-button { font-weight: 500; }
+.fusion-mode-description, .fusion-library-header > small, .fusion-empty p { font-size: 12px; line-height: 1.7; }
+.fusion-upload-button, .fusion-empty, .fusion-task-status { border-radius: 9px; }
+.fusion-library textarea { border-radius: 8px; font-size: 12px; line-height: 1.7; }
+.local-edit-panel, .local-batch-panel, .outpaint-panel { border-radius: 12px; box-shadow: var(--shadow-lg); }
+.modal-backdrop { background: #222b4059; backdrop-filter: blur(4px); }
+.modal-card, .compare-modal, .version-tree-modal, .text-editor-modal, .gallery-modal, .gallery-editor { border-radius: var(--radius-xl); }
+.models-layout { border-radius: 14px; box-shadow: var(--shadow-md); }
+.field > span, .capability-field legend, .gallery-editor-field > span { font-size: 12px; font-weight: 550; color: #64718a; }
+.field input, .field textarea, .field select, .modal-card .field input, .modal-card .field textarea, .modal-card .field select, .gallery-editor-field input, .gallery-editor-field textarea, .gallery-editor-field select { border-radius: 8px; border-color: var(--line); font-size: 13px; line-height: 1.6; }
+.field-help { font-size: 12px; line-height: 1.65; color: var(--muted); }
+.model-list-item { border-radius: 9px; }
+.model-provider { border-radius: 8px; }
+.model-add-actions button, .model-group-title, .default-tag { font-weight: 550; }
+.model-help, .provider-guide, .vision-guide, .create-hint, .data-actions article, .text-segment-field { border-radius: 10px; box-shadow: none; }
+.capability-options label { border-radius: 8px; font-weight: 500; }
+.toast { border-radius: 10px; font-size: 13px; font-weight: 500; }
+.gallery-open-button { border-radius: 9px; border-color: #e0daf6; background: #faf9fe; box-shadow: none; }
+.gallery-open-button::after { background: transparent; }
+.gallery-open-button:hover { transform: none; box-shadow: var(--shadow-sm); }
+.gallery-open-icon { border-radius: 7px; box-shadow: none; }
+.gallery-open-copy strong { font-weight: 550; }
+.gallery-open-copy small { font-weight: 400; }
+.gallery-add-button, .gallery-cats button { border-radius: 8px; font-weight: 500; }
+.gallery-thumb, .gallery-detail { border-radius: 11px; }
+.gallery-meta strong, .cat-name { font-weight: 550; }
+@media (max-width: 680px) { .settings-topbar h1 { font-size: 24px; } }
+
+/* Model setup: explicit add actions and aligned field/control rows. */
+.model-list-panel .panel-heading { align-items: center; color: var(--muted); }
+.model-add-actions { display: grid; gap: 7px; margin-bottom: 7px; }
+.model-add-actions button, .model-local-add { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 38px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; text-align: left; }
+.model-add-actions button > span, .model-local-add > span { flex: 1; }
+.model-add-actions button > svg:first-child { color: var(--accent); }
+.model-add-actions button > svg:last-child, .model-local-add > svg:last-child { color: var(--muted); }
+.model-add-actions button:hover, .model-local-add:hover { background: var(--accent-soft); border-color: #c9c0ef; }
+.model-local-add { margin-bottom: 20px; color: #3c8078; }
+.model-provider.local { background: #e8f4f1; color: #3c8078; }
+.model-label { flex: 1; }
+.default-tag { flex-shrink: 0; white-space: nowrap; }
+.model-form-panel .form-grid { align-items: start; }
+.model-form-panel .field { min-width: 0; align-content: start; grid-template-rows: auto auto; gap: 7px; }
+.model-form-panel .field > span { line-height: 20px; }
+.model-form-panel .field input, .model-form-panel .field select { height: 42px; min-width: 0; padding-block: 9px; }
+.model-form-panel .field-help { margin-top: 0; }
+.model-form-panel .secret-input { min-width: 0; }
+.model-form-panel .form-footer, .model-form-panel .footer-actions { gap: 10px; flex-wrap: wrap; }
+.model-form-panel .button, .model-form-panel .text-danger { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.local-guide { background: #f4faf8; border-color: #dcece6; }
+@media (max-width: 900px) { .model-add-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* ============================================================
    Dark mode - activated via html[data-theme='dark'].
@@ -1337,3 +1467,11 @@ html[data-theme='dark'] .fusion-drag-source img { background: repeating-conic-gr
 html[data-theme='dark'] .fusion-drop-guide, html[data-theme='dark'] .fusion-thumbnail.selected .fusion-thumbnail-caption { color: #b5a8ff; }
 html[data-theme='dark'] .fusion-library-content { scrollbar-color: #494252 transparent; }
 html[data-theme='dark'] .fusion-library-content::-webkit-scrollbar-thumb { background: #494252; }
+
+html[data-theme='dark'] .project-list-head { background: #1b1e25; }
+html[data-theme='dark'] .model-local-add { color: #89c8b9; }
+html[data-theme='dark'] .model-provider.local { background: #203831; color: #89c8b9; }
+html[data-theme='dark'] .local-guide { background: #1c2c28; border-color: #354c43; }
+html[data-theme='dark'] .model-add-actions button:hover, html[data-theme='dark'] .model-local-add:hover { border-color: #61517d; }
+html[data-theme='dark'] .modal-backdrop { background: #090d167a; }
+html[data-theme='dark'] .gallery-open-button, html[data-theme='dark'] .gallery-open-button:hover { background: #252238; box-shadow: none; }

@@ -11,9 +11,20 @@ export function normalizeBaseUrl(value) {
 
 const VISION_API_FORMATS = new Set(['anthropic_messages', 'chat_completions', 'responses']);
 const IMAGE_API_FORMATS = new Set(['openai_images', 'gemini_interactions', 'grok_images']);
-const IMAGE_PROVIDERS = new Set(['sensenova', 'openai', 'gemini', 'grok', 'custom', 'mock']);
+const IMAGE_PROVIDERS = new Set(['sensenova', 'openai', 'gemini', 'grok', 'custom', 'local', 'mock']);
+
+// Local OpenAI-compatible services may run without authentication. Never send
+// an empty Bearer token; retain normal authentication when a key is configured.
+export function hasModelCredentials(model) {
+  return Boolean(model && model.apiKey !== '••••••••' && (model.provider === 'local' || model.apiKey?.trim()));
+}
+
+export function bearerHeaders(model) {
+  return model.apiKey?.trim() ? { Authorization: `Bearer ${model.apiKey}` } : {};
+}
 
 const IMAGE_PRESETS = {
+  local: { baseUrl: 'http://127.0.0.1:8000/v1', model: '', imageApiFormat: 'openai_images', sizeOptions: ['1024x1024'], outputFormats: ['png'], transparentBackground: false, maxCount: 1 },
   sensenova: { baseUrl: 'https://token.sensenova.cn/v1', model: 'sensenova-u1.5-lite', imageApiFormat: 'openai_images', sizeOptions: ['1664x2496', '2496x1664', '1760x2368', '2368x1760', '1824x2272', '2272x1824', '2048x2048', '2752x1536', '1536x2752', '3072x1376', '1344x3136'], outputFormats: ['png'], transparentBackground: false, maxCount: 4 },
   openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-image-2', imageApiFormat: 'openai_images', sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png', 'jpeg', 'webp'], transparentBackground: true, maxCount: 4 },
   gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.1-flash-image', imageApiFormat: 'gemini_interactions', sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png', 'jpeg'], transparentBackground: false, maxCount: 1 },
@@ -135,8 +146,8 @@ export function upsertModel(input, modelId) {
   if (type === 'vision' && ['gemini', 'grok'].includes(requestedProvider)) throw Object.assign(new Error('Gemini 和 Grok 当前仅支持配置为图片生成模型'), { status: 400 });
   const provider = requestedProvider;
   const preset = imagePreset(provider);
-  const defaultBaseUrl = type === 'vision' ? (provider === 'sensenova' ? 'https://api.sensenova.cn/v1' : 'https://api.openai.com/v1') : preset.baseUrl;
-  const defaultModel = type === 'vision' ? (provider === 'sensenova' ? 'SenseChat-V6.5' : 'gpt-4.1-mini') : preset.model;
+  const defaultBaseUrl = type === 'vision' ? (provider === 'local' ? 'http://127.0.0.1:1234/v1' : provider === 'sensenova' ? 'https://api.sensenova.cn/v1' : 'https://api.openai.com/v1') : preset.baseUrl;
+  const defaultModel = type === 'vision' ? (provider === 'local' ? '' : provider === 'sensenova' ? 'SenseChat-V6.5' : 'gpt-4.1-mini') : preset.model;
   if (existing && config.active_model === existing.id && type === 'vision') {
     throw Object.assign(new Error('当前默认图片生成模型不能改为视觉识别模型，请先设定另一个图片生成默认模型'), { status: 400 });
   }

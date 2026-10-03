@@ -25,6 +25,7 @@ const grokUrl = 'https://api.x.ai/v1';
 const defaultVisionApiFormat: NonNullable<ModelConfig['apiFormat']> = 'chat_completions';
 
 function providerBaseUrl(type: ModelConfig['type'], provider: ModelConfig['provider']) {
+  if (provider === 'local') return type === 'vision' ? 'http://127.0.0.1:1234/v1' : 'http://127.0.0.1:8000/v1';
   if (provider === 'sensenova') return type === 'vision' ? senseNovaVisionUrl : senseNovaUrl;
   if (provider === 'gemini') return geminiUrl;
   if (provider === 'grok') return grokUrl;
@@ -39,6 +40,7 @@ function imageFormatForProvider(provider: ModelConfig['provider']): NonNullable<
 }
 
 function imageOptionsForPreset(provider: ModelConfig['provider']) {
+  if (provider === 'local') return { sizeOptions: ['1024x1024'], outputFormats: ['png'] as const, transparentBackground: false, maxCount: 1 };
   if (provider === 'sensenova') return { sizeOptions: ['1664x2496', '2496x1664', '1760x2368', '2368x1760', '1824x2272', '2272x1824', '2048x2048', '2752x1536', '1536x2752', '3072x1376', '1344x3136'], outputFormats: ['png'] as const, transparentBackground: false, maxCount: 4 };
   if (provider === 'gemini') return { sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png', 'jpeg'] as const, transparentBackground: false, maxCount: 1 };
   if (provider === 'grok') return { sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['jpeg'] as const, transparentBackground: false, maxCount: 4 };
@@ -57,12 +59,17 @@ function blankFor(type: ModelConfig['type'] = 'image'): ModelConfig {
 }
 
 function defaultModel(type: ModelConfig['type'], provider: ModelConfig['provider']) {
+  if (provider === 'local') return '';
   if (type === 'vision') return provider === 'sensenova' ? 'SenseChat-V6.5' : 'gpt-4.1-mini';
   if (provider === 'sensenova') return 'sensenova-u1.5-lite';
   if (provider === 'gemini') return 'gemini-3.1-flash-image';
   if (provider === 'grok') return 'grok-imagine-image-2.0';
   if (provider === 'custom') return '';
   return 'gpt-image-2';
+}
+
+function localForm(type: ModelConfig['type']): ModelConfig {
+  return { ...blankFor(type), provider: 'local', baseUrl: providerBaseUrl(type, 'local'), model: '', capabilities: type === 'image' ? ['text_to_image'] : ['image_understanding'], ...imageOptionsForPreset('local'), outputFormats: ['png'] };
 }
 
 export function ModelConfigView({ models, activeModel, activeVisionModel, onBack, onSave, onDelete, onActivate, onActivateVision, onTestConfig, onRevealApiKey }: Props) {
@@ -80,6 +87,7 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
   const isSenseNova = form.provider === 'sensenova';
   const isGemini = form.provider === 'gemini';
   const isGrok = form.provider === 'grok';
+  const isLocal = form.provider === 'local';
 
   useEffect(() => {
     if (creating) return;
@@ -92,15 +100,25 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
     const selected = models.find((item) => item.id === id);
     if (selected) { setCreating(false); setSelectedId(id); setForm(selected); setTestResult(''); setShowApiKey(false); }
   }
-  function startCreate(type: ModelConfig['type']) { setCreating(true); setSelectedId(''); setForm(blankFor(type)); setTestResult(''); setShowApiKey(false); }
+  function startCreate(type: ModelConfig['type'], local = false) { setCreating(true); setSelectedId(''); setForm(local ? localForm(type) : blankFor(type)); setTestResult(''); setShowApiKey(false); }
   function update<K extends keyof ModelConfig>(key: K, value: ModelConfig[K]) { setForm((current) => ({ ...current, [key]: value })); }
   function changeType(type: ModelConfig['type']) {
+    setTestResult('');
+    if (isLocal) {
+      setForm(current => ({ ...localForm(type), id: current.id, name: current.name, apiKey: current.apiKey }));
+      return;
+    }
     setForm((current) => ({ ...current, type, provider: 'openai', apiFormat: type === 'vision' ? defaultVisionApiFormat : undefined, imageApiFormat: type === 'image' ? 'openai_images' : undefined, baseUrl: openAiUrl, model: defaultModel(type, 'openai'), capabilities: type === 'vision' ? ['image_understanding'] : ['text_to_image', 'image_to_image', 'edit_prompt'], defaultParams: type === 'vision' ? {} : { size: '1024x1024', count: 1, quality: 'auto' }, ...(type === 'image' ? { sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png', 'jpeg', 'webp'], transparentBackground: true, maxCount: 4 } : {}) }));
   }
   function changeProvider(provider: ModelConfig['provider']) {
+    setTestResult(''); setShowApiKey(false);
+    if (provider === 'local') {
+      setForm(current => ({ ...localForm(current.type), id: current.id, name: current.name }));
+      return;
+    }
     setForm((current) => {
       const options = imageOptionsForPreset(provider);
-      return { ...current, provider, baseUrl: providerBaseUrl(current.type, provider), model: defaultModel(current.type, provider), ...(current.type === 'image' ? { imageApiFormat: imageFormatForProvider(provider), sizeOptions: options.sizeOptions, outputFormats: [...options.outputFormats], transparentBackground: options.transparentBackground, maxCount: options.maxCount, defaultParams: { ...current.defaultParams, size: options.sizeOptions[0], count: 1 } } : {}) };
+      return { ...current, provider, ...(current.provider === 'local' ? { apiKey: '', capabilities: current.type === 'vision' ? ['image_understanding'] : ['text_to_image', 'image_to_image', 'edit_prompt'] } : {}), baseUrl: providerBaseUrl(current.type, provider), model: defaultModel(current.type, provider), ...(current.type === 'image' ? { imageApiFormat: imageFormatForProvider(provider), sizeOptions: options.sizeOptions, outputFormats: [...options.outputFormats], transparentBackground: options.transparentBackground, maxCount: options.maxCount, defaultParams: { ...current.defaultParams, size: options.sizeOptions[0], count: 1 } } : {}) };
     });
   }
   function changeImageApiFormat(imageApiFormat: NonNullable<ModelConfig['imageApiFormat']>) {
@@ -137,7 +155,7 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
     const typeLabel = model.type === 'vision' ? t('mc.typeVision') : t('mc.typeImage');
     const visionFormatLabel = model.apiFormat === 'anthropic_messages' ? 'A' : model.apiFormat === 'responses' ? 'R' : 'C';
     return <button key={model.id} className={`model-list-item ${selectedId === model.id ? 'active' : ''}`} onClick={() => choose(model.id)}>
-      <span className={`model-provider ${model.type === 'vision' ? 'vision-api' : model.provider}`}>{model.type === 'vision' ? visionFormatLabel : model.provider === 'sensenova' ? '日' : model.provider === 'gemini' ? 'Gm' : model.provider === 'grok' ? 'Gr' : 'O'}</span>
+      <span className={`model-provider ${model.provider === 'local' ? 'local' : model.type === 'vision' ? 'vision-api' : model.provider}`}>{model.provider === 'local' ? <Icon name="home" size={18} /> : model.type === 'vision' ? visionFormatLabel : model.provider === 'sensenova' ? '日' : model.provider === 'gemini' ? 'Gm' : model.provider === 'grok' ? 'Gr' : 'O'}</span>
       <span className="model-label"><strong>{model.name}</strong><small>{typeLabel} · {model.model}</small></span>
       {model.type !== 'vision' && activeModel === model.id && <span className="default-tag">{t('mc.defaultTag')}</span>}
       {model.type === 'vision' && activeVisionModel === model.id && <span className="default-tag">{t('mc.visionDefaultTag')}</span>}
@@ -154,7 +172,12 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
 
       <section className="models-layout">
         <aside className="model-list-panel">
-          <div className="panel-heading"><div><h2>{t('mc.listTitle')}</h2><p>{t('mc.listCount', { count: models.length })}</p></div><div className="model-add-actions"><button title={t('mc.addImageTitle')} onClick={() => startCreate('image')}><Icon name="plus" size={13} /> {t('mc.addImageBadge')}</button><button title={t('mc.addVisionTitle')} onClick={() => startCreate('vision')}><Icon name="plus" size={13} /> {t('mc.addVisionBadge')}</button></div></div>
+          <div className="panel-heading"><div><h2>{t('mc.listTitle')}</h2><p>{t('mc.listCount', { count: models.length })}</p></div><Icon name="models" size={20} /></div>
+          <div className="model-add-actions">
+            <button title={t('mc.addImageTitle')} onClick={() => startCreate('image')}><Icon name="image" size={17} /><span>{t('mc.addImageTitle')}</span><Icon name="plus" size={14} /></button>
+            <button title={t('mc.addVisionTitle')} onClick={() => startCreate('vision')}><Icon name="eye" size={17} /><span>{t('mc.addVisionTitle')}</span><Icon name="plus" size={14} /></button>
+          </div>
+          <button className="model-local-add" onClick={() => startCreate('image', true)}><Icon name="home" size={17} /><span>{t('mc.addLocal')}</span><Icon name="plus" size={14} /></button>
           <div className="model-list">
             <p className="model-group-title">{t('mc.groupImage')}</p>{imageModels.map(renderItem)}
             <p className="model-group-title vision">{t('mc.groupVision')}</p>{visionModels.map(renderItem)}
@@ -169,18 +192,20 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
             <label className="field"><span>{t('mc.typeLabel')}</span><select value={form.type} onChange={(event) => changeType(event.target.value as ModelConfig['type'])}><option value="image">{t('mc.optionImage')}</option><option value="vision">{t('mc.optionVision')}</option></select></label>
             <label className="field"><span>{t('mc.nameLabel')}</span><input value={form.name} onChange={(event) => update('name', event.target.value)} placeholder={form.type === 'vision' ? t('mc.namePlaceholderVision') : t('mc.namePlaceholderImage')} /></label>
           </div>
+          <label className="field"><span>{t('mc.connectionType')}</span><select value={isLocal ? 'local' : 'remote'} onChange={event => changeProvider(event.target.value === 'local' ? 'local' : 'openai')}><option value="remote">{t('mc.remoteService')}</option><option value="local">{t('mc.localService')}</option></select></label>
+          {isLocal && <div className="provider-guide local-guide"><strong>{t('mc.localGuideTitle')}</strong><p>{t(form.type === 'vision' ? 'mc.localVisionHelp' : 'mc.localImageHelp')}</p></div>}
           {form.type === 'vision'
-            ? <label className="field"><span>{t('mc.apiFormat')}</span><select value={form.apiFormat || defaultVisionApiFormat} onChange={(event) => update('apiFormat', event.target.value as NonNullable<ModelConfig['apiFormat']>)}><option value="anthropic_messages">Anthropic Messages (/v1/messages)</option><option value="chat_completions">Chat Completions (/chat/completions)</option><option value="responses">Responses (/responses)</option></select></label>
-            : <label className="field"><span>{t('mc.preset')}</span><select value={form.provider} onChange={(event) => changeProvider(event.target.value as ModelConfig['provider'])}><option value="sensenova">{t('mc.presetSenseNova')}</option><option value="openai">OpenAI</option><option value="gemini">Gemini · Nano Banana</option><option value="grok">Grok · Imagine</option><option value="custom">{t('mc.presetCustom')}</option></select><small className="field-help">{t('mc.presetHelp')}</small></label>}
+            ? <label className="field"><span>{t('mc.apiFormat')}</span><select value={form.apiFormat || defaultVisionApiFormat} onChange={(event) => update('apiFormat', event.target.value as NonNullable<ModelConfig['apiFormat']>)}>{!isLocal && <option value="anthropic_messages">Anthropic Messages (/v1/messages)</option>}<option value="chat_completions">Chat Completions (/chat/completions)</option><option value="responses">Responses (/responses)</option></select></label>
+            : !isLocal && <label className="field"><span>{t('mc.preset')}</span><select value={form.provider} onChange={(event) => changeProvider(event.target.value as ModelConfig['provider'])}><option value="sensenova">{t('mc.presetSenseNova')}</option><option value="openai">OpenAI</option><option value="gemini">Gemini · Nano Banana</option><option value="grok">Grok · Imagine</option><option value="custom">{t('mc.presetCustom')}</option></select><small className="field-help">{t('mc.presetHelp')}</small></label>}
 
-          {form.type === 'image' && <label className="field"><span>{t('mc.imageApiFormat')}</span><select value={form.imageApiFormat || 'openai_images'} onChange={(event) => changeImageApiFormat(event.target.value as NonNullable<ModelConfig['imageApiFormat']>)}><option value="openai_images">OpenAI Images (/images/generations、/images/edits)</option><option value="gemini_interactions">Gemini Interactions (/interactions)</option><option value="grok_images">Grok Images (/images/generations、/images/edits)</option></select><small className="field-help">{t('mc.protocolHelp')}</small></label>}
+          {form.type === 'image' && <label className="field"><span>{t('mc.imageApiFormat')}</span><select value={form.imageApiFormat || 'openai_images'} onChange={(event) => changeImageApiFormat(event.target.value as NonNullable<ModelConfig['imageApiFormat']>)}><option value="openai_images">OpenAI Images (/images/generations、/images/edits)</option>{!isLocal && <><option value="gemini_interactions">Gemini Interactions (/interactions)</option><option value="grok_images">Grok Images (/images/generations、/images/edits)</option></>}</select><small className="field-help">{t('mc.protocolHelp')}</small></label>}
 
-          {form.type === 'vision' ? <div className="provider-guide"><strong>{t('mc.guideVisionTitle')}</strong><p>{t('mc.guideVisionBody')}</p></div> : isSenseNova ? <div className="provider-guide sensenova-guide"><strong>{t('mc.guideSenseNovaTitle')}</strong><p>{t('mc.guideSenseNovaBody')}</p></div> : isGemini ? <div className="provider-guide gemini-guide"><strong>{t('mc.guideGeminiTitle')}</strong><p>{t('mc.guideGeminiBody')}</p></div> : isGrok ? <div className="provider-guide grok-guide"><strong>{t('mc.guideGrokTitle')}</strong><p>{t('mc.guideGrokBody')}</p></div> : <div className="provider-guide"><strong>{form.provider === 'custom' ? t('mc.guideCustomTitle') : t('mc.guideOpenAiTitle')}</strong><p>{t('mc.guideCustomBody')}</p></div>}
+          {isLocal ? null : form.type === 'vision' ? <div className="provider-guide"><strong>{t('mc.guideVisionTitle')}</strong><p>{t('mc.guideVisionBody')}</p></div> : isSenseNova ? <div className="provider-guide sensenova-guide"><strong>{t('mc.guideSenseNovaTitle')}</strong><p>{t('mc.guideSenseNovaBody')}</p></div> : isGemini ? <div className="provider-guide gemini-guide"><strong>{t('mc.guideGeminiTitle')}</strong><p>{t('mc.guideGeminiBody')}</p></div> : isGrok ? <div className="provider-guide grok-guide"><strong>{t('mc.guideGrokTitle')}</strong><p>{t('mc.guideGrokBody')}</p></div> : <div className="provider-guide"><strong>{form.provider === 'custom' ? t('mc.guideCustomTitle') : t('mc.guideOpenAiTitle')}</strong><p>{t('mc.guideCustomBody')}</p></div>}
 
-          <label className="field"><span>{form.type === 'vision' ? 'API Base URL' : isSenseNova ? t('mc.baseUrlSenseNova') : isGemini ? 'Gemini API Base URL' : isGrok ? 'xAI API Base URL' : 'API Base URL'}</span><input disabled={form.type === 'image' && isSenseNova} value={form.baseUrl} onChange={(event) => update('baseUrl', event.target.value)} placeholder={providerBaseUrl(form.type, form.provider)} /><small className="field-help">{form.type === 'vision' ? t('mc.baseUrlVisionHelp') : isSenseNova ? t('mc.baseUrlSenseNovaHelp', { url: providerBaseUrl(form.type, form.provider) }) : isGemini ? t('mc.baseUrlGeminiHelp') : isGrok ? t('mc.baseUrlGrokHelp') : t('mc.baseUrlOpenAiHelp')}</small></label>
+          <label className="field"><span>{form.type === 'vision' ? 'API Base URL' : isSenseNova ? t('mc.baseUrlSenseNova') : isGemini ? 'Gemini API Base URL' : isGrok ? 'xAI API Base URL' : 'API Base URL'}</span><input disabled={form.type === 'image' && isSenseNova} value={form.baseUrl} onChange={(event) => update('baseUrl', event.target.value)} placeholder={providerBaseUrl(form.type, form.provider)} /><small className="field-help">{isLocal ? t('mc.localBaseUrlHelp') : form.type === 'vision' ? t('mc.baseUrlVisionHelp') : isSenseNova ? t('mc.baseUrlSenseNovaHelp', { url: providerBaseUrl(form.type, form.provider) }) : isGemini ? t('mc.baseUrlGeminiHelp') : isGrok ? t('mc.baseUrlGrokHelp') : t('mc.baseUrlOpenAiHelp')}</small></label>
           <div className="form-grid two-columns">
-            <label className="field"><span>{form.type === 'vision' ? 'API Key' : isSenseNova ? t('mc.keySenseNova') : isGemini ? 'Gemini API Key' : isGrok ? 'xAI API Key' : 'OpenAI API Key'}</span><div className="secret-input"><input type={showApiKey ? 'text' : 'password'} value={form.apiKey} onChange={(event) => update('apiKey', event.target.value)} placeholder={isGemini ? 'AIza...' : 'sk-...'} /><button type="button" disabled={revealingApiKey} onClick={() => void toggleApiKeyVisibility()} title={showApiKey ? t('mc.hideKey') : t('mc.showKey')} aria-label={showApiKey ? t('mc.hideKey') : t('mc.showKey')} aria-pressed={showApiKey}>{revealingApiKey ? <span className="secret-loading" /> : <Icon name={showApiKey ? 'eyeOff' : 'eye'} size={17} />}</button></div></label>
-            <label className="field"><span>{form.type === 'vision' ? t('mc.modelNameVision') : t('mc.modelNameImage')}</span><input value={form.model} onChange={(event) => update('model', event.target.value)} placeholder={defaultModel(form.type, form.provider)} /></label>
+            <label className="field"><span>{isLocal ? t('mc.localKey') : form.type === 'vision' ? 'API Key' : isSenseNova ? t('mc.keySenseNova') : isGemini ? 'Gemini API Key' : isGrok ? 'xAI API Key' : 'OpenAI API Key'}</span><div className="secret-input"><input type={showApiKey ? 'text' : 'password'} value={form.apiKey} onChange={(event) => update('apiKey', event.target.value)} placeholder={isLocal ? t('mc.localKeyPlaceholder') : isGemini ? 'AIza...' : 'sk-...'} /><button type="button" disabled={revealingApiKey} onClick={() => void toggleApiKeyVisibility()} title={showApiKey ? t('mc.hideKey') : t('mc.showKey')} aria-label={showApiKey ? t('mc.hideKey') : t('mc.showKey')} aria-pressed={showApiKey}>{revealingApiKey ? <span className="secret-loading" /> : <Icon name={showApiKey ? 'eyeOff' : 'eye'} size={17} />}</button></div></label>
+            <label className="field"><span>{form.type === 'vision' ? t('mc.modelNameVision') : t('mc.modelNameImage')}</span><input value={form.model} onChange={(event) => update('model', event.target.value)} placeholder={isLocal ? t('mc.localModelPlaceholder') : defaultModel(form.type, form.provider)} /></label>
           </div>
 
           {form.type === 'image' ? <>

@@ -157,19 +157,21 @@ Screenshots are stored in `doc/界面操作截图/` and listed below in workflow
 
 Open **Model configuration** from the home page or workspace:
 
-1. Select **Add image model** or **Add vision model**.
-2. For image models, choose a preset (**SenseNova / OpenAI / Gemini / Grok / Custom**) and the actual image API protocol (OpenAI Images, Gemini Interactions, or Grok Images) independently. Vision models support **Anthropic Messages / Chat Completions / Responses** API formats, with Chat Completions selected by default for new configurations.
-3. Enter a display name, Base URL, API key, model name, and capabilities. Configure the sizes, output formats, transparent-background support, and maximum images supported by that model; the workspace only offers declared options. The button beside the API key toggles visibility and can reveal a previously saved key on demand. A preset fills in useful starting values.
+1. Select **Add image model**, **Add vision model**, or **Add local model**.
+2. Online image models can use a preset (**SenseNova / OpenAI / Gemini / Grok / Custom**) and an image API protocol (OpenAI Images, Gemini Interactions, or Grok Images). Local image and vision models use OpenAI-compatible protocols. Online vision models support **Anthropic Messages / Chat Completions / Responses**, with Chat Completions selected by default.
+3. Enter a display name, Base URL, model name, and capabilities; online services also require an API key, while a local service can leave it empty. Configure only the sizes, output formats, transparency, and image count the service supports. The button beside the API key toggles visibility and can reveal a saved key on demand.
 4. Use **Test connection**, save the model, then set an image model as the default or a vision model as the recognition default.
 
 | Model type | Supported providers | Primary use |
 | --- | --- | --- |
 | Image model | SenseNova, OpenAI, Gemini, Grok, or Custom presets; OpenAI Images, Gemini Interactions, or Grok Images protocols | Text-to-image, image-to-image, edits, outpainting, and more |
 | Vision model | Anthropic Messages, Chat Completions, Responses | Analysis and prompt planning for text editing, regional edits, and asset extraction |
+| Local model | A running OpenAI-compatible image or vision service | Uses the configured image or Chat Completions / Responses protocol; does not install or load model files |
 
 ### Configuration notes
 
 - For an OpenAI-compatible gateway, use the **Custom** preset and select the image protocol it actually implements. Declare only its supported sizes, output formats, and image count; the server enforces those limits.
+- A local model only connects to a service you have already started. Enter its URL, loaded model name, and actual capabilities; an API key is optional. A successful connection test confirms reachability and the model name, not image generation, editing, or recognition support.
 - Text editing, regional editing, element removal, outpainting, enhancement, and asset extraction require an image model with **prompt-editing** capability. Text editing, regional editing, and element removal also require an enabled vision model.
 - Available outpainting sizes are constrained by the active image model. Confirm the canvas preview before submitting.
 - Output quality, text accuracy, and regional fidelity depend on the underlying model. For complex layouts, recognize text first and use manual selections to edit one region at a time.

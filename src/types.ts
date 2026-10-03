@@ -6,7 +6,7 @@ export type ModelConfig = {
   name: string;
   type: 'image' | 'vision';
   /** A preset only: it supplies sensible defaults and provider-specific UI copy. */
-  provider: 'sensenova' | 'openai' | 'gemini' | 'grok' | 'custom';
+  provider: 'sensenova' | 'openai' | 'gemini' | 'grok' | 'custom' | 'local';
   /** The image request/response protocol, independent from the preset. */
   imageApiFormat?: 'openai_images' | 'gemini_interactions' | 'grok_images';
   apiFormat?: 'anthropic_messages' | 'chat_completions' | 'responses';

@@ -157,19 +157,21 @@ npm run desktop:dist  # 生成安装包与便携版
 
 从首页或工作台进入「模型配置」：
 
-1. 选择「添加图片模型」或「添加视觉识别模型」。
-2. 图片模型选择预设（**日日新 / OpenAI / Gemini / Grok / 自定义**）和实际的图片 API 协议（OpenAI Images、Gemini Interactions 或 Grok Images）；两者可自由组合。视觉识别模型选择 **Anthropic Messages / Chat Completions / Responses** API 格式，新建时默认 Chat Completions。
-3. 填写显示名称、Base URL、API Key、模型名和能力，并设置该模型支持的尺寸、输出格式、透明背景和单次最大图片数；工作台只展示这些已声明的选项。API Key 右侧按钮可切换显示与隐藏，也能按需回显已保存的密钥。预设切换后会带入相应的默认值。
+1. 选择「添加图片模型」「添加视觉识别模型」或「添加本地模型」。
+2. 在线图片模型选择预设（**日日新 / OpenAI / Gemini / Grok / 自定义**）和实际的图片 API 协议（OpenAI Images、Gemini Interactions 或 Grok Images）；本地图片模型和视觉模型使用 OpenAI 兼容协议。在线视觉识别模型可选 **Anthropic Messages / Chat Completions / Responses**，新建时默认 Chat Completions。
+3. 填写显示名称、Base URL、模型名和能力；在线服务还需填写 API Key，本地服务可留空。设置模型实际支持的尺寸、输出格式、透明背景和单次最大图片数；工作台只展示已声明的选项。API Key 右侧按钮可切换显示与隐藏，也能按需回显已保存的密钥。
 4. 点击「测试连接」，成功后保存；图片模型可「设为默认」，视觉识别模型可「设为识别默认」。
 
 | 模型类型 | 支持的提供商 | 主要用途 |
 | --- | --- | --- |
 | 图片模型 | 日日新、OpenAI、Gemini、Grok、自定义预设；OpenAI Images、Gemini Interactions、Grok Images 协议 | 文生图、图生图、改图、扩图等 |
 | 视觉识别模型 | Anthropic Messages、Chat Completions、Responses | 图片改字、局部修改与素材提取的识别和提示词规划 |
+| 本地模型 | 用户启动的 OpenAI 兼容图片或视觉服务 | 复用图片协议或 Chat Completions / Responses；不负责安装或加载模型 |
 
 ### 配置提示
 
 - OpenAI 兼容中转站可使用「自定义」预设，再选择其实际兼容的图片 API 协议。请将可选尺寸、格式和最大数量填写为该服务真实支持的范围；服务端会拒绝超出这些配置的参数。
+- 本地模型只连接已经运行的兼容服务，填写服务地址、实际加载的模型名和能力；API Key 可选。连接测试成功只确认服务和模型名称可达，不代表服务具备图片生成、改图或图片识别能力。
 - 图片改字、局部修改、删除元素、扩图、图片变清晰和素材提取均需要图片模型具有**提示词改图**能力；图片改字、局部修改和删除元素还需要已启用的视觉识别模型。
 - 扩图的目标尺寸会受当前图片模型的尺寸限制约束，确认前请以画布预览的边界为准。
 - 生成质量、文字准确度和局部保真度受具体模型能力影响；复杂排版建议先做图片改字识别，再配合手动框选逐段处理。

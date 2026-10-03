@@ -10,7 +10,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { APP_ROOT, CONFIG_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, GALLERY_ROOT, imageDto, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
 import { makeDemoPng, makeThumbnailPng, readImageDimensions } from './png.mjs';
-import { imageApiFormat, isSenseNovaLegacyVisionEndpoint, isSenseNovaTokenChatEndpoint, normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, visionApiFormat, visionEndpoint, writeModels } from './models.mjs';
+import { hasModelCredentials, bearerHeaders, imageApiFormat, isSenseNovaLegacyVisionEndpoint, isSenseNovaTokenChatEndpoint, normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, visionApiFormat, visionEndpoint, writeModels } from './models.mjs';
 import { createZip, readZip } from './zip.mjs';
 import { cropLocalSelection, normalizeLocalImage, normalizeSenseNovaInput, preserveOutsideRegion, preserveOutsideRegions, referenceBytes, validatePlacement, validateRect } from './local-edit.mjs';
 
@@ -448,7 +448,7 @@ async function callOpenAi(model, prompt, params, inputImage, signal) {
   const count = requestedImageCount(params);
   const size = params.size || '1024x1024';
   const endpoint = inputImage ? 'images/edits' : 'images/generations';
-  const headers = { Authorization: `Bearer ${model.apiKey}` };
+  const headers = bearerHeaders(model);
   let requestBody;
   const isSenseNova = isSenseNovaImageModel(model);
   // OpenAI-only knobs: output format (png/jpeg/webp) and transparent background.
@@ -556,7 +556,7 @@ async function callGrok(model, prompt, params, inputImage, signal) {
   }
   const response = await fetch(`${normalizeBaseUrl(model.baseUrl)}/${endpoint}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${model.apiKey}`, 'Content-Type': 'application/json' },
+    headers: { ...bearerHeaders(model), 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal,
   });
@@ -781,7 +781,7 @@ function visionReasoningText(payload) {
 }
 
 async function callVision(model, image, instruction, signal, logContext = null, options = {}) {
-  if (!model?.apiKey) throw httpError(400, 'vision.missingApiKey', '请先在模型配置中填写视觉识别模型的 API Key');
+  if (!hasModelCredentials(model)) throw httpError(400, 'vision.missingApiKey', '请先在模型配置中填写视觉识别模型的 API Key');
   // image 通常来自数据库行（按 file_path 读盘）；gallery 分析直接携带 buffer。
   const images = await Promise.all((Array.isArray(image) ? image : [image]).map(async (item) => {
     const encoded = (item.buffer || await readFile(path.join(PROJECTS_ROOT, item.project_id, item.file_path))).toString('base64');
@@ -806,7 +806,7 @@ async function callVision(model, image, instruction, signal, logContext = null, 
     ? isDots
       ? { 'api-key': model.apiKey, 'Content-Type': 'application/json' }
       : { 'x-api-key': model.apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
-    : { Authorization: `Bearer ${model.apiKey}`, 'Content-Type': 'application/json' };
+    : { ...bearerHeaders(model), 'Content-Type': 'application/json' };
   const requestBody = apiFormat === 'anthropic_messages'
     ? {
       model: model.model,
@@ -986,7 +986,7 @@ async function editImageRegion(projectId, input) {
   const config = readModels();
   const visionModel = visionModelOrThrow(config, input.visionModelId);
   const image = imageOrThrow(projectId, input.imageId);
-  if (!visionModel.apiKey) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
+  if (!hasModelCredentials(visionModel)) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
   return startGeneration(projectId, { prompt: instruction || '根据参考图智能替换框选主体并自然融合', operation: 'local_edit', modelId: input.modelId, inputImageId: image.id, parentVersionId: image.version_id || null, params: reference ? { ...(input.params || {}), outputFormat: 'png', transparent: false } : input.params || {} }, { rect, instruction, reference, visionModel });
 }
 
@@ -998,7 +998,7 @@ async function fuseImages(projectId, input) {
   const reference = imageOrThrow(projectId, input.referenceImageId);
   if (reference.id === source.id) throw httpError(400, 'fusion.sameImage', '请选择与主图不同的参考图');
   const visionModel = visionModelOrThrow(readModels(), input.visionModelId);
-  if (!visionModel.apiKey) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
+  if (!hasModelCredentials(visionModel)) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
   return startGeneration(projectId, {
     prompt: `${fusionModes[settings.mode]}：参考图拖放到主图 (${settings.point.x.toFixed(1)}%, ${settings.point.y.toFixed(1)}%)${settings.instruction ? '；' + settings.instruction : ''}`,
     operation: 'fusion', modelId: input.modelId, inputImageId: source.id,
@@ -1028,7 +1028,7 @@ async function removeImageElement(projectId, input) {
   const config = readModels();
   const visionModel = visionModelOrThrow(config, input.visionModelId);
   const image = imageOrThrow(projectId, input.imageId);
-  if (!visionModel.apiKey) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
+  if (!hasModelCredentials(visionModel)) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
   return startGeneration(projectId, {
     prompt: cleanup.mode === 'selection' ? '识别并删除用户圈选的元素，自然补全其遮挡的背景' : `${cleanupLabels[cleanup.mode]}${cleanup.instruction ? `：${cleanup.instruction}` : ''}`,
     operation: 'remove_element',
@@ -1561,7 +1561,7 @@ async function runGenerationTask(projectId, taskId, context) {
       await new Promise((resolve) => setTimeout(resolve, 650));
       generated = Array.from({ length: count }, (_, index) => ({ bytes: makeDemoPng(batchPrompts[index] || effectivePrompt || '基于图片继续创作', outputWidth, outputHeight, index), mimeType: 'image/png', width: outputWidth, height: outputHeight, promptIndex: context.autoPromptMode && promptMode === 'different' ? index : 0 }));
     } else {
-      if (!model.apiKey) throw new Error('模型尚未配置 API Key');
+      if (!hasModelCredentials(model)) throw new Error('模型尚未配置 API Key');
       const providerResult = await callImageProviderBatch(model, batchPrompts, params, providerImage, controller.signal, { projectId, taskId, operationType: operation, phase: operation === 'remove_element' ? '删除元素与背景修复' : operation === 'remove_background' ? '去除背景并生成透明 PNG' : '图片生成', modelType: 'image' });
       generated = providerResult.outputs;
       generationErrors = providerResult.failedCount ? providerResult.errors.slice(-providerResult.failedCount) : [];
@@ -1841,7 +1841,7 @@ async function runBatchEditTask(projectId, taskId, context) {
     return { inputImageId: source.id, versionId, versionNumber, batch: { template: validated.template, prompts: validated.prompts, variableNames: validated.variableNames, total: validated.quantity, currentIndex: activeIndex >= 0 ? activeIndex : null, items } };
   };
   try {
-    if (!model.apiKey && model.provider !== 'mock') throw new Error('模型尚未配置 API Key');
+    if (!hasModelCredentials(model) && model.provider !== 'mock') throw new Error('模型尚未配置 API Key');
     for (let index = 0; index < items.length; index += 1) {
       controller.signal.throwIfAborted();
       const item = items[index];
@@ -2007,7 +2007,7 @@ async function runBatchGenerateTask(projectId, taskId, context) {
   const { model, params, versionId, versionNumber, validated, stylePrompt, promptSummary, taskInput, controller } = context;
   const successful = [];
   try {
-    if (!model.apiKey && model.provider !== 'mock') throw new Error('模型尚未配置 API Key');
+    if (!hasModelCredentials(model) && model.provider !== 'mock') throw new Error('模型尚未配置 API Key');
     for (const item of taskInput().batch.items) {
       controller.signal.throwIfAborted();
       const startedAt = Date.now();
@@ -2133,7 +2133,7 @@ function startLocalEditBatch(projectId, input) {
   ensureProjectDirs(projectId);
   const config = readModels();
   const visionModel = visionModelOrThrow(config, input.visionModelId);
-  if (!visionModel.apiKey) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
+  if (!hasModelCredentials(visionModel)) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
   const rect = validateRect(input.rect);
   if (rect.width < 1 || rect.height < 1) throw httpError(400, 'localEdit.rectTooSmall', '框选区域太小，请重新框选');
   const reference = input.reference == null ? null : referenceBytes(input.reference);
@@ -2187,7 +2187,7 @@ async function runLocalEditBatchTask(projectId, taskId, context) {
     return { inputImageId: source.id, versionId, versionNumber, localEdit: { rect, hasReference: Boolean(reference), visionModelId: visionModel.id }, batch: { prompts: instructions, local: true, total: instructions.length, currentIndex: activeIndex >= 0 ? activeIndex : null, items } };
   };
   try {
-    if (!model.apiKey && model.provider !== 'mock') throw new Error('模型尚未配置 API Key');
+    if (!hasModelCredentials(model) && model.provider !== 'mock') throw new Error('模型尚未配置 API Key');
     for (let index = 0; index < items.length; index += 1) {
       controller.signal.throwIfAborted();
       const item = items[index];
@@ -2797,7 +2797,7 @@ async function serveApp(res, pathname) {
 async function testModelConnection(model) {
   const started = Date.now();
   if (model.provider === 'mock') return { ok: true, latency: Date.now() - started, message: '本地演示模型可用', code: 'msg.testMockOk' };
-  if (!model.apiKey || model.apiKey === '••••••••') throw httpError(400, 'model.missingApiKey', '请先填写 API Key');
+  if (!hasModelCredentials(model)) throw httpError(400, 'model.missingApiKey', '请先填写 API Key');
   const baseUrl = normalizeBaseUrl(model.baseUrl);
   if (model.type === 'image' && imageApiFormat(model) === 'gemini_interactions') {
     const response = await fetch(`${baseUrl}/models/${encodeURIComponent(model.model)}`, {
@@ -2815,7 +2815,7 @@ async function testModelConnection(model) {
       ? isDots
         ? { 'api-key': model.apiKey, 'Content-Type': 'application/json' }
         : { 'x-api-key': model.apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
-      : { Authorization: `Bearer ${model.apiKey}`, 'Content-Type': 'application/json' };
+      : { ...bearerHeaders(model), 'Content-Type': 'application/json' };
     const requestBody = apiFormat === 'anthropic_messages'
       ? { model: model.model, max_tokens: 8, stream: false, ...(isDots ? { thinking: { type: 'disabled' } } : {}), messages: [{ role: 'user', content: '请只回复 OK。' }] }
       : apiFormat === 'responses'
@@ -2831,12 +2831,19 @@ async function testModelConnection(model) {
     if (!response.ok) throw Object.assign(new Error(payload?.error?.message || payload?.message || `连接失败（${response.status}）`), { status: 502 });
     return { ok: true, latency: Date.now() - started, message: `视觉识别端点连接成功（${apiFormat === 'anthropic_messages' ? 'Anthropic Messages' : apiFormat === 'responses' ? 'Responses' : 'Chat Completions'}）` };
   }
-  const modelEndpoint = `${baseUrl}/models/${model.model}`;
+  if (model.provider === 'local') {
+    const response = await fetch(`${baseUrl}/models`, { headers: bearerHeaders(model), signal: AbortSignal.timeout(15000) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw Object.assign(new Error(payload?.error?.message || `连接失败（${response.status}）`), { status: 502 });
+    if (!Array.isArray(payload.data) || !payload.data.some(item => item.id === model.model)) throw httpError(502, 'model.localModelNotFound', '本地服务未返回该模型，请核对已加载的模型名称');
+    return { ok: true, latency: Date.now() - started, message: '本地服务已连接，模型名称已确认；生成与改图能力以服务实际支持为准', code: 'msg.testLocalOk' };
+  }
+  const modelEndpoint = `${baseUrl}/models/${encodeURIComponent(model.model)}`;
   const isSenseNova = isSenseNovaImageModel(model);
-  let response = await fetch(modelEndpoint, { headers: { Authorization: `Bearer ${model.apiKey}` }, signal: AbortSignal.timeout(15000) });
+  let response = await fetch(modelEndpoint, { headers: bearerHeaders(model), signal: AbortSignal.timeout(15000) });
   if (response.status === 404) {
     const imageEndpoint = `${baseUrl}/images/generations`;
-    response = await fetch(imageEndpoint, { method: 'OPTIONS', headers: { Authorization: `Bearer ${model.apiKey}` }, signal: AbortSignal.timeout(15000) });
+    response = await fetch(imageEndpoint, { method: 'OPTIONS', headers: bearerHeaders(model), signal: AbortSignal.timeout(15000) });
     if (response.ok || response.status === 405) return { ok: true, latency: Date.now() - started, message: '图片生成端点可达（该服务不提供通用模型查询）', code: 'msg.testEndpointOk' };
     if (response.status === 401 || response.status === 403) throw httpError(502, 'model.unauthorized', '连接失败：API Key 未获授权');
     if (isSenseNova && response.status === 404) return { ok: true, latency: Date.now() - started, message: 'SenseNova 图片模型配置已识别；请通过一次生成验证权限', code: 'msg.testSenseNovaOk' };
