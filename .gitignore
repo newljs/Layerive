@@ -35,6 +35,9 @@ yarn-error.log*
 next-env.d.ts
 /dist/
 /release/
+/宣传视频/演示视频.mp4
+/宣传视频/Layerive-Remotion工程-138s.zip
+/宣传视频/Layerive-Remotion工程.zip
 /.wrangler/
 /outputs/
 /work/

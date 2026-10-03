@@ -1,0 +1,15 @@
+import {Interactive, interpolate, useCurrentFrame} from 'remotion';
+import {Scene} from '../Scene';
+import {Body, Chapter, Reveal, ease} from '../visuals';
+
+export const Freedom:React.FC=()=>{
+ const f=useCurrentFrame();
+ return <Scene>
+  <Chapter n="10" label="选择权，交给你"/>
+  <Reveal style={{position:'absolute',left:90,top:169}}><Interactive.Div name="Open and local" style={{fontSize:83,fontWeight:750,letterSpacing:-3}}>开源。 本地部署。 <span style={{color:'#63f3e1'}}>模型自主选。</span></Interactive.Div><Body style={{marginTop:16}}>工具在自己的电脑上，模型与服务由自己决定。</Body></Reveal>
+  <div style={{position:'absolute',left:90,top:399,width:552,height:514,padding:38,border:'1px solid #9b88ff65',borderRadius:25,background:'#17192f',opacity:interpolate(f,[12,30,119,139],[0,1,1,.6],ease)}}><div style={{fontFamily:'Bahnschrift',fontSize:78,color:'#b3a0ff',marginBottom:27}}>&lt; / &gt;</div><div style={{fontSize:42,fontWeight:650}}>开源项目</div><div style={{fontSize:29,lineHeight:1.8,color:'#b9c4dc',marginTop:23}}>查看源码，自主扩展。<br/>让工具适应你的创作方式。</div><div style={{height:1,background:'#ffffff21',margin:'29px 0 23px'}}/><div style={{fontSize:27,color:'#cabdff'}}>github.com/newljs/Layerive</div><div style={{fontSize:22,color:'#8392ac',marginTop:15}}>LGPL-3.0-or-later</div></div>
+  <div style={{position:'absolute',left:682,top:399,width:552,height:514,padding:38,border:'1px solid #63f3e15c',borderRadius:25,background:'#10262d',opacity:interpolate(f,[119,139,239,259],[0,1,1,.6],ease)}}><svg width="95" height="93" viewBox="0 0 96 96" style={{marginBottom:16}}><rect x="6" y="7" width="84" height="57" rx="7" fill="none" stroke="#63f3e1" strokeWidth="4"/><path d="M48 65 V83 M27 84 H69" stroke="#63f3e1" strokeWidth="4"/></svg><div style={{fontSize:42,fontWeight:650}}>本地部署</div><div style={{fontSize:29,lineHeight:1.8,color:'#b9c4dc',marginTop:23}}>项目、图片、对话与版本，<br/>保存在自己的电脑上。</div><div style={{height:1,background:'#ffffff21',margin:'29px 0 23px'}}/><div style={{fontSize:27,color:'#87f5e5'}}>Windows · macOS · Linux</div><div style={{fontSize:22,color:'#8392ac',marginTop:15}}>支持项目导出与完整备份</div></div>
+  <div style={{position:'absolute',left:1274,top:399,width:552,height:514,padding:38,border:'1px solid #6f99ed65',borderRadius:25,background:'#142036',opacity:interpolate(f,[239,259],[0,1],ease)}}><svg width="95" height="93" viewBox="0 0 96 96" style={{marginBottom:16}}><path d="M18 24 L48 48 L78 24 M48 48 V83" stroke="#91b3ff" strokeWidth="4" fill="none"/>{[[18,24],[78,24],[48,48],[48,83]].map(([x,y],i)=><circle key={i} cx={x} cy={y} r="9" fill="#142036" stroke="#91b3ff" strokeWidth="3"/>)}</svg><div style={{fontSize:42,fontWeight:650}}>自主接入模型</div><div style={{fontSize:28,lineHeight:1.8,color:'#b9c4dc',marginTop:23}}>OpenAI · Gemini · Grok<br/>日日新 · 自定义模型服务</div><div style={{height:1,background:'#ffffff21',margin:'29px 0 23px'}}/><div style={{fontSize:26,color:'#a8c4ff'}}>选择兼容接口与模型能力</div><div style={{fontSize:22,color:'#8392ac',marginTop:15}}>配置服务地址、密钥与模型名</div></div>
+  <Reveal delay={277} style={{position:'absolute',left:91,top:963,fontSize:24,color:'#8a9ab6'}}>本地运行工作台；模型需支持对应接口与图像能力。</Reveal>
+ </Scene>;
+};
