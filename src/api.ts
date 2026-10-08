@@ -1,3 +1,5 @@
+import { imagePluginForOperation } from './plugins/catalog';
+import type { ImagePluginManifest } from './types';
 import { tf } from './i18n';
 import type { BatchEditProgress, BatchEditResult, CleanupMode, ExtractionMode, FusionMode, GenerateResult, GenerationTask, GalleryEntryItem, LocalEditReference, ModelConfig, ModelExecutionLog, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
 
@@ -30,7 +32,13 @@ function downloadFile(url: string) {
   anchor.remove();
 }
 
+function runImagePlugin(id: string, pluginId: string, input: Record<string, unknown>) {
+  return request<GenerateResult>('/api/projects/' + encodeURIComponent(id) + '/plugins/' + encodeURIComponent(pluginId) + '/run', { method: 'POST', body: JSON.stringify(input) });
+}
+
 export const api = {
+  imagePlugins: () => request<{ plugins: ImagePluginManifest[]; errors?: { directory: string; message: string }[] }>('/api/plugins'),
+  runImagePlugin,
   listProjects: () => request<{ projects: Project[] }>('/api/projects'),
   createProject: (input: { name: string; description?: string; defaultModelId?: string }) =>
     request<ProjectBundle>('/api/projects', { method: 'POST', body: JSON.stringify(input) }),
@@ -67,25 +75,25 @@ export const api = {
   recognizeText: (id: string, imageId: string, visionModelId?: string) =>
     request<{ segments: TextSegment[]; modelName: string; cached: boolean }>(`/api/projects/${id}/recognize-text`, { method: 'POST', body: JSON.stringify({ imageId, visionModelId }) }),
   editText: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; segments: TextSegment[]; params?: Record<string, unknown> }) =>
-    request<GenerateResult>(`/api/projects/${id}/edit-text`, { method: 'POST', body: JSON.stringify(input) }),
+    runImagePlugin(id, imagePluginForOperation('edit_text').id, input),
   fusion: (id: string, input: { imageId: string; referenceImageId: string; modelId: string; visionModelId?: string; mode: FusionMode; point: { x: number; y: number }; instruction?: string; params?: Record<string, unknown> }) =>
-    request<GenerateResult>(`/api/projects/${id}/fusion`, { method: 'POST', body: JSON.stringify(input) }),
+    runImagePlugin(id, imagePluginForOperation('fusion').id, input),
   localEdit: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; instruction: string; reference?: LocalEditReference; rect: { x: number; y: number; width: number; height: number }; params?: Record<string, unknown> }) =>
-    request<GenerateResult>(`/api/projects/${id}/local-edit`, { method: 'POST', body: JSON.stringify(input) }),
+    runImagePlugin(id, imagePluginForOperation('local_edit').id, input),
   removeElement: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; mode?: CleanupMode; rect?: { x: number; y: number; width: number; height: number }; instruction?: string; keepPoints?: Array<{ x: number; y: number }>; params?: Record<string, unknown> }) =>
-    request<GenerateResult>(`/api/projects/${id}/remove-element`, { method: 'POST', body: JSON.stringify(input) }),
+    runImagePlugin(id, imagePluginForOperation('remove_element').id, input),
   localEditBatch: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; instructions: string[]; reference?: LocalEditReference; params?: Record<string, unknown> }) =>
     request<BatchEditResult>(`/api/projects/${id}/local-edit-batch`, { method: 'POST', body: JSON.stringify(input) }),
   outpaint: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; size: string; params?: Record<string, unknown> }) =>
-    request<GenerateResult>(`/api/projects/${id}/outpaint`, { method: 'POST', body: JSON.stringify(input) }),
+    runImagePlugin(id, imagePluginForOperation('outpaint').id, input),
   enhance: (id: string, input: { imageId: string; modelId: string; parentVersionId?: string | null; params?: Record<string, unknown> }) =>
-    request<GenerateResult>(`/api/projects/${id}/enhance`, { method: 'POST', body: JSON.stringify(input) }),
+    runImagePlugin(id, imagePluginForOperation('enhance').id, input),
   removeWatermark: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; params?: Record<string, unknown> }) =>
-    request<GenerateResult>(`/api/projects/${id}/remove-watermark`, { method: 'POST', body: JSON.stringify(input) }),
+    runImagePlugin(id, imagePluginForOperation('remove_watermark').id, input),
   removeBackground: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; params?: Record<string, unknown> }) =>
-    request<GenerateResult>(`/api/projects/${id}/remove-background`, { method: 'POST', body: JSON.stringify(input) }),
+    runImagePlugin(id, imagePluginForOperation('remove_background').id, input),
   extractAsset: (id: string, input: { imageId: string; modelId: string; visionModelId?: string; parentVersionId?: string | null; rect: { x: number; y: number; width: number; height: number }; crop: { data: string; mimeType: string; padded?: boolean }; mode?: ExtractionMode; hint?: string; params?: Record<string, unknown> }) =>
-    request<GenerateResult>(`/api/projects/${id}/extract-asset`, { method: 'POST', body: JSON.stringify(input) }),
+    runImagePlugin(id, imagePluginForOperation('extract_asset').id, input),
   uploadImage: (id: string, input: { data: string; mimeType: string; name: string; referenceOnly?: boolean }) =>
     request<ProjectBundle>(`/api/projects/${id}/images`, { method: 'POST', body: JSON.stringify(input) }),
   gallery: () => request<{ entries: GalleryEntryItem[] }>('/api/gallery'),

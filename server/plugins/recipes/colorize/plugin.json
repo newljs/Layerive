@@ -1,0 +1,28 @@
+{
+  "id": "layerive.colorize",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "operation": "recipe_colorize",
+  "route": "recipe-colorize",
+  "timeoutMs": 300000,
+  "requirements": { "image": ["edit_prompt"], "vision": true, "multipleImages": "with-reference" },
+  "ui": {
+    "name": { "zh": "黑白照片上色", "en": "Colorize photo" },
+    "description": { "zh": "为黑白或褪色照片补充合理色彩，保留人物身份、构图和细节。原始颜色不确定时由模型推断，可提供色彩参考。", "en": "Add plausible colors to monochrome or faded photos while preserving identity, composition and detail. Unknown original colors are inferred; a color reference is optional." },
+    "icon": "sparkle",
+    "fields": [
+      { "key": "style", "type": "select", "required": true, "default": "natural", "label": { "zh": "上色风格", "en": "Color style" }, "options": [
+        { "value": "natural", "label": { "zh": "自然真实", "en": "Natural" } },
+        { "value": "vintage", "label": { "zh": "复古柔和", "en": "Soft vintage" } }
+      ] },
+      { "key": "preserveGrain", "type": "boolean", "default": true, "label": { "zh": "保留原有颗粒质感", "en": "Preserve original grain" } },
+      { "key": "instruction", "type": "text", "maxLength": 1000, "default": "", "label": { "zh": "补充要求", "en": "Additional instructions" } },
+      { "key": "reference", "type": "image", "label": { "zh": "色彩参考图（可选）", "en": "Color reference (optional)" } }
+    ]
+  },
+  "workflow": {
+    "vision": "分析图1是否为适合上色的黑白、低饱和或褪色照片。分析人物肤色、衣物、环境和年代感，结合用户要求制定合理上色方案；不确定的颜色采用保守自然的推断，不声称恢复历史真实颜色。若已经是正常彩色图或不适合此操作，返回 applicable=false。如有图2等参考图，只借鉴其配色，不迁移人物、物体或构图。",
+    "prompt": "仅为图1补充颜色，严格保留人物身份、五官、表情、姿态、文字、构图、几何结构、细节、明暗关系和原有宽高比。不得增加、删除或替换主体。按所选风格和颗粒保留参数处理，不磨皮、不改变年代特征、不添加水印。如有参考图，只使用其配色线索。",
+    "output": { "format": "png", "transparent": false, "dimensions": "any" }
+  }
+}

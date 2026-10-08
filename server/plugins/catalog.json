@@ -1,0 +1,137 @@
+[
+  {
+    "id": "layerive.local-edit",
+    "operation": "local_edit",
+    "route": "local-edit",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "timeoutMs": 300000,
+    "requirements": {
+      "image": [
+        "edit_prompt"
+      ],
+      "vision": true,
+      "multipleImages": "with-reference"
+    }
+  },
+  {
+    "id": "layerive.remove-element",
+    "operation": "remove_element",
+    "route": "remove-element",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "timeoutMs": 300000,
+    "requirements": {
+      "image": [
+        "edit_prompt"
+      ],
+      "vision": true,
+      "multipleImages": "none"
+    }
+  },
+  {
+    "id": "layerive.extract-asset",
+    "operation": "extract_asset",
+    "route": "extract-asset",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "timeoutMs": 300000,
+    "requirements": {
+      "image": [
+        "edit_prompt"
+      ],
+      "vision": true,
+      "multipleImages": "none"
+    }
+  },
+  {
+    "id": "layerive.fusion",
+    "operation": "fusion",
+    "route": "fusion",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "timeoutMs": 300000,
+    "requirements": {
+      "image": [
+        "edit_prompt"
+      ],
+      "vision": true,
+      "multipleImages": "required"
+    }
+  },
+  {
+    "id": "layerive.outpaint",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "operation": "outpaint",
+    "route": "outpaint",
+    "timeoutMs": 300000,
+    "requirements": {
+      "image": [
+        "edit_prompt"
+      ],
+      "vision": false,
+      "multipleImages": "none"
+    }
+  },
+  {
+    "id": "layerive.enhance",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "operation": "enhance",
+    "route": "enhance",
+    "timeoutMs": 300000,
+    "requirements": {
+      "image": [
+        "edit_prompt"
+      ],
+      "vision": false,
+      "multipleImages": "none"
+    }
+  },
+  {
+    "id": "layerive.remove-background",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "operation": "remove_background",
+    "route": "remove-background",
+    "timeoutMs": 300000,
+    "requirements": {
+      "image": [
+        "edit_prompt"
+      ],
+      "vision": true,
+      "multipleImages": "none"
+    }
+  },
+  {
+    "id": "layerive.remove-watermark",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "operation": "remove_watermark",
+    "route": "remove-watermark",
+    "timeoutMs": 300000,
+    "requirements": {
+      "image": [
+        "edit_prompt"
+      ],
+      "vision": true,
+      "multipleImages": "none"
+    }
+  },
+  {
+    "id": "layerive.edit-text",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "operation": "edit_text",
+    "route": "edit-text",
+    "timeoutMs": 300000,
+    "requirements": {
+      "image": [
+        "edit_prompt"
+      ],
+      "vision": true,
+      "multipleImages": "none"
+    }
+  }
+]

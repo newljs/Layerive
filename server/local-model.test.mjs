@@ -44,7 +44,8 @@ test('local services: persistence, optional auth, image generation/editing and v
   let logs = '';
   child.stdout.on('data', chunk => { logs += chunk; });
   child.stderr.on('data', chunk => { logs += chunk; });
-  for (let i = 0; i < 150 && !/http:\/\/127\.0\.0\.1:\d+/.test(logs); i++) await pause(30);
+  const startupDeadline = Date.now() + 15000;
+  while (!/http:\/\/127\.0\.0\.1:\d+/.test(logs) && Date.now() < startupDeadline && child.exitCode == null) await pause(30);
   const base = logs.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
   assert.ok(base, logs);
   async function request(route, input, expected = 200, method = 'POST') {

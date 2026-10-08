@@ -1,4 +1,18 @@
 export type ExtractionMode = 'selection' | 'clothing' | 'accessory' | 'pattern' | 'background';
+export type ImagePluginSnapshot = { id: string; version: string; apiVersion: number };
+export type ImagePluginManifest = ImagePluginSnapshot & {
+  operation: string;
+  route: string;
+  requirements: { image: string[]; vision: boolean; multipleImages: string };
+  kind?: 'recipe';
+  ui?: { name: PluginText; description: PluginText; icon: 'sparkle' | 'image' | 'edit' | 'background' | 'extract'; fields: PluginField[] };
+};
+export type PluginText = { zh: string; en: string };
+export type PluginField = {
+  key: string; type: 'text' | 'select' | 'boolean' | 'number' | 'image'; label: PluginText;
+  required?: boolean; default?: string | number | boolean; maxLength?: number; min?: number; max?: number;
+  options?: { value: string; label: PluginText }[];
+};
 export type CleanupMode = 'selection' | 'people' | 'clutter' | 'text' | 'room';
 
 export type ModelConfig = {
@@ -112,6 +126,7 @@ export type TextSegment = {
 
 export type GenerationTask = {
   id: string;
+  plugin?: ImagePluginSnapshot | null;
   status: 'generating' | 'success' | 'partial' | 'failed' | 'canceled';
   operationType?: string;
   stage?: 'planning' | 'compositing' | 'generating' | 'preserving' | 'validating' | null;

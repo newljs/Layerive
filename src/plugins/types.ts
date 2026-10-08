@@ -1,0 +1,1 @@
+export type TaskKind = 'fusion' | 'generate' | 'batch-edit' | 'text-edit' | 'local-edit' | 'remove-element' | 'outpaint' | 'enhance' | 'remove-watermark' | 'remove-background' | 'extract-asset' | `plugin:${string}`;
