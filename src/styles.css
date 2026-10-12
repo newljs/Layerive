@@ -1064,6 +1064,19 @@ button:focus-visible, a:focus-visible, select:focus-visible, summary:focus-visib
 .canvas-edit-menu { border-color: var(--line); border-radius: 9px; box-shadow: none; }
 .canvas-edit-menu button { border-radius: 6px; font-weight: 500; color: #59657b; }
 .canvas-edit-menu button + button::before { background: var(--line-soft); }
+.canvas-edit-toolbar { --tools-surface: #fff; min-width: 0; height: 44px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 9px; background: var(--tools-surface); }
+.canvas-edit-toolbar.has-overflow { padding-inline: 4px; gap: 3px; }
+.canvas-edit-toolbar .canvas-edit-menu { flex: 1; height: 42px; border: 0; border-radius: 0; background: transparent; box-shadow: none; overscroll-behavior-x: contain; }
+.canvas-edit-track { position: relative; display: flex; align-items: center; flex: 0 0 auto; width: max-content; min-width: 100%; }
+.canvas-edit-menu[data-scroll-left='true'] { mask-image: linear-gradient(to right, transparent, #000 14px); }
+.canvas-edit-menu[data-scroll-right='true'] { mask-image: linear-gradient(to left, transparent, #000 14px); }
+.canvas-edit-menu[data-scroll-left='true'][data-scroll-right='true'] { mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 14px), transparent); }
+.canvas-tools-scroll { flex: 0 0 30px; width: 30px; height: 32px; display: grid; place-items: center; padding: 0; border: 1px solid #dcd7ee; border-radius: 6px; background: #f2effa; color: #65529b; cursor: pointer; transition: background .15s ease, color .15s ease; }
+.canvas-tools-scroll[hidden] { display: none; }
+.canvas-tools-scroll:hover:not(:disabled) { background: #e5def6; color: #49337f; }
+.canvas-tools-scroll:disabled { border-color: transparent; background: transparent; color: #b9bdc7; cursor: default; }
+.canvas-tools-scroll:focus-visible, .canvas-edit-menu button:focus-visible { outline: 2px solid #8870c8; outline-offset: -2px; }
+@media (prefers-reduced-motion: reduce) { .canvas-tools-scroll { transition: none; } }
 .canvas-actions button, .canvas-actions a { border-radius: 6px; box-shadow: none; }
 .version-item { border-radius: 9px; }
 .version-item-wrap.active .version-item { box-shadow: none; }
@@ -1308,6 +1321,11 @@ html[data-theme='dark'] .canvas-actions .download-version-zip:hover { border-col
 html[data-theme='dark'] .canvas-edit-menu { border-color: #30343d; background: #20232a; box-shadow: 0 3px 10px #00000024; }
 html[data-theme='dark'] .canvas-edit-menu button { color: #c5c9d1; }
 html[data-theme='dark'] .canvas-edit-menu button + button::before { background: #343842; }
+html[data-theme='dark'] .canvas-edit-toolbar { --tools-surface: #20232a; border-color: #30343d; }
+html[data-theme='dark'] .canvas-edit-toolbar .canvas-edit-menu { border: 0; background: transparent; box-shadow: none; }
+html[data-theme='dark'] .canvas-tools-scroll { border-color: #4a4164; background: #332e47; color: #c3b5ed; }
+html[data-theme='dark'] .canvas-tools-scroll:hover:not(:disabled) { background: #44395e; color: #e6dcff; }
+html[data-theme='dark'] .canvas-tools-scroll:disabled { border-color: transparent; background: transparent; color: #626977; }
 html[data-theme='dark'] .canvas-edit-menu button:hover:not(:disabled) { background: #2b2f38; color: #f0f1f4; }
 html[data-theme='dark'] .canvas-edit-menu .local-edit-launch.active { background: #312c4a; color: #cbc2ff; }
 html[data-theme='dark'] .canvas-edit-menu .remove-element-launch.active { background: #3a2323; color: #f2adad; }

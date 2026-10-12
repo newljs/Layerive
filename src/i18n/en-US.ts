@@ -413,6 +413,8 @@ export const enUS: Record<TranslationKey, DictValue> = {
   'ws.viewTree': 'View version tree',
   'ws.projectCanvas': 'Project canvas',
   'ws.imageEditTools': 'Image editing tools',
+  'ws.toolsScrollLeft': 'Browse tools to the left (mouse wheel supported)',
+  'ws.toolsScrollRight': 'Browse tools to the right (mouse wheel supported)',
   'ws.uploadImageAria': 'Upload image',
   'ws.exitLocalEditTitle': 'Exit local edit',
   'ws.localEditTitle': 'Box an area to edit it with text, or attach a reference image to replace the subject',

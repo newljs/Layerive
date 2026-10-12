@@ -411,6 +411,8 @@ export const zhCN = {
   'ws.viewTree': '查看版本关系',
   'ws.projectCanvas': '项目画布',
   'ws.imageEditTools': '图片编辑工具',
+  'ws.toolsScrollLeft': '向左浏览工具（支持鼠标滚轮）',
+  'ws.toolsScrollRight': '向右浏览工具（支持鼠标滚轮）',
   'ws.uploadImageAria': '上传图片',
   'ws.exitLocalEditTitle': '退出局部修改',
   'ws.localEditTitle': '框选图片区域，用文字要求修改，或上传参考图替换选中的主体',

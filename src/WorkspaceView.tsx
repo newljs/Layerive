@@ -5,6 +5,7 @@ import { ImagePluginButton } from './plugins/ImagePluginButton';
 import { ImageProcessingOverlay, type ActiveImageTask, type ProcessingTarget } from './ImageProcessingOverlay';
 import { ImageWithReveal } from './ImageWithReveal';
 import { OutpaintPreview } from './OutpaintPreview';
+import { ScrollableImageTools } from './ScrollableImageTools';
 import { workspacePlugins, taskKindForOperation } from './plugins/registry';
 import type { TaskKind } from './plugins/types';
 import { localEditStageKeys, removeElementStageKeys, cleanupStageKeys } from './plugins/definitions';
@@ -1843,7 +1844,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
               <div className="canvas-context">{currentVersion ? <><strong>V{currentVersion.number}</strong><span>{<PluginOperationName operation={currentVersion.operation} fallback={currentVersion.operation && operationKeys[currentVersion.operation] ? t(operationKeys[currentVersion.operation]) : currentVersion.operation} />}</span></> : <span>{t('ws.projectCanvas')}</span>}</div>
               <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label={t('common.zoomOut')}><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label={t('common.zoomIn')}><Icon name="plus" size={14} /></button><button disabled={!currentImage} onClick={openCompare}>{t('ws.compare')}</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>{t('common.download')}</a>{currentVersion && currentVersion.outputs.length > 1 && <button className="download-version-zip" title={t('ws.downloadZipTitle', { count: currentVersion.outputs.length })} onClick={() => api.downloadVersionImages(projectId, currentVersion.id)}><Icon name="download" size={13} /> ZIP</button>}</div>
             </div>
-            <nav className="canvas-edit-menu" aria-label={t('ws.imageEditTools')}>
+            <ScrollableImageTools>
               <ImagePluginButton tool={workspacePlugins.local_edit.tool} active={localEditMode} exiting={localEditMode || Boolean(localEditRect)} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit} />
               <ImagePluginButton tool={workspacePlugins.remove_element.tool} active={Boolean(removeElementMode || removeElementRect)} disabled={!removeElementMode && (!currentImage || generating || removingWatermark || removingBackground || enhancing)} onClick={(removeElementMode || removeElementRect) ? closeRemoveElement : startRemoveElement} />
               <ImagePluginButton tool={workspacePlugins.extract_asset.tool} active={Boolean(extractMode || extractRect)} disabled={!extractMode && (!currentImage || generating || removingWatermark || removingBackground || enhancing)} onClick={(extractMode || extractRect) ? closeExtract : startExtract} />
@@ -1854,7 +1855,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
               <ImagePluginButton tool={workspacePlugins.edit_text.tool} onClick={() => void openTextEditor()} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} />
               <ImagePluginButton tool={workspacePlugins.fusion.tool} active={fusionMode} disabled={!fusionMode && (!currentImage || generating || visionBusy)} onClick={toggleFusion} />
               <RecipeTools projectId={projectId} source={currentImage || undefined} images={bundle.images} model={selectedModel} visionModelId={selectedVisionModel?.id || ''} params={{ size: closestSizeForDimensions(selectedModel, currentImage?.width ?? null, currentImage?.height ?? null), count, outputFormat, quality: selectedModel?.defaultParams.quality || 'auto' }} busy={visionBusy || enhancing || uploading} taskId={activeTask?.id} stage={activeTask?.stage} onCancel={() => void cancelActiveTask()} onOpen={() => { setRightMode('chat'); setFusionMode(false); closeLocalEdit(); closeRemoveElement(); closeExtract(); closeOutpaint(); }} onStarted={(result, kind) => startPolling(result.taskId, kind, { imageId: currentImage?.id || null })} onUploaded={setBundle} />
-            </nav>
+            </ScrollableImageTools>
           </div>
           <div className={`canvas-edit-area ${fusionMode ? 'fusion-active' : ''}`}>
             <div className="canvas-edit-body">
