@@ -3,7 +3,7 @@
 > **维护契约（必须遵守）**：只要改动了项目的功能、架构、数据结构、API、模型适配、运行方式、文件位置或重要约束，必须在同一次改动中更新本文件。先核对相关实现，再更新受影响章节；不要仅凭 README 推断。纯格式调整且不改变行为时可不更新。  
 > 更新时请同步修改本文的“最后核对”日期和相应内容；若现有描述不再可信，优先修正文档而不是保留过期说明。
 
-**最后核对**：2026-10-12（工作台横向功能栏新增溢出时左右滚动按钮、边缘渐隐、鼠标滚轮及键盘浏览，兼容动态插件、中英文、暗色与减少动态效果；工具栏将黑白照片上色入口移动到融合模式按钮之后；此前宣传视频目录整体取消 Git 跟踪并加入忽略规则，仅保留本地；新增文字识别扫描、图片任务阶段动效、局部选区动效与解码后结果淡入；任务动效绑定提交图片和选区，兼容暗色模式与减少动态效果；文字识别弹窗隔离过期请求；扩图目标画布过渡与新增区域流光、融合落点反馈、新版本历史高亮和版本树淡入）
+**最后核对**：2026-10-12（发行版本更新到 0.1.9，GitHub 标签必须与 package.json 版本一致，CI 在打包前校验；macOS arm64 使用 macos-15，Intel x64 使用 macos-15-intel；此前桌面图标以 SVG 母版生成透明 PNG 和七尺寸 Windows ICO，去除白底与烘焙阴影并放大标志，Windows 安装包和窗口统一使用 ICO，构建前自动刷新图标；工作台横向功能栏新增溢出时左右滚动按钮、边缘渐隐、鼠标滚轮及键盘浏览，兼容动态插件、中英文、暗色与减少动态效果；工具栏将黑白照片上色入口移动到融合模式按钮之后；此前宣传视频目录整体取消 Git 跟踪并加入忽略规则，仅保留本地；新增文字识别扫描、图片任务阶段动效、局部选区动效与解码后结果淡入；任务动效绑定提交图片和选区，兼容暗色模式与减少动态效果；文字识别弹窗隔离过期请求；扩图目标画布过渡与新增区域流光、融合落点反馈、新版本历史高亮和版本树淡入）
 **项目定位**：Layerive 是一个仅本地运行的、以“项目 + 图片版本树”为中心的 AI 图片创作工作台。它将文生图、基于图片的编辑、融合、文字编辑、局部编辑、删除元素、去除背景、扩图、去水印、对话记录和项目备份统一保存到本机。
 
 ## 1. 运行与边界
@@ -13,7 +13,8 @@
 - 开发：`npm run dev` 同时启动 Vite `127.0.0.1:5173` 和后端 `127.0.0.1:8788`；Vite 将 `/api`、`/files`、`/gallery-files` 代理至后端；后端新增的顶层路径前缀必须同步加进 `vite.config.ts` 的 proxy，否则开发模式下会被 SPA fallback 回 `index.html`。
 - 生产：先 `npm run build`，再 `npm start`。后端从 `dist/` 托管前端，同时提供 API 和本地图片文件。
 - 桌面开发：`npm run desktop:dev` 先构建相同的前端，再由 Electron 启动本地服务和原生窗口；`npm run desktop:dist` 构建安装包。Electron 专属代码只在 `electron/main.cjs`，不得复制 `src/`、`server/` 或 `public/` 到另一个桌面项目。
-- CI 发布：推送 `v*` tag 触发 `.github/workflows/build.yml`，矩阵包含 Windows x64、macOS arm64 / x64、Ubuntu x64；各任务先在运行器架构执行 `npm ci` → `npm run build` → `npm test`，再执行 `npm ci --cpu=<arch>` → `electron-builder --<arch> --publish never`，按目标架构安装 Sharp 原生依赖。独立 release 任务发布非草稿 GitHub Release，三端均未签名。桌面服务位于资源目录 `app/server`，所需 Sharp、`@img`、`detect-libc`、`semver` 由 `extraResources` 放在同级 `app/node_modules`；新增或升级图像依赖时必须核对该运行时依赖清单，不能只依赖 `app.asar` 内的模块。
+- 桌面图标：`public/app-icon.svg` 为紫色渐变与白色标志的矢量母版，圆角外围透明且无烘焙阴影。`npm run icons` 经 Sharp 生成 `public/icons/icon-{16,32,180,192,512}.png` 及含 16/24/32/48/64/128/256 像素 RGBA PNG 帧的 `icon.ico`；`npm run build` 的 prebuild 自动执行生成，CI 和桌面构建沿用该流程。Windows 打包显式使用 `build.win.icon` 的 ICO（应用 EXE、快捷方式和 NSIS 安装/卸载图标），Electron Windows 窗口从 `dist/icons/icon.ico` 读取，其他平台继续使用 PNG。PWA 的 maskable 图标单独生成全尺寸实色底 `icon-maskable-512.png`，避免透明圆角被启动器裁切后露底；网页 SVG favicon 仍独立保留在 `public/favicon.svg`。
+- CI 发布：推送 `v*` tag 触发 `.github/workflows/build.yml`；`scripts/verify-release-version.mjs` 校验 tag 与 `package.json` 版本严格相等，electron-builder 使用该版本号命名安装包。矩阵包含 Windows x64、macOS arm64（`macos-15`）/Intel x64（`macos-15-intel`）、Ubuntu x64；各任务先在运行器架构执行 `npm ci` → `npm run build` → `npm test`，再执行 `npm ci --cpu=<arch>` → `electron-builder --<arch> --publish never`，按目标架构安装 Sharp 原生依赖。独立 release 任务发布非草稿 GitHub Release，三端均未签名。桌面服务位于资源目录 `app/server`，所需 Sharp、`@img`、`detect-libc`、`semver` 由 `extraResources` 放在同级 `app/node_modules`；新增或升级图像依赖时必须核对该运行时依赖清单，不能只依赖 `app.asar` 内的模块。
 - 检查：`npm run lint`（TypeScript no-emit）；`npm run build`（先类型检查再构建）；`npm run test` 使用 Node 内置测试和本地模拟模型运行全部服务端测试（也可单独运行 `npm run test:local-edit` / `npm run test:generate` / `npm run test:request-guard`）：`test:local-edit` 验证图片处理、日日新输入图规范化、三种视觉协议、四种图片协议的有序双图局部替换、单张与批量任务、拒绝多图时不降级、删除元素、框外像素保留及取消；`cleanup.test.mjs` 验证四种整图清理场景、四种图片及三种视觉协议、多区域并集与保护区像素、拒绝/取消及版本关联；`extraction.test.mjs` 验证五种提取场景、三种视觉协议、商品展示约束、多候选、拒绝/取消及版本关联；`test:generate` 验证批量生成的并发上限、限流退避重试、多图意图自动判断与提示词拆分、部分成功时提示词与图片对齐、去除背景的主体规划 / 透明参数 / Alpha 校验、文字编辑输出继承修改后的识别缓存（含多候选和全部删除）、变量批量处理与批量文生图的逐张返回/失败续跑/取消保留、日日新编辑请求及多图版本 ZIP 下载；`project-data.test.mjs` 验证导入路径穿越防护、草稿图片 ID 重映射、缺文件素材与文字缓存兼容及默认模型回退；`backup-restore.test.mjs` 验证恢复前拒绝损坏、路径穿越和模式不兼容数据库，恢复后的项目目录重建及安全备份；`restore-concurrency.test.mjs` 验证恢复会取消并等待在途生成，再由桌面宿主重启；`model-connection.test.mjs` 验证模型端点错误不会被标记为连接成功；`test:request-guard` 验证本机访问限制（跨站调用被拒、响应不带 CORS 授权、Vite 代理与非浏览器调用仍可用）。`plugins.test.mjs` 验证新操作注册扩展、取消边界、无效输出和凭据隔离；`plugin-api.test.mjs` 验证九项原操作与上色插件的通用/别名入口等价、插件版本记录、未知 ID 拒绝、访问限制与复制/导入，以及改字/去水印/去背景的规划取消、拒绝不出图、失败不发布版本与同步校验；`recipe.test.mjs` 验证 JSON 目录发现、坏插件隔离、字段与默认值校验、有序参考图、无视觉流程、输出格式/尺寸/透明校验及取消。测试仅使用生成的图片和 `work/*-test-*` 内的独立数据/配置，不读取真实用户数据或调用真实模型；测试文件不打入桌面服务资源。
 - Windows 双击启动入口：`Layerive.bat`。该文件使用固定的工作目录，移动仓库后需要同步更新。
 - 项目不依赖登录、云端数据库或第三方后端。模型请求会发送给用户配置的模型服务；其他项目数据留在本机。
@@ -150,7 +151,7 @@ scripts/
   parse-gallery.mjs         从外部 GPT-Image2-Skill 参考资料生成画廊源 JSON
   build-gallery-ts.mjs      从 gallery.raw.json 生成 src/gallery.ts
   build-gallery-images.py   构建画廊图片素材
-  make-icons.mjs            生成 PWA 图标
+  make-icons.mjs            从 SVG 母版生成透明 PNG 与 Windows 多尺寸 ICO
 public/                     静态图标、PWA manifest、画廊缩略图
 data/                       浏览器本地版的运行时 SQLite、项目图片、画廊配图（data/gallery）、恢复安全备份（被 Git 忽略）
 config/models.json          浏览器本地版的运行时模型配置，可能含 API Key（被 Git 忽略）

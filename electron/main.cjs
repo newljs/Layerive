@@ -98,7 +98,7 @@ function createWindow() {
     minHeight: 680,
     show: false,
     backgroundColor: '#f7f8fb',
-    icon: path.join(desktopRoot(), 'dist', 'icons', 'icon-512.png'),
+    icon: path.join(desktopRoot(), 'dist', 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon-512.png'),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

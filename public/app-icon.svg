@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="tile" x1="16" y1="16" x2="496" y2="496" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7827bd"/>
+      <stop offset=".5" stop-color="#6233c5"/>
+      <stop offset="1" stop-color="#3945ce"/>
+    </linearGradient>
+  </defs>
+  <!-- Transparent breathing room and corners; deliberately no baked-in shadow. -->
+  <rect x="16" y="16" width="480" height="480" rx="100" fill="url(#tile)"/>
+  <!-- Preserve the existing image/brush P silhouette, enlarged for desktop sizes. -->
+  <g fill="#fff" transform="translate(256 256) scale(1.3) translate(-259 -252)">
+    <path d="M190 276V216a69 69 0 1 1 69 67h-21c3-15 15-27 30-29a39 39 0 0 0-9-79h-37a5 5 0 0 0-5 5v44c-11 15-20 32-27 52Z"/>
+    <path d="M191 325c-5-40 7-77 37-106l16-16 12 12 18-20 17 18v12c0 12-12 20-29 20-28 0-44 32-46 70v29h-8v-10h-6v-9Z"/>
+    <path d="M203 347h9v9h-9Zm13-28h9v15h-9Z"/>
+  </g>
+</svg>

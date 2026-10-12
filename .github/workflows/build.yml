@@ -16,9 +16,9 @@ jobs:
         include:
           - os: windows-latest
             arch: x64
-          - os: macos-latest
+          - os: macos-15
             arch: arm64
-          - os: macos-latest
+          - os: macos-15-intel
             arch: x64
           - os: ubuntu-latest
             arch: x64
@@ -26,6 +26,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify release tag matches package version
+        run: node scripts/verify-release-version.mjs
 
       - uses: actions/setup-node@v4
         with:
