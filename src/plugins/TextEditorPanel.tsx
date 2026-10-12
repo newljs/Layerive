@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction, MouseEventHandler } from 'react';
 import { Icon } from '../Icon';
+import { ImageProcessingOverlay } from '../ImageProcessingOverlay';
 import { useLanguage } from '../i18n';
 import type { ProjectImage, TextSegment } from '../types';
 type Rect = TextSegment['rect'];
@@ -19,19 +20,22 @@ export function TextEditorPanel({ textImage, textEditSubmitting, generating, set
         <section className="text-editor-modal" role="dialog" aria-modal="true" aria-labelledby="text-editor-title">
           <div className="modal-heading"><div><p className="eyebrow">TEXT EDIT</p><h2 id="text-editor-title">{t('ws.textEditorTitle')}</h2><small>{recognitionModel ? t('ws.recognizedBy', { model: recognitionModel }) : t('ws.recognizingShort')}</small></div><button className="icon-button" disabled={textEditSubmitting || generating} onClick={() => setTextEditorOpen(false)}><Icon name="close" size={16} /></button></div>
           <div className="text-editor-layout">
-            <div className={`text-editor-preview ${boxMode ? 'box-mode' : ''}`} onMouseDown={onBoxStart} onMouseMove={onBoxMove} onMouseUp={onBoxEnd} onMouseLeave={onBoxEnd}>
+            <div className={`text-editor-preview ${boxMode ? 'box-mode' : ''}`} aria-busy={recognizingText}>
+              <div className="text-editor-image" style={textImage.width && textImage.height ? { width: `min(100%, ${64 * textImage.width / textImage.height}vh)` } : undefined} onMouseDown={onBoxStart} onMouseMove={onBoxMove} onMouseUp={onBoxEnd} onMouseLeave={onBoxEnd}>
               <img src={textImage.url} alt={t('ws.textEditImageAlt')} draggable={false} />
-              {textSegments.filter((segment) => segment.rect).map((segment) => <span key={segment.id} className="manual-rect" style={{ left: `${segment.rect!.x}%`, top: `${segment.rect!.y}%`, width: `${segment.rect!.width}%`, height: `${segment.rect!.height}%` }} />)}
+              {recognizingText && <ImageProcessingOverlay key={textImage.id} effect="scan" />}
+              {textSegments.filter((segment) => segment.rect).map((segment) => <span key={segment.id} className="manual-rect recognized-rect" style={{ left: `${segment.rect!.x}%`, top: `${segment.rect!.y}%`, width: `${segment.rect!.width}%`, height: `${segment.rect!.height}%` }} />)}
               {draftRect && <span className="manual-rect drafting" style={{ left: `${draftRect.x}%`, top: `${draftRect.y}%`, width: `${draftRect.width}%`, height: `${draftRect.height}%` }} />}
-              <span>{textImage.width || '—'} × {textImage.height || '—'}</span>
-              <button className={`box-mode-toggle ${boxMode ? 'active' : ''}`} onClick={() => { setBoxMode((mode) => !mode); setDraftRect(null); }}>{boxMode ? t('ws.finishBox') : <><Icon name="box" size={13} /> {t('ws.manualBox')}</>}</button>
+              </div>
+              <span className="text-preview-size">{textImage.width || '—'} × {textImage.height || '—'}</span>
+              <button className={`box-mode-toggle ${boxMode ? 'active' : ''}`} disabled={recognizingText || Boolean(textEditorError)} onClick={() => { setBoxMode((mode) => !mode); setDraftRect(null); }}>{boxMode ? t('ws.finishBox') : <><Icon name="box" size={13} /> {t('ws.manualBox')}</>}</button>
             </div>
             <div className="text-segment-list">
-              {recognizingText && <div className="text-editor-status"><span className="spinner" />{t('ws.recognizingText')}</div>}
+              {recognizingText && <div className="text-editor-status" role="status"><span className="spinner" />{t('ws.recognizingText')}</div>}
               {textEditorError && <div className="text-editor-status error"><strong>{t('ws.recognizeFailed')}</strong><p>{textEditorError}</p><button className="button secondary" onClick={() => void openTextEditor()}>{t('ws.reRecognize')}</button></div>}
               {!recognizingText && !textEditorError && <>
                 <p className="text-editor-tip">{t('ws.textEditorTip')}</p>
-                {textSegments.map((segment, index) => <div className="text-segment-field" key={segment.id}>
+                {textSegments.map((segment, index) => <div className="text-segment-field recognition-reveal" key={segment.id}>
                   <span>{segment.manual ? t('ws.manualArea') : t('ws.textIndex', { index: index + 1 })} · {segment.context || t('ws.imageTextArea')}</span>
                   {(segment.manual || segment.originalText) && <input className="segment-original" value={segment.originalText} placeholder={segment.manual ? t('ws.originalPlaceholder') : ''} onChange={(event) => updateTextSegment(segment.id, { originalText: event.target.value })} />}
                   <input value={segment.text} placeholder={segment.manual ? t('ws.newTextPlaceholder') : ''} onChange={(event) => updateTextSegment(segment.id, { text: event.target.value })} />

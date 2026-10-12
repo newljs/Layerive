@@ -1,4 +1,4 @@
-import type { Dispatch, RefObject, SetStateAction } from 'react';
+import { useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import { Icon } from '../Icon';
 import { thumbUrl } from '../api';
 import { useLanguage } from '../i18n';
@@ -7,6 +7,7 @@ import { fusionDescriptionKeys, fusionTypeIcons, fusionTypeKeys } from './defini
 import type { TaskKind } from './types';
 
 export type FusionPanelProps = {
+  feedbackReferenceId: string | null;
   toggleFusion: () => void;
   fusionType: FusionMode;
   generating: boolean;
@@ -31,8 +32,9 @@ export type FusionPanelProps = {
   setFusionInstruction: Dispatch<SetStateAction<string>>;
 };
 
-export function FusionPanel({ toggleFusion, fusionType, generating, setFusionType, setFusionPoint, activeTask, cancelActiveTask, fusionImages, fusionFileRef, uploadFusionImages, fusionUploading, fusionPickerOpen, setFusionPickerOpen, fusionReady, fusionHistory, setFusionImageIds, fusionSelectedId, currentImageId, setFusionSelectedId, fusionSubmitLock, fusionInstruction, setFusionInstruction }: FusionPanelProps) {
+export function FusionPanel({ feedbackReferenceId, toggleFusion, fusionType, generating, setFusionType, setFusionPoint, activeTask, cancelActiveTask, fusionImages, fusionFileRef, uploadFusionImages, fusionUploading, fusionPickerOpen, setFusionPickerOpen, fusionReady, fusionHistory, setFusionImageIds, fusionSelectedId, currentImageId, setFusionSelectedId, fusionSubmitLock, fusionInstruction, setFusionInstruction }: FusionPanelProps) {
   const { t } = useLanguage();
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   return (<aside className="fusion-library" aria-label={t('fusion.library')}>
     <div className="fusion-library-header">
       <div className="fusion-header-row"><strong><Icon name="layers" size={19} />{t('op.fusion')}</strong><button className="fusion-exit-button" onClick={toggleFusion} title={t('fusion.exitHint')}><Icon name="left" size={14} />{t('fusion.exit')}</button></div>
@@ -56,8 +58,8 @@ export function FusionPanel({ toggleFusion, fusionType, generating, setFusionTyp
         <div className="fusion-library-scroll">
           {fusionPickerOpen && <section className="fusion-history-picker"><strong>{t('fusion.chooseImage')}</strong>{fusionHistory.length ? fusionHistory.map(image => <button key={image.id} disabled={generating} onClick={() => { setFusionImageIds(ids => [...new Set([...ids, image.id])]); setFusionPickerOpen(false); }} title={t('fusion.add')}><img src={thumbUrl(image, 160)} alt={t('fusion.historyAlt')} loading="lazy" /></button>) : <small>{t('fusion.noHistory')}</small>}</section>}
           {!fusionImages.length && <div className="fusion-empty"><Icon name="image" size={28} /><strong>{t('fusion.emptyTitle')}</strong><p>{t('fusion.emptyDescription')}</p></div>}
-          {fusionImages.map((image, index) => <div className={`fusion-thumbnail ${fusionSelectedId === image.id ? 'selected' : ''}`} key={image.id}>
-            <button className="fusion-drag-source" draggable={fusionReady && !generating && !fusionUploading} disabled={!fusionReady || generating || fusionUploading || image.id === currentImageId} onClick={() => setFusionSelectedId(id => id === image.id ? null : image.id)} onDragStart={event => { setFusionSelectedId(null); event.dataTransfer.setData('application/x-layerive-fusion', image.id); event.dataTransfer.effectAllowed = 'copy'; }} onDragEnd={() => { if (!fusionSubmitLock.current && !generating) setFusionPoint(null); }} title={t('fusion.dragImage')} aria-label={t('fusion.referenceAlt', { index: index + 1 })} aria-pressed={fusionSelectedId === image.id}><img src={thumbUrl(image, 240)} alt={t('fusion.referenceAlt', { index: index + 1 })} draggable={false} loading="lazy" /><span className="fusion-thumbnail-caption"><span>{t('fusion.referenceLabel', { index: index + 1 })}</span><Icon name={fusionSelectedId === image.id ? 'check' : 'layers'} size={14} /></span></button>
+          {fusionImages.map((image, index) => <div className={`fusion-thumbnail ${fusionSelectedId === image.id ? 'selected' : ''} ${draggingId === image.id ? 'is-dragging' : ''} ${feedbackReferenceId === image.id ? 'fusion-reference-received' : ''}`} key={image.id}>
+            <button className="fusion-drag-source" draggable={fusionReady && !generating && !fusionUploading} disabled={!fusionReady || generating || fusionUploading || image.id === currentImageId} onClick={() => setFusionSelectedId(id => id === image.id ? null : image.id)} onDragStart={event => { setDraggingId(image.id); setFusionSelectedId(null); event.dataTransfer.setData('application/x-layerive-fusion', image.id); event.dataTransfer.effectAllowed = 'copy'; }} onDragEnd={() => { setDraggingId(null); if (!fusionSubmitLock.current && !generating) setFusionPoint(null); }} title={t('fusion.dragImage')} aria-label={t('fusion.referenceAlt', { index: index + 1 })} aria-pressed={fusionSelectedId === image.id}><img src={thumbUrl(image, 240)} alt={t('fusion.referenceAlt', { index: index + 1 })} draggable={false} loading="lazy" /><span className="fusion-thumbnail-caption"><span>{t('fusion.referenceLabel', { index: index + 1 })}</span><Icon name={fusionSelectedId === image.id ? 'check' : 'layers'} size={14} /></span></button>
             <button className="fusion-remove" disabled={generating} aria-label={t('common.remove')} onClick={() => { setFusionImageIds(ids => ids.filter(id => id !== image.id)); if (fusionSelectedId === image.id) setFusionSelectedId(null); }}><Icon name="close" size={12} /></button>
           </div>)}
         </div>

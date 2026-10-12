@@ -5,6 +5,14 @@
 import type { DictValue, TranslationKey } from './zh-CN';
 
 export const enUS: Record<TranslationKey, DictValue> = {
+  'motion.preparing': 'Preparing…',
+  'motion.planning': 'Analyzing and planning…',
+  'motion.generating': 'Generating images…',
+  'motion.processing': 'Processing images…',
+  'motion.preserving': 'Preserving original regions…',
+  'motion.compositing': 'Compositing images…',
+  'motion.validating': 'Checking output images…',
+  'motion.waiting': 'Results will appear when ready',
   'app.title': 'Layerive · Local AI Image Studio',
   'app.switchLanguage': 'Switch language',
   'app.connectionFailed': 'Cannot reach the local service. Make sure the app service is running.',

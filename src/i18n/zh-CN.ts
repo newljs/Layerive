@@ -3,6 +3,14 @@
 // 带参数的文案用 {name} 占位；英文复数在 en-US.ts 中用 { one, other }。
 // 新增 key 时必须同步在 en-US.ts 补齐（类型检查强制）。
 export const zhCN = {
+  'motion.preparing': '正在准备…',
+  'motion.planning': '正在识别与规划…',
+  'motion.generating': '正在生成图片…',
+  'motion.processing': '正在处理图片…',
+  'motion.preserving': '正在保留原图区域…',
+  'motion.compositing': '正在合成图片…',
+  'motion.validating': '正在检查输出图片…',
+  'motion.waiting': '结果完成后会自动显示',
   'app.title': 'Layerive · 本地 AI 图片工作台',
   'app.switchLanguage': '切换语言',
   'app.connectionFailed': '无法连接本地服务，请确认应用服务已经启动。',
