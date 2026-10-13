@@ -6,11 +6,13 @@ import { ImageProcessingOverlay, type ActiveImageTask, type ProcessingTarget } f
 import { ImageWithReveal } from './ImageWithReveal';
 import { OutpaintPreview } from './OutpaintPreview';
 import { ScrollableImageTools } from './ScrollableImageTools';
+import { CompareImagePicker } from './CompareImagePicker';
 import { workspacePlugins, taskKindForOperation } from './plugins/registry';
 import type { TaskKind } from './plugins/types';
-import { localEditStageKeys, removeElementStageKeys, cleanupStageKeys } from './plugins/definitions';
+import { localEditStageKeys, removeElementStageKey } from './plugins/definitions';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, readFileAsDataUrl, thumbUrl } from './api';
+import { api, ApiError, readFileAsDataUrl, thumbUrl } from './api';
+import { useConfirm } from './ConfirmDialog';
 import { Icon, type IconName } from './Icon';
 import { LanguageToggle, useLanguage, tf, type Language, type TranslationKey } from './i18n';
 import { PromptGalleryModal } from './PromptGalleryModal';
@@ -410,6 +412,7 @@ function ModelLogsModal({ projectId, onClose }: { projectId: string; onClose: ()
 
 export function WorkspaceView({ projectId, models, activeModel, activeVisionModel, onBack, onModels, onProjectChanged, notify }: Props) {
   const { language, t } = useLanguage();
+  const confirm = useConfirm();
   const recipeCatalog = useRecipeCatalog();
   const recipesRef = useRef(recipeCatalog.plugins);
   recipesRef.current = recipeCatalog.plugins;
@@ -452,6 +455,25 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [compareMode, setCompareMode] = useState<'side' | 'slider'>('side');
   const [compareImageId, setCompareImageId] = useState<string | null>(null);
   const [sliderPosition, setSliderPosition] = useState(50);
+  const compareDrag = useRef<{ pointerId: number; offsetX: number } | null>(null);
+
+  useEffect(() => {
+    compareDrag.current = null;
+  }, [compareOpen, compareMode, compareImageId]);
+
+  function moveCompareDivider(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = compareDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const bounds = event.currentTarget.parentElement?.getBoundingClientRect();
+    if (!bounds?.width) return;
+    setSliderPosition(Math.max(0, Math.min(100, Math.round((event.clientX - bounds.left - drag.offsetX) / bounds.width * 100))));
+  }
+
+  function endCompareDrag(event: React.PointerEvent<HTMLDivElement>) {
+    if (compareDrag.current?.pointerId !== event.pointerId) return;
+    compareDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }
   const [versionTreeOpen, setVersionTreeOpen] = useState(false);
   const [recentVersionIds, setRecentVersionIds] = useState<string[]>([]);
   const [freshTreeIds, setFreshTreeIds] = useState<string[]>([]);
@@ -664,13 +686,13 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     }
   }, [draftCacheKey, projectId]);
 
-  const startPolling = useCallback((taskId: string, kind: TaskKind, target?: ProcessingTarget) => {
+  const startPolling = useCallback((taskId: string, kind: TaskKind, target?: ProcessingTarget, initialStage?: ActiveImageTask['stage']) => {
     stopPolling();
     const revision = pollRevision.current;
     const isCurrent = () => pollRevision.current === revision;
     let inFlight = false;
     const plugin = kind.startsWith('plugin:') ? recipesRef.current.find(item => item.id === kind.slice(7)) : Object.values(workspacePlugins).find(item => item.taskKind === kind);
-    setActiveTask(current => ({ id: taskId, kind, stage: plugin?.requirements.vision ? 'planning' : undefined,
+    setActiveTask(current => ({ id: taskId, kind, stage: initialStage ?? (current?.kind === kind && current.id === null ? current.stage : plugin?.requirements.vision ? 'planning' : undefined),
       target: target || (current?.kind === kind && current.id === null ? current.target : undefined) }));
     pollTimer.current = window.setInterval(async () => {
       if (inFlight || !isCurrent()) return;
@@ -814,7 +836,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       setInputImageId(cachedInputImageId);
       initialized.current = true;
       const task = taskData.tasks[0];
-      if (task) startPolling(task.id, task.operationType?.startsWith('recipe_') && task.plugin ? `plugin:${task.plugin.id}` : taskKindForOperation(task.operationType));
+      if (task) startPolling(task.id, task.operationType?.startsWith('recipe_') && task.plugin ? `plugin:${task.plugin.id}` : taskKindForOperation(task.operationType), undefined, task.stage);
     }).catch((error) => notify(error.message, 'error')).finally(() => setLoading(false));
   }, [projectId, activeModel, activeVisionModel, startPolling, notify, draftCacheKey]);
 
@@ -1234,12 +1256,12 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   async function submitRemoveElement(rect?: NonNullable<TextSegment['rect']>) {
     if (!currentImage || removeElementSubmitting || generating) return;
     setRemoveElementSubmitting(true);
-    setActiveTask({ id: null, kind: 'remove-element', stage: 'planning', target: { imageId: currentImage.id, region: cleanupType === 'selection' ? rect : undefined } });
+    setActiveTask({ id: null, kind: 'remove-element', stage: cleanupType === 'text' ? 'generating' : 'planning', target: { imageId: currentImage.id, region: cleanupType === 'selection' ? rect : undefined } });
     try {
       const result = await api.removeElement(projectId, {
         imageId: currentImage.id,
         modelId,
-        visionModelId,
+        visionModelId: cleanupType === 'text' ? undefined : visionModelId,
         parentVersionId: currentVersion?.id || null,
         mode: cleanupType,
         rect: cleanupType === 'selection' ? rect : undefined,
@@ -1736,26 +1758,36 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   async function removeVersion(version: Version) {
     if (!bundle) return;
     const childCount = bundle.versions.filter((item) => item.parentVersionId === version.id).length;
-    const baseMessage = t('ws.deleteVersionConfirm', { number: version.number });
-    const childMessage = childCount ? t('ws.deleteVersionChildren', { count: childCount }) : '';
-    if (!window.confirm(`${baseMessage}\n${childMessage}`)) return;
-    try {
-      const data = await api.deleteVersion(projectId, version.id, childCount > 0);
+    async function deleteAndRefresh(force: boolean) {
+      const data = await api.deleteVersion(projectId, version.id, force);
       setBundle(data);
       if (currentVersion?.id === version.id) setCurrentImageId(data.project.currentImageId || null);
       notify(t('ws.versionDeleted', { number: version.number }));
       onProjectChanged();
-    } catch (error) {
-      const message = (error as Error).message;
-      if (window.confirm(t('ws.forceDeleteConfirm', { message }))) {
-        try {
-          const data = await api.deleteVersion(projectId, version.id, true);
-          setBundle(data);
-          if (currentVersion?.id === version.id) setCurrentImageId(data.project.currentImageId || null);
-          notify(t('ws.versionDeleted', { number: version.number }));
-          onProjectChanged();
-        } catch (retryError) { notify((retryError as Error).message, 'error'); }
-      }
+    }
+    let referenceConflict = '';
+    const confirmed = await confirm({
+      title: t('confirm.deleteVersionTitle', { number: version.number }),
+      message: t('ws.deleteVersionConfirm', { number: version.number }),
+      detail: childCount ? t('ws.deleteVersionChildren', { count: childCount }) : undefined,
+      confirmLabel: t('confirm.deleteVersion'),
+      onConfirm: async () => {
+        try { await deleteAndRefresh(childCount > 0); }
+        catch (error) {
+          // A new child may have appeared since the last project refresh.
+          // Only this explicit conflict can request a forced deletion.
+          if (!childCount && error instanceof ApiError && error.status === 409 && error.code === 'version.referenced') referenceConflict = error.message;
+          else throw error;
+        }
+      },
+    });
+    if (confirmed && referenceConflict) {
+      await confirm({
+        title: t('confirm.deleteVersionTitle', { number: version.number }),
+        message: t('ws.forceDeleteConfirm', { message: referenceConflict }),
+        confirmLabel: t('confirm.deleteVersion'),
+        onConfirm: () => deleteAndRefresh(true),
+      });
     }
   }
 
@@ -1859,6 +1891,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           </div>
           <div className={`canvas-edit-area ${fusionMode ? 'fusion-active' : ''}`}>
             <div className="canvas-edit-body">
+              <div className="canvas-stage-shell">
           <div className={`canvas-stage ${(localEditMode || (removeElementMode && cleanupType === 'selection') || extractMode) ? 'selection-mode' : ''}`} onPointerDown={onCanvasSelectionStart} onPointerMove={onCanvasSelectionMove} onPointerUp={onCanvasSelectionEnd} onPointerCancel={onCanvasSelectionCancel}>
             {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(removeElementMode || removeElementRect) ? 'removing-element' : ''} ${removeElementMode && cleanupType === 'people' ? 'cleanup-clickable' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintPreviewSize ? 'outpaint-preview-wrap' : ''} ${fusionMode && fusionPoint && !generating ? 'fusion-drop-active' : ''}`} style={zoom !== 1 && !outpaintPreviewSize ? { width: `${zoom * 100}%` } : undefined} onContextMenu={(event) => openImageContextMenu(event, currentImage.id)} onDragOver={event => { if (fusionMode && fusionReady && !generating && event.dataTransfer.types.includes('application/x-layerive-fusion')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setFusionPoint(fusionDropPoint(event, event.currentTarget)); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setFusionPoint(null); }} onDrop={onFusionDrop} onClick={event => { markCleanupPerson(event); if (fusionMode && fusionSelectedId) { const point = fusionDropPoint(event, event.currentTarget); if (point) void submitFusion(fusionSelectedId, point); } }} tabIndex={fusionMode && fusionSelectedId ? 0 : undefined} role={fusionMode && fusionSelectedId ? 'button' : undefined} aria-label={fusionMode ? t('fusion.dropHint') : undefined} onKeyDown={event => { if (fusionMode && fusionSelectedId && ['Enter', ' '].includes(event.key)) { event.preventDefault(); if (event.currentTarget.querySelector<HTMLImageElement>(':scope > img')?.dataset.imagePending === 'true') return; void submitFusion(fusionSelectedId, { x: 50, y: 50 }); } }}>{fusionMode && fusionPoint && <span className="fusion-drop-marker" style={{ left: `${fusionPoint.x}%`, top: `${fusionPoint.y}%` }}><Icon name="plus" size={20} /></span>}{fusionMode && fusionFeedback?.imageId === currentImage.id && <span key={fusionFeedback.key} className="fusion-drop-ripple" style={{ left: `${fusionFeedback.point.x}%`, top: `${fusionFeedback.point.y}%` }} aria-hidden="true" />}{outpaintPreviewSize ? <OutpaintPreview key={currentImage.id} image={currentImage} size={outpaintPreviewSize} zoom={zoom} busy={canvasProcessing} effect={processingEffect} alt={t('ws.outpaintPreviewAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} label={t('ws.newCanvasArea')} /> : <ImageWithReveal src={currentImage.url} keepPrevious alt={t('ws.projectImageAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} />}{canvasProcessing && !outpaintPreviewSize && <ImageProcessingOverlay key={`${activeTask!.kind}:${currentImage.id}`} effect={processingEffect} region={activeTask!.target?.region} />}{(localEditMode || localEditRect) && <div className="local-edit-surface">{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>{t('ws.editArea')}</em></span>}</div>}{(removeElementMode || removeElementRect) && <div className="remove-element-surface">{removeElementRect && <span className="remove-element-rect" style={{ left: `${removeElementRect.x}%`, top: `${removeElementRect.y}%`, width: `${removeElementRect.width}%`, height: `${removeElementRect.height}%` }}><em>{t('ws.removeElementArea')}</em></span>}</div>}{(extractMode || extractRect) && <div className="extract-surface">{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>{t('ws.extractArea')}</em></span>}</div>}{removeElementMode && cleanupType === 'people' && cleanupKeepPoints.map((point, index) => <button key={index} className="cleanup-keep-marker" style={{ left: point.x + '%', top: point.y + '%' }} aria-label={t('cleanup.removePoint', { index: index + 1 })} title={t('cleanup.removePoint', { index: index + 1 })} disabled={generating || removeElementSubmitting} onClick={event => { event.stopPropagation(); setCleanupKeepPoints(points => points.filter((_, i) => i !== index)); }}>{index + 1}</button>)}<span className="image-chip">{outpaintPreviewSize ? t('ws.targetSize', { size: outpaintPreviewSize }) : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : generationPlaceholder ? (
               <div className="generation-placeholder" style={{ aspectRatio: generationRatio, width: `min(100%, 440px, calc(${100 * generationRatio}vh - ${300 * generationRatio}px))` }} aria-busy="true"><ImageProcessingOverlay effect={processingEffect} /><div className="generation-placeholder-content" role="status"><Icon name="sparkle" size={30} /><strong>{processingLabel}</strong><small>{t('motion.waiting')}</small>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</div></div>
@@ -1866,6 +1899,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
               <div className="canvas-empty"><div className="empty-visual"><span /><span /><span /></div><h2>{t('ws.startFirstTitle')}</h2><p>{t('ws.startFirstHint')}</p><button className="button secondary" onClick={() => fileRef.current?.click()}>{t('ws.uploadInitial')}</button></div>
             )}
             {canvasProcessing && <div className="canvas-processing-status" role="status" aria-live="polite"><span className="processing-status-dot" aria-hidden="true" /><span>{processingLabel}</span>{activeTask?.id && <button onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</div>}
+          </div>
             {localEditMode && !localDragging && currentImage && <LocalEditPanel localEditRect={localEditRect} localEditSubmitting={localEditSubmitting} closeLocalEdit={closeLocalEdit} localReferenceFileRef={localReferenceFileRef} selectLocalReference={selectLocalReference} localReference={localReference} localReferenceLoading={localReferenceLoading} generating={generating} localReferenceRevision={localReferenceRevision} setLocalReference={setLocalReference} localEditInstruction={localEditInstruction} setLocalEditInstruction={setLocalEditInstruction} localBatchSubmitting={localBatchSubmitting} setLocalEditRect={setLocalEditRect} setLocalBatchOpen={setLocalBatchOpen} submitLocalEdit={submitLocalEdit} localBatchOpen={localBatchOpen} localBatchText={localBatchText} setLocalBatchText={setLocalBatchText} localBatchLines={localBatchLines} localBatchError={localBatchError} submitLocalBatch={submitLocalBatch} />}
             {outpaintMode && currentImage && <OutpaintPanel outpaintSize={outpaintSize} outpaintSubmitting={outpaintSubmitting} generating={generating} selectedModel={selectedModel} closeOutpaint={closeOutpaint} setOutpaintSize={setOutpaintSize} submitOutpaint={submitOutpaint} />}
 
@@ -1925,7 +1959,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
                     : t('ws.msgGenerateAll', { count: outputs.length });
               return <article className="message assistant-message" key={message.id}><div className="message-meta"><strong>Layerive</strong><span>V{message.content.versionNumber} · {formatTime(message.createdAt, language)}</span></div><p>{resultParagraph}</p><div className={`message-gallery count-${outputs.length}`}>{outputs.map((image, index) => <button key={image.id} title={message.content.prompts?.[index] ? t('ws.msgPromptTitle', { prompt: message.content.prompts[index] }) : t('ws.candidateTitle')} onClick={() => useImage(image)} onContextMenu={(event) => openImageContextMenu(event, image.id)}><ImageWithReveal src={thumbUrl(image)} alt={t('ws.generatedAlt')} loading="lazy" /></button>)}</div><div className="message-actions"><button onClick={() => { const first = outputs[0]; if (first) useImage(first); }}>{t('ws.useThisRound')}</button><button onClick={() => setPrompt(message.content.prompt || '')}>{t('ws.reusePrompt')}</button></div></article>;
             })}
-            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? t('ws.generating') : t('ws.preparing')}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind.startsWith('plugin:') ? t(activeTask.stage === 'planning' ? 'plugin.planning' : activeTask.stage === 'validating' ? 'plugin.validating' : 'plugin.generating') : activeTask?.kind === 'batch-edit' ? (batchProgress ? t('ws.msgBatchProcessingDone', { label: batchProgress.textBatch ? t('ws.batchText') : batchProgress.localEdit ? t('ws.batchLocal') : t('ws.batchEdit'), done: `${batchProgress.completed}/${batchProgress.total}` }) : t('ws.msgBatchProcessing', { label: t('ws.batchEdit') })) : activeTask?.kind === 'fusion' ? t(activeTask.stage === 'generating' ? 'fusion.generating' : 'fusion.planning') : activeTask?.kind === 'extract-asset' ? t(activeTask.stage === 'generating' ? 'extract.generating' : 'extract.planning') : activeTask?.kind === 'local-edit' ? t(localEditStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-element' ? t((cleanupType === 'selection' ? removeElementStageKeys : cleanupStageKeys)[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-background' ? t(removeBackgroundStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'text-edit' && (!activeTask.id || activeTask.stage === 'planning') ? t('ws.msgTextPreparing') : activeTask?.kind === 'remove-watermark' && activeTask.stage === 'planning' ? t('ws.msgWatermarkPreparing') : activeTask?.kind === 'generate' && activeTask.stage === 'planning' ? t('ws.msgPlanning') : t('ws.msgCreating', { model: selectedModel?.name || t('ws.imageModelFallback'), count })}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</article>}
+            {generating && <article className="message generating-message"><div className="message-meta"><strong>Layerive</strong><span>{activeTask?.id ? t('ws.generating') : t('ws.preparing')}</span></div><div className="generation-progress"><span /><span /><span /></div><p>{activeTask?.kind.startsWith('plugin:') ? t(activeTask.stage === 'planning' ? 'plugin.planning' : activeTask.stage === 'validating' ? 'plugin.validating' : 'plugin.generating') : activeTask?.kind === 'batch-edit' ? (batchProgress ? t('ws.msgBatchProcessingDone', { label: batchProgress.textBatch ? t('ws.batchText') : batchProgress.localEdit ? t('ws.batchLocal') : t('ws.batchEdit'), done: `${batchProgress.completed}/${batchProgress.total}` }) : t('ws.msgBatchProcessing', { label: t('ws.batchEdit') })) : activeTask?.kind === 'fusion' ? t(activeTask.stage === 'generating' ? 'fusion.generating' : 'fusion.planning') : activeTask?.kind === 'extract-asset' ? t(activeTask.stage === 'generating' ? 'extract.generating' : 'extract.planning') : activeTask?.kind === 'local-edit' ? t(localEditStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'remove-element' ? t(removeElementStageKey(cleanupType, activeTask.stage)) : activeTask?.kind === 'remove-background' ? t(removeBackgroundStageKeys[activeTask.stage || 'planning']) : activeTask?.kind === 'text-edit' && (!activeTask.id || activeTask.stage === 'planning') ? t('ws.msgTextPreparing') : activeTask?.kind === 'remove-watermark' && activeTask.stage === 'planning' ? t('ws.msgWatermarkPreparing') : activeTask?.kind === 'generate' && activeTask.stage === 'planning' ? t('ws.msgPlanning') : t('ws.msgCreating', { model: selectedModel?.name || t('ws.imageModelFallback'), count })}</p>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</article>}
             <div ref={messagesEnd} />
           </div>
 
@@ -2017,16 +2051,17 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         </aside>
       </section>
 
-      {compareOpen && currentImage && compareImage && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setCompareOpen(false)}>
+      {compareOpen && currentImage && compareImage && <div className="modal-backdrop compare-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setCompareOpen(false)}>
         <section className="compare-modal" role="dialog" aria-modal="true" aria-labelledby="compare-title">
           <div className="modal-heading">
             <div><p className="eyebrow">COMPARE</p><h2 id="compare-title">{t('ws.compareTitle')}</h2></div>
             <div className="compare-mode-switch">
               <button className={compareMode === 'side' ? 'active' : ''} onClick={() => setCompareMode('side')}>{t('ws.sideBySide')}</button>
               <button className={compareMode === 'slider' ? 'active' : ''} onClick={() => setCompareMode('slider')}>{t('ws.slider')}</button>
-              <button className="icon-button" onClick={() => setCompareOpen(false)}><Icon name="close" size={16} /></button>
+              <button className="icon-button" aria-label={t('common.close')} onClick={() => setCompareOpen(false)}><Icon name="close" size={16} /></button>
             </div>
           </div>
+          <div className="compare-content">
           {compareMode === 'side' ? (
             <div className="compare-grid">
               <article><div className="compare-image"><img src={currentImage.url} alt={t('ws.currentCanvasAlt')} /></div><div className="compare-caption"><strong>{t('ws.currentCanvas')}</strong><button className="button secondary" onClick={() => { useImage(currentImage); setCompareOpen(false); }}>{t('ws.useThis')}</button></div></article>
@@ -2037,7 +2072,41 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
               <div className="compare-slider">
                 <img src={compareImage.url} alt={t('ws.compareImageAlt')} />
                 <img src={currentImage.url} alt={t('ws.currentCanvasAlt')} style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }} />
-                <div className="slider-divider" style={{ left: `${sliderPosition}%` }} />
+                <div
+                  className="slider-divider"
+                  style={{ left: `${sliderPosition}%` }}
+                  role="slider"
+                  tabIndex={0}
+                  aria-label={t('ws.sliderAria')}
+                  aria-orientation="horizontal"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={sliderPosition}
+                  onPointerDown={(event) => {
+                    if (!event.isPrimary || event.button !== 0 || compareDrag.current) return;
+                    const bounds = event.currentTarget.parentElement?.getBoundingClientRect();
+                    if (!bounds?.width) return;
+                    event.preventDefault();
+                    event.currentTarget.focus({ preventScroll: true });
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    compareDrag.current = { pointerId: event.pointerId, offsetX: event.clientX - bounds.left - bounds.width * sliderPosition / 100 };
+                  }}
+                  onPointerMove={moveCompareDivider}
+                  onPointerUp={(event) => { moveCompareDivider(event); endCompareDrag(event); }}
+                  onPointerCancel={endCompareDrag}
+                  onLostPointerCapture={endCompareDrag}
+                  onKeyDown={(event) => {
+                    const delta = event.shiftKey ? 10 : 1;
+                    const adjustments: Record<string, number> = { ArrowLeft: -delta, ArrowDown: -delta, ArrowRight: delta, ArrowUp: delta, PageDown: -10, PageUp: 10 };
+                    if (event.key === 'Home' || event.key === 'End') {
+                      event.preventDefault();
+                      setSliderPosition(event.key === 'Home' ? 0 : 100);
+                    } else if (event.key in adjustments) {
+                      event.preventDefault();
+                      setSliderPosition((position) => Math.max(0, Math.min(100, position + adjustments[event.key])));
+                    }
+                  }}
+                />
                 <span className="slider-tag left">{t('ws.before')}</span>
                 <span className="slider-tag right">{t('ws.after')}</span>
               </div>
@@ -2045,7 +2114,8 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
               <div className="compare-caption inline"><strong>{parentImage?.id === compareImage.id ? t('ws.beforeParent') : t('ws.compareImage')}</strong><button className="button primary" onClick={() => { useImage(compareImage); setCompareOpen(false); }}>{t('ws.useBefore')}</button></div>
             </div>
           )}
-          <div className="compare-picker"><span>{t('ws.pickCompare')}</span><div>{bundle.images.filter((image) => image.id !== currentImage.id).map((image) => <button key={image.id} className={image.id === compareImage.id ? 'active' : ''} onClick={() => { setCompareImageId(image.id); setSliderPosition(50); }}><img src={thumbUrl(image)} alt={t('ws.pickCompareAlt')} loading="lazy" /></button>)}</div></div>
+          </div>
+          <CompareImagePicker images={bundle.images.filter((image) => image.id !== currentImage.id)} selectedId={compareImage.id} onSelect={(id) => { setCompareImageId(id); setSliderPosition(50); }} />
         </section>
       </div>}
 

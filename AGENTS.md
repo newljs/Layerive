@@ -3,7 +3,7 @@
 > **维护契约（必须遵守）**：只要改动了项目的功能、架构、数据结构、API、模型适配、运行方式、文件位置或重要约束，必须在同一次改动中更新本文件。先核对相关实现，再更新受影响章节；不要仅凭 README 推断。纯格式调整且不改变行为时可不更新。  
 > 更新时请同步修改本文的“最后核对”日期和相应内容；若现有描述不再可信，优先修正文档而不是保留过期说明。
 
-**最后核对**：2026-10-12（发行版本更新到 0.1.9，GitHub 标签必须与 package.json 版本一致，CI 在打包前校验；macOS arm64 使用 macos-15，Intel x64 使用 macos-15-intel；此前桌面图标以 SVG 母版生成透明 PNG 和七尺寸 Windows ICO，去除白底与烘焙阴影并放大标志，Windows 安装包和窗口统一使用 ICO，构建前自动刷新图标；工作台横向功能栏新增溢出时左右滚动按钮、边缘渐隐、鼠标滚轮及键盘浏览，兼容动态插件、中英文、暗色与减少动态效果；工具栏将黑白照片上色入口移动到融合模式按钮之后；此前宣传视频目录整体取消 Git 跟踪并加入忽略规则，仅保留本地；新增文字识别扫描、图片任务阶段动效、局部选区动效与解码后结果淡入；任务动效绑定提交图片和选区，兼容暗色模式与减少动态效果；文字识别弹窗隔离过期请求；扩图目标画布过渡与新增区域流光、融合落点反馈、新版本历史高亮和版本树淡入）
+**最后核对**：2026-10-13（全图文字清理改为仅调用图片编辑模型，无需视觉配置；使用明确的文字/数字/水印/logo 清理及其他内容保留提示词，完整结果按原尺寸 PNG 保存，支持取消和失败不发布版本，双语界面说明不保证逐像素保留；删除插件版本更新为 1.1.0；新增 Seedream 5.0 Pro/Flash、Qwen-Image 3.0 Pro/3.0 与 2.1 Pro/Turbo、FLUX.2 Pro 原生协议与推荐型号，验证有序双图、候选/批量、透明能力边界、异步轮询取消及只读连接检查；整图清理视觉分析时限由 120 秒延长为 240 秒，保留 300 秒任务总预算与取消；超时覆盖完整响应接收并提供双语稳定错误码；提示词画廊添加/编辑弹窗改为内容自适应的紧凑双栏，配图点击上传、标题分类并排、提示词分组和固定保存提示，适配窄屏/矮窗口/暗色及双语；浏览器原生确认框统一替换为应用内弹窗，提交锁定、错误重试、键盘焦点及暗色双语适配；删除版本仅引用冲突允许再次强制确认；弹窗和画布浮窗统一固定标题/关闭及操作区，仅中间内容滚动，适配矮窗口与窄画布；对比弹窗固定顶部与历史条、图片自适应高度，历史图以箭头/渐隐浏览，弹窗滚动条统一细圆角并适配暗色；前后对比分隔线和手柄支持鼠标/触屏拖动，与底部滑块同步并支持键盘调节；发行版本更新到 0.1.9，GitHub 标签必须与 package.json 版本一致，CI 在打包前校验；macOS arm64 使用 macos-15，Intel x64 使用 macos-15-intel；此前桌面图标以 SVG 母版生成透明 PNG 和七尺寸 Windows ICO，去除白底与烘焙阴影并放大标志，Windows 安装包和窗口统一使用 ICO，构建前自动刷新图标；工作台横向功能栏新增溢出时左右滚动按钮、边缘渐隐、鼠标滚轮及键盘浏览，兼容动态插件、中英文、暗色与减少动态效果；工具栏将黑白照片上色入口移动到融合模式按钮之后；此前宣传视频目录整体取消 Git 跟踪并加入忽略规则，仅保留本地；新增文字识别扫描、图片任务阶段动效、局部选区动效与解码后结果淡入；任务动效绑定提交图片和选区，兼容暗色模式与减少动态效果；文字识别弹窗隔离过期请求；扩图目标画布过渡与新增区域流光、融合落点反馈、新版本历史高亮和版本树淡入）
 **项目定位**：Layerive 是一个仅本地运行的、以“项目 + 图片版本树”为中心的 AI 图片创作工作台。它将文生图、基于图片的编辑、融合、文字编辑、局部编辑、删除元素、去除背景、扩图、去水印、对话记录和项目备份统一保存到本机。
 
 ## 1. 运行与边界
@@ -15,7 +15,7 @@
 - 桌面开发：`npm run desktop:dev` 先构建相同的前端，再由 Electron 启动本地服务和原生窗口；`npm run desktop:dist` 构建安装包。Electron 专属代码只在 `electron/main.cjs`，不得复制 `src/`、`server/` 或 `public/` 到另一个桌面项目。
 - 桌面图标：`public/app-icon.svg` 为紫色渐变与白色标志的矢量母版，圆角外围透明且无烘焙阴影。`npm run icons` 经 Sharp 生成 `public/icons/icon-{16,32,180,192,512}.png` 及含 16/24/32/48/64/128/256 像素 RGBA PNG 帧的 `icon.ico`；`npm run build` 的 prebuild 自动执行生成，CI 和桌面构建沿用该流程。Windows 打包显式使用 `build.win.icon` 的 ICO（应用 EXE、快捷方式和 NSIS 安装/卸载图标），Electron Windows 窗口从 `dist/icons/icon.ico` 读取，其他平台继续使用 PNG。PWA 的 maskable 图标单独生成全尺寸实色底 `icon-maskable-512.png`，避免透明圆角被启动器裁切后露底；网页 SVG favicon 仍独立保留在 `public/favicon.svg`。
 - CI 发布：推送 `v*` tag 触发 `.github/workflows/build.yml`；`scripts/verify-release-version.mjs` 校验 tag 与 `package.json` 版本严格相等，electron-builder 使用该版本号命名安装包。矩阵包含 Windows x64、macOS arm64（`macos-15`）/Intel x64（`macos-15-intel`）、Ubuntu x64；各任务先在运行器架构执行 `npm ci` → `npm run build` → `npm test`，再执行 `npm ci --cpu=<arch>` → `electron-builder --<arch> --publish never`，按目标架构安装 Sharp 原生依赖。独立 release 任务发布非草稿 GitHub Release，三端均未签名。桌面服务位于资源目录 `app/server`，所需 Sharp、`@img`、`detect-libc`、`semver` 由 `extraResources` 放在同级 `app/node_modules`；新增或升级图像依赖时必须核对该运行时依赖清单，不能只依赖 `app.asar` 内的模块。
-- 检查：`npm run lint`（TypeScript no-emit）；`npm run build`（先类型检查再构建）；`npm run test` 使用 Node 内置测试和本地模拟模型运行全部服务端测试（也可单独运行 `npm run test:local-edit` / `npm run test:generate` / `npm run test:request-guard`）：`test:local-edit` 验证图片处理、日日新输入图规范化、三种视觉协议、四种图片协议的有序双图局部替换、单张与批量任务、拒绝多图时不降级、删除元素、框外像素保留及取消；`cleanup.test.mjs` 验证四种整图清理场景、四种图片及三种视觉协议、多区域并集与保护区像素、拒绝/取消及版本关联；`extraction.test.mjs` 验证五种提取场景、三种视觉协议、商品展示约束、多候选、拒绝/取消及版本关联；`test:generate` 验证批量生成的并发上限、限流退避重试、多图意图自动判断与提示词拆分、部分成功时提示词与图片对齐、去除背景的主体规划 / 透明参数 / Alpha 校验、文字编辑输出继承修改后的识别缓存（含多候选和全部删除）、变量批量处理与批量文生图的逐张返回/失败续跑/取消保留、日日新编辑请求及多图版本 ZIP 下载；`project-data.test.mjs` 验证导入路径穿越防护、草稿图片 ID 重映射、缺文件素材与文字缓存兼容及默认模型回退；`backup-restore.test.mjs` 验证恢复前拒绝损坏、路径穿越和模式不兼容数据库，恢复后的项目目录重建及安全备份；`restore-concurrency.test.mjs` 验证恢复会取消并等待在途生成，再由桌面宿主重启；`model-connection.test.mjs` 验证模型端点错误不会被标记为连接成功；`test:request-guard` 验证本机访问限制（跨站调用被拒、响应不带 CORS 授权、Vite 代理与非浏览器调用仍可用）。`plugins.test.mjs` 验证新操作注册扩展、取消边界、无效输出和凭据隔离；`plugin-api.test.mjs` 验证九项原操作与上色插件的通用/别名入口等价、插件版本记录、未知 ID 拒绝、访问限制与复制/导入，以及改字/去水印/去背景的规划取消、拒绝不出图、失败不发布版本与同步校验；`recipe.test.mjs` 验证 JSON 目录发现、坏插件隔离、字段与默认值校验、有序参考图、无视觉流程、输出格式/尺寸/透明校验及取消。测试仅使用生成的图片和 `work/*-test-*` 内的独立数据/配置，不读取真实用户数据或调用真实模型；测试文件不打入桌面服务资源。
+- 检查：`npm run lint`（TypeScript no-emit）；`npm run build`（先类型检查再构建）；`npm run test` 使用 Node 内置测试和本地模拟模型运行全部服务端测试（也可单独运行 `npm run test:local-edit` / `npm run test:generate` / `npm run test:request-guard`）：`test:local-edit` 验证图片处理、日日新输入图规范化、三种视觉协议、四种图片协议的有序双图局部替换、单张与批量任务、拒绝多图时不降级、删除元素、框外像素保留及取消；`cleanup.test.mjs` 验证三种整图视觉清理及直接文字清理、四种图片及三种视觉协议、文字清理无视觉配置/凭据/旧 ID、完整输出边缘与原尺寸 PNG、多区域并集与保护区像素、慢视觉规划与请求/响应体超时、拒绝/失败/取消及版本关联；`vision-request.test.mjs` 验证视觉默认/扩展时限、响应体超时与取消优先级；`extraction.test.mjs` 验证五种提取场景、三种视觉协议、商品展示约束、多候选、拒绝/取消及版本关联；`test:generate` 验证批量生成的并发上限、限流退避重试、多图意图自动判断与提示词拆分、部分成功时提示词与图片对齐、去除背景的主体规划 / 透明参数 / Alpha 校验、文字编辑输出继承修改后的识别缓存（含多候选和全部删除）、变量批量处理与批量文生图的逐张返回/失败续跑/取消保留、日日新编辑请求及多图版本 ZIP 下载；`project-data.test.mjs` 验证导入路径穿越防护、草稿图片 ID 重映射、缺文件素材与文字缓存兼容及默认模型回退；`backup-restore.test.mjs` 验证恢复前拒绝损坏、路径穿越和模式不兼容数据库，恢复后的项目目录重建及安全备份；`restore-concurrency.test.mjs` 验证恢复会取消并等待在途生成，再由桌面宿主重启；`model-connection.test.mjs` 验证模型端点错误不会被标记为连接成功；`test:request-guard` 验证本机访问限制（跨站调用被拒、响应不带 CORS 授权、Vite 代理与非浏览器调用仍可用）。`plugins.test.mjs` 验证新操作注册扩展、取消边界、无效输出和凭据隔离；`plugin-api.test.mjs` 验证九项原操作与上色插件的通用/别名入口等价、插件版本记录、未知 ID 拒绝、访问限制与复制/导入，以及改字/去水印/去背景的规划取消、拒绝不出图、失败不发布版本与同步校验；`recipe.test.mjs` 验证 JSON 目录发现、坏插件隔离、字段与默认值校验、有序参考图、无视觉流程、输出格式/尺寸/透明校验及取消。测试仅使用生成的图片和 `work/*-test-*` 内的独立数据/配置，不读取真实用户数据或调用真实模型；测试文件不打入桌面服务资源。
 - Windows 双击启动入口：`Layerive.bat`。该文件使用固定的工作目录，移动仓库后需要同步更新。
 - 项目不依赖登录、云端数据库或第三方后端。模型请求会发送给用户配置的模型服务；其他项目数据留在本机。
 - 许可：项目以 LGPL-3.0-or-later 发布，根目录 `LICENSE` 为 GNU LGPL v3.0 全文（参考 Wei-Shaw/sub2api 的做法）；`package.json` 的 `license` 字段与之保持一致。对外分发或商用前应遵守该许可条款。
@@ -26,6 +26,7 @@
 
 ### 项目与数据管理
 
+- 操作确认：删除项目、图片版本、模型配置、提示词画廊收藏及恢复完整备份均使用 `src/ConfirmDialog.tsx` 的统一应用内确认弹窗，不调用浏览器 `alert` / `confirm` / `prompt`。由 `main.tsx` 中的 ConfirmProvider 提供异步 `useConfirm()`；使用自定义样式的 HTML dialog 顶层模态展示，阻止底层交互与图片粘贴，默认聚焦取消、Tab 限定在弹窗内、Escape/关闭按钮取消，关闭后恢复原焦点。提交期间锁定按钮且不能关闭，失败保留弹窗并显示错误以便重试，成功关闭；标题与操作区固定、中间内容滚动，支持窄窗口、暗色与中英文。恢复确认展示选中文件名，取消后可再次选择同一备份。Electron 启动/服务异常的系统错误弹窗及系统文件选择器仍由宿主提供。
 - 项目库：卡片 / 列表切换、搜索、最近更新时间排序、收藏、创建、重命名、复制与软删除项目。重命名有两个入口：项目库卡片 / 列表行的铅笔按钮弹出重命名对话框，工作台顶栏的项目名输入框失焦即保存（输入框右侧的铅笔图标提示其可编辑）。两者都只改名称，不影响图片、对话与版本。
 - 项目持久化：保存项目描述、封面、当前图片/版本、默认图片模型和工作台草稿。工作台草稿每次变更先写入 `localStorage` 的 `layerive-draft:<projectId>` 恢复副本，服务端保存成功后删除；网络失败时阻止内部离开工作台，刷新 / 关窗后可从该副本恢复。当前标签页的顶层视图与工作台 `projectId` 另存于 `sessionStorage` 的 `layerive-current-view`，浏览器后台丢弃标签页并重载后会恢复原工作台；若项目已不存在则回退项目库。
 - 素材上传：无论项目是否已有图片，均可继续上传 PNG、JPEG、WebP（单文件最大 10MB）；服务端会解析并保存原图宽高。新上传图片会立即成为当前画布和下一次编辑的输入素材，并自动匹配当前模型最接近的支持比例。也支持在工作台任意位置（含画布）直接 Ctrl+V 粘贴剪贴板图片，走同一上传流程；文本框内的粘贴始终以文本优先，上传进行中会忽略重复粘贴。
@@ -33,6 +34,8 @@
 - 完整备份 / 恢复：备份 SQLite、项目图片、画廊配图和模型配置；导出与导入统一限制 ZIP 至 10,000 个条目、单条 512MB、总解压后 2GB。恢复会进入维护状态，取消并等待在途任务完成，再在隔离目录校验 ZIP 路径、数据库完整性、外键、必要表及字段；随后 checkpoint 并创建含同样内容的安全备份，最后替换数据并重启服务。服务启动时会为全部未删除项目重建标准素材目录，因此空项目也可在恢复后继续上传和生成。
 
 ### 图片创作与编辑
+
+- 弹窗滚动布局：新建/重命名项目、数据管理和文字编辑使用受视口高度约束的外壳，标题/关闭入口与底部操作区位于独立内容滚动区外；对比、版本树、模型日志、提示词画廊及声明式插件弹窗沿用相同边界，模型日志不再强制 520px 最低高度。窄屏减少外边距、保留取消按钮，画廊编辑浮层限制在画廊弹窗内。局部修改、局部批量修改与扩图浮窗位于 `canvas-stage-shell` 内，与可滚动的 `canvas-stage` 同级，标题/退出和底部操作固定，中间独立滚动；高度同时受画布与视口约束；窄屏画布另设视口高度上限，避免扩图预览把浮窗撑出屏幕。画布宽度不超过 620px 时，展开局部批量面板只展示批量面板，收起后恢复局部修改及原输入，避免两个面板堆叠遮挡关闭入口。
 
 - 画布功能栏：保留单行横向排列和原功能顺序；内容超出实际画布宽度时，两端显示固定滚动箭头，可继续浏览的一侧显示边缘渐隐，到达边界的箭头禁用，全部放得下时隐藏箭头和渐隐。点击箭头平滑移动约四分之三可视宽度，鼠标纵向/横向滚轮及触控板可浏览，Ctrl/Command + 滚轮保留原缩放行为；到达边界后不拦截页面滚动。Tab 聚焦自动露出完整工具，工具内支持左右方向键及 Home/End，跳过禁用项。ResizeObserver 同步响应画布宽度、中英文文案和动态插件变更；兼容暗色，减少动态效果时箭头立即滚动。
 
@@ -55,13 +58,13 @@
 - 项目风格提示词：只自动叠加到无输入图的文生图请求。
 - 图片改字：视觉模型识别图片文字为分段内容；用户可修改、删除或框选区域手动新增文字，再由视觉模型规划图片编辑提示词。点击“提交并改图”后立即关闭编辑弹窗并回到项目对话，从视觉规划阶段开始展示等待状态；输入校验后即获得任务 ID，视觉规划和生成共用可取消任务；创建失败或当前工作台会话内任务失败/取消时恢复弹窗和编辑内容。任务成功后，每张输出图都会按本次替换、删除和新增结果保存当前文字快照（包括空快照），用同一视觉模型配置继续改字时直接读取，不再重复识别。
 - 局部编辑：支持从画布图片内外起拖并越界框选，最终取图片内有效百分比选区。选区浮窗支持文字要求，或上传 / Ctrl+V 粘贴参考图（静态 PNG/JPEG/WebP，最大 10MB）。有参考图时文字可留空：视觉模型同时理解原图、选区与参考图，推断替换意图、定位两图主体并规划明确的双图替换提示词；后台将规范化的完整原图（图1）和完整参考图（图2）按顺序传给图片模型，直接在指定位置替换主体，不裁剪拼贴参考主体。提示词要求保留参考主体的身份、颜色、形状、纹理及辨识特征，按原图姿态、透视、画风和光照适配尺寸与连接处，不引入参考图背景、原有阴影或无关内容；需所选图片服务实际支持多图编辑，不静默降级为单图。参考图模式最终仅回填选区内生成结果，边界向内羽化，框外保留原图解码后的像素，并以原图尺寸保存 PNG；纯文字方式继续使用原有模型输出。定位失败或目标超出选区时停止。视觉规划、双图生成、框外保留均在可取消任务中运行。选区浮窗的操作行提供「批量修改」入口：点击后在浮窗右侧展开批量面板，每行一条指令（2–50 条、单条 ≤1000 字符，可粘贴多行），复用 `/local-edit-batch`（任务 `operation_type` 仍为 `batch_edit`、版本 `operation_type` 为 `local_edit`）逐张运行同一条局部修改流水线并把全部输出追加到同一版本；若浮窗已附参考图，所有指令共用该参考图（此时强制 PNG 输出）。进度复用画布下方的批量进度面板（`localEdit` 标记区分文案），支持取消并保留已完成图片。
-- 删除元素：进入类似融合/提取的右侧工具栏，收起项目对话，提供「框选删除（默认）/ 去除路人 / 清理杂物 / 全图文字清理 / 房屋空间整理」。默认模式维持拖动圈选、松开立即创建可取消任务：视觉模型同时查看原图及放大的选区细节，优先识别最具体的独立部件/成对物品，置信度 ≥0.65 且至少 90% 位于选区内才调用图片模型；只回填选区、向内羽化、保留框外像素。其余四种场景无需框选，分析整图自动列出多个删除目标与保留内容：去路人保留主角/同行者和背景，支持点击人物身体标记要保留的人（最多 20 个，点位为整图百分比，可移除；不标记则自动识别，不明确时停止）；清杂物保留主要主体、必要附件及正常家具/装饰；全图文字清理删除文字/数字/字幕/水印/logo 而保留载体与非文字图形；房屋整理保留空间结构、装修、主要家具并清理临时杂物，不重装或移动家具。整图模式可附 ≤1000 字符补充要求，显式点击开始自动清理。视觉规划输出 ≤100 个带坐标/置信度的目标、保留主体和保护矩形，规划不适用、无目标、坐标无效或保护主体冲突时停止；图片生成后仅回填目标矩形的并集并向内羽化，保护矩形内与目标区域外保留原图解码像素。全部模式强制单张原尺寸 PNG，planning / generating / preserving 共用 300 秒可取消任务，保存为 remove_element 版本并关联原图；上传原图首次删除补建起始版本并作为父节点。失败/取消保留当前场景输入，退出侧栏不取消任务，成功返回对话展示结果。
+- 删除元素：进入类似融合/提取的右侧工具栏，收起项目对话，提供「框选删除（默认）/ 去除路人 / 清理杂物 / 全图文字清理 / 房屋空间整理」。框选删除维持圈选后立即创建可取消任务：视觉模型同时查看原图及放大选区细节，优先识别最具体的独立部件/成对物品，置信度 ≥0.65 且至少 90% 位于选区内才调用图片模型；只回填选区、向内羽化、保留框外像素。去路人、清杂物、房屋整理三种整图场景无需框选，由视觉模型列出 ≤100 个删除目标、保留主体和保护矩形：去路人保留主角/同行者与背景，可点击标记保留人物（最多 20 个整图百分比点位）；清杂物保留主要主体、必要附件及正常家具/装饰；房屋整理保留空间结构、装修和主要家具，清理临时杂物，不重装或移动家具。规划不适用、无目标、无效坐标或保护冲突时停止；生成后仅回填目标矩形并集、向内羽化，保护矩形内和目标外保留原图解码像素。全图文字清理仅需要 edit_prompt 图片模型，直接传入规范化原图与明确提示词，删除文字、字母、数字、字幕、标注、水印与 logo（含纯图形 logo），保留载体和其他非标识图形/装饰并恢复表面；不调用视觉模型、不判断无文字、不输出目标框、不做像素回填，完整生成结果转为原尺寸 PNG，其他内容由提示词约束，不保证逐像素一致。整图场景均可附 ≤1000 字符补充要求，显式点击开始清理。全部模式强制单张原尺寸 PNG，共用 300 秒可取消任务；框选视觉请求上限 120 秒，三种整图视觉规划上限 240 秒；文字清理阶段为 generating / validating。成功保存为 remove_element 版本、关联原图，上传原图首次删除补建起始父版本；失败/取消保留当前输入，退出侧栏不取消任务，成功返回对话展示结果。
 - 图片变清晰：对当前图片调用图片模型的改图能力，提升细节和清晰度，同时约束模型保持原图的主体、文字、构图、比例、颜色和风格不变。
 - 扩图：选择目标尺寸，以原图为核心自然补全新增画布区域。
 - 去水印：输入校验后即返回任务 ID，视觉模型在可取消任务内判断 / 定位水印；确认存在后调用图片编辑模型修复遮挡区域，无水印时任务以 watermark.notFound 失败且不出图。
 - 去除背景：一键对当前整图进行语义抠图。视觉模型按主体面积、位置、清晰度、前景层级和互动关系判断最可能应保留的主要人物 / 动物 / 物体组，保留构成同一主要事件的对象及必要附件，排除远处、微小、模糊或无互动的陪衬元素，再由图片编辑模型只保留该主体并输出透明背景。该操作强制单图 PNG、`transparent=true`，只允许声明支持透明背景且支持 PNG 的 `edit_prompt` 图片模型；服务端在落库前用 Sharp 检查结果同时包含足量透明像素和可见主体，白底、纯色底、无透明通道或空透明图会以 `backgroundRemoval.*` 稳定错误码终止且不创建版本。
 - 提取素材：点击后进入类似融合的画布右侧工具栏，收起项目对话；提供「框选提取（默认）/ 服装提取 / 饰品提取 / 表面图案 / 背景提取」五种快捷场景，每次进入默认框选提取。顶部退出入口与底部补充说明（≤1000 字符）/ 提取按钮固定，中间场景与截图预览独立滚动；支持框选或显式选择整图。用户可从图片内外起拖并越界框选，最终取与图片相交的有效区域。canvas 截图维持上限 2048px、最小边 256px、比例超 2:1 边缘补边、超大转 JPEG 的输入规范。视觉模型结合场景、框选内容和说明识别意图：默认模式保留主体原样；服装和饰品分离穿戴者及杂物，整理为居中、适度留白、浅色背景、柔和光影的商品展示，保留设计/材质/颜色/标识，仅对少量遮挡保守补全；表面图案去除载体并校正为平面素材；背景模式保留选区环境、移除前景主体并补全遮挡。没有合适目标、意图不明或无法可靠还原时停止，不调用图片模型。截图存为 extract 素材，视觉规划与图片编辑在同一可取消任务中完成（planning / generating）；失败或取消保留选区和说明，退出面板不取消任务，成功回到对话展示输出。输出关联原图和截图，上传原图首次提取补建起始版本。
-- 提示词画廊：入口在工作台顶栏（模型选择旁带中文文案的「提示词画廊」胶囊按钮，窄屏自动收起副标题），对话与批量模式都可用。按分类浏览内置模板：对话模式把完整提示词填入对话框、风格提示词设为项目风格；批量模式把完整提示词追加为批量提示词列表的一行（自动切到列表页，满 50 条时拒绝追加），风格提示词在批量文生图时写入「统一风格提示词」、其余场景写项目风格。支持手动添加 / 编辑 / 删除“我的收藏”条目（可上传配图，纯文本亦可），上传图片后可调用视觉模型提炼完整提示词与风格描述；在工作台对画布主图、候选条、消息画廊中的图片点击右键，可一键收藏到画廊（视觉模型自动提炼提示词，失败时仅收图、提示词留空）。用户画廊数据存于 SQLite `gallery_entries` 表与 `data/gallery/` 目录，随完整备份 / 恢复。
+- 提示词画廊：入口在工作台顶栏（模型选择旁带中文文案的「提示词画廊」胶囊按钮，窄屏自动收起副标题），对话与批量模式都可用。按分类浏览内置模板：对话模式把完整提示词填入对话框、风格提示词设为项目风格；批量模式把完整提示词追加为批量提示词列表的一行（自动切到列表页，满 50 条时拒绝追加），风格提示词在批量文生图时写入「统一风格提示词」、其余场景写项目风格。支持手动添加 / 编辑 / 删除“我的收藏”条目（可上传配图，纯文本亦可）。添加/编辑时弹窗宽度上限 960px、高度随内容收紧并受视口约束，左侧为可直接点击上传的配图预览及视觉提炼区，右侧标题与分类并排、完整提示词和风格提示词分组说明；窄屏改为单栏、配图区横向紧凑排列，标题/关闭和底部保存提示及按钮固定，仅中间内容滚动，兼容暗色与中英文；完整提示词或风格提示词至少填写一项才能保存。上传图片后可调用视觉模型提炼完整提示词与风格描述；在工作台对画布主图、候选条、消息画廊中的图片点击右键，可一键收藏到画廊（视觉模型自动提炼提示词，失败时仅收图、提示词留空）。用户画廊数据存于 SQLite `gallery_entries` 表与 `data/gallery/` 目录，随完整备份 / 恢复。
 - 暗色模式：`src/theme.tsx` 的 ThemeProvider 以 `data-theme` 属性切换 `html` 主题，偏好存于 localStorage（`layerive-theme`），暗色样式统一写在 `styles.css` 末尾的 `html[data-theme='dark']` 覆盖块；首页、工作台、模型配置三处顶栏均有切换按钮。
 - 多语种切换：界面支持简体中文（默认）与 English，零依赖自研 i18n 模块 `src/i18n/`。`LanguageProvider` 挂在 `main.tsx` 的 ThemeProvider 内，偏好存于 localStorage（`layerive-language`），切换时同步 `document.documentElement.lang`、`document.title` 并经 preload 通知 Electron 重建原生菜单（启动期就绪前的桌面对话框保持中文回退）。`LanguageToggle` 按钮与暗色切换按钮并排出现在三处顶栏。全部 UI 文案以 `zh-CN.ts` 扁平字典为唯一 key 来源（`TranslationKey` 类型由此推导），`en-US.ts` 用 `Record<TranslationKey, DictValue>` 在编译期强制两语言 key 一致；带参数文案用 `{name}` 占位，`params.count` 存在且值为 `{ one, other }` 时按英文单复数取词。组件内经 `useLanguage()` 的 `t()` 取词；非 React 模块（如 `api.ts`）用模块级 `tf(key, fallback, params)`。服务端固定短语另有 `msg.*`（写库消息码）与 `err.*`（HTTP 错误码）命名空间。发给视觉 / 图像模型的规划提示词、画廊条目的 prompt / stylePrompt 属于内容而非 UI，不翻译；历史已入库消息无码时回退原文。
 
@@ -69,7 +72,8 @@
 
 - 版本树：所有普通/插件/批量生成入口在写入任务或调用模型前，校验显式 parentVersionId 属于当前项目且未删除，否则返回 404 version.notFound；上传图首次编辑时补建起始版本；每次成功生成 / 编辑均产生可分支的版本节点与输出图片。
 - 历史操作：选择历史版本查看、从历史版本继续创作、查看可缩放 / 可平移的完整版本树。历史列表中的多图版本以候选缩略图拼图、数量角标和“多图 · N 张”标签区分；可从版本卡片或当前画布工具栏把该版本全部输出图下载为 ZIP，包内按 `V<版本号>-<两位序号>.<扩展名>` 命名。
-- 对比：提供并排和滑块式前后图片对比。
+- 对比：提供并排和滑块式前后图片对比。前后对比支持直接拖动中间分隔线或圆形手柄（32px 横向命中范围，鼠标/触屏 Pointer Events），与底部滑块同步；指针捕获保证移出图片后仍可拖动，松开/取消/捕获丢失时结束，位置限制为 0–100%。分隔栏可通过 Tab 聚焦，方向键微调、Shift + 方向键或 PageUp/PageDown 调整 10%，Home/End 移至两端；沿用双语无障碍标签，支持暗色焦点提示。
+- 对比弹窗布局：顶部标题/模式/关闭按钮和底部历史图片条固定，图片区域按剩余高度缩放并保留完整比例；常规窗口无需整窗滚动，窄屏并排模式上下排列，极低高度仅中间内容区滚动。历史条由 `CompareImagePicker.tsx` 提供，隐藏原生横向滚动条，仅溢出时展示左右箭头/边缘渐隐，边界禁用对应箭头；支持滚轮/触控板、Tab/左右方向键/Home/End 浏览，选中项和焦点自动露出，ResizeObserver 响应尺寸变化，减少动态效果时箭头立即滚动。所有 `.modal-backdrop` 内的滚动区域统一为透明轨道、圆角细滚动条（Chromium 6px、无两端箭头，其他浏览器使用 thin），悬停滑块加深，暗色使用独立颜色；历史条仍隐藏滚动条。
 - 版本删除：软删除版本；有子版本时需确认强制删除，后代会连接至被删节点的父节点；正在增量写入的批量版本必须先取消或等待结束，不能删除。
 - 对话记录：保存用户提示词、模型名、参数、生成结果、系统事件、失败与取消信息。
 - 异步任务：生成请求立即返回任务 ID，前端轮询任务状态，同一轮询不重叠发请求，旧轮询返回不再更新页面；终态项目数据刷新成功后才停止，网络瞬断继续重试；取消接口仅在确实接受取消时提示正在取消，已完成任务继续展示真实终态；支持取消，服务重启会将未完成任务标记为失败。批量任务（批量改图 / 批量文生图 / 批量局部修改）复用一个 `generation_tasks` 主任务并增量发布图片；启动恢复会按任务关联处理所有仍为 `generating` 的版本（包含 `local_edit`）：已有输出保留为 `partial`，空版本自动软删除。复制或导入项目时，未完成任务会转为失败，关联版本按已有输出转换为 `partial` 或删除，不能留下没有执行器的生成任务。
@@ -78,7 +82,7 @@
 
 - 本地模型：模型配置页提供「添加图片生成模型 / 添加视觉识别模型 / 添加本地模型」独立图标文字入口；表单以「接入方式」切换在线与本地，`provider: local` 同时适用于图片与视觉模型。本地图片默认 OpenAI Images、`http://127.0.0.1:8000/v1`、1024×1024、PNG、单张、仅文生图、不声明透明能力；视觉默认 Chat Completions、`http://127.0.0.1:1234/v1`，也可选择 Responses。地址/端口可修改，模型名必须填写服务实际加载的名称。仅连接已启动的兼容服务，不安装/加载模型文件，不适配原生 ComfyUI 工作流。API Key 可留空，空 Key 请求不发送 Authorization，填写后正常发送 Bearer；在线模型仍要求 Key。切换在线/本地时清空原 Key，避免误带到另一个服务。本地图片连接测试查询 `/models` 并校验名称，视觉测试使用所选协议发起简短文本请求；连接成功不保证该模型具备图片生成/理解/编辑能力。
 
-- 图片模型：新增、编辑、删除、连接测试、设置默认模型，并按能力控制工作台可用操作。图片预设（日日新、OpenAI、Gemini、Grok、自定义）只填充推荐初值；图片 API 协议独立选择 OpenAI Images、Gemini Interactions 或 Grok Images。每个模型保存可选尺寸、输出格式、透明背景和单次最大图片数，工作台和服务端均据此约束参数。
+- 图片模型：新增、编辑、删除、连接测试、设置默认模型，并按能力控制工作台可用操作。图片预设（日日新、OpenAI、Gemini、Grok、豆包 Seedream、Qwen-Image、FLUX.2、自定义）只填充推荐初值；图片 API 协议独立选择 OpenAI Images、Gemini Interactions、Grok Images、Seedream Images、Qwen Images 或 BFL FLUX。每个模型保存可选尺寸、输出格式、透明背景和单次最大图片数，工作台和服务端均据此约束参数。新增预设提供推荐型号选择并保留可编辑的模型 ID / 接入点，分别包含 Seedream 5.0 Pro / Flash、Qwen-Image 3.0 Pro / 3.0 / 2.1 Pro / 2.1 Turbo 与固定版本 FLUX.2 Pro；三家默认优先使用 Pro。Seedream 支持 PNG/JPEG，Qwen 固定 PNG，FLUX 支持 PNG/JPEG/WebP；质量选项对这三种原生协议禁用且不传给平台。透明背景仅对 Qwen 2.1 的两个官方名称开放，并沿用去背景的 Alpha 校验；Seedream 和 FLUX 暂不提供透明生成或去背景。配置步骤、限制和官方依据见 `docs/model-providers.md`。
 - 视觉识别模型：新增、编辑、删除、连接测试、设置默认识别模型；可选择 Anthropic Messages、Chat Completions 或 Responses API 格式（新建默认 Chat Completions），供改字、局部编辑、去水印、去除背景、提取素材规划使用。工作台顶部可为当前项目切换视觉识别模型，选择保存在项目 `draft.visionModelId` 中；旧项目或已删除的选择回退到全局识别默认模型。API Key 输入框可切换显示 / 隐藏。
 - 模型日志：工作台右上角、模型配置按钮旁有项目级「模型日志」入口。弹窗展示最近 100 次视觉理解与图片模型调用的阶段、模型、状态、请求摘要、视觉模型返回的独立思考 / 推理字段（供应商未返回时明确标示）、结构化产出、生成提示词、耗时和错误；执行中每 2.5 秒刷新。日志只保存文本和元数据，禁止保存 API Key、请求图片 Base64 或模型返回的图片字节。
 - 已适配图像提供商：OpenAI 兼容、SenseNova、Gemini、Grok；另有仅服务端兼容的本地 `mock` 演示路径。
@@ -90,12 +94,14 @@
 src/                        React 单页应用
   main.tsx                  React 挂载入口
   App.tsx                   顶层视图路由与全局项目/模型状态
+  ConfirmDialog.tsx         统一异步操作确认、顶层模态与焦点管理、提交锁定及错误重试
   theme.tsx                 暗色模式 ThemeProvider（data-theme + localStorage）
   i18n/zh-CN.ts             简体中文字典（全部 UI 文案 key 的唯一来源）
   i18n/en-US.ts             英文字典（Record<TranslationKey, DictValue>，编译期强制与中文 key 一致）
   i18n/index.tsx            LanguageProvider、useLanguage/t/tf 与顶栏 LanguageToggle
   HomeView.tsx              项目库、创建、导入、备份恢复入口
   WorkspaceView.tsx         三栏工作台、共享画布/互斥状态/草稿、任务轮询、版本树/对比
+  CompareImagePicker.tsx     对比历史图横向浏览、溢出箭头/渐隐、键盘与选中项露出
   ImageProcessingOverlay.tsx 共用扫描/流光/呼吸动效层及会话内任务输入图/选区快照类型
   ImageWithReveal.tsx        主图加载解码后切换、保留旧图及结果缩略图淡入
   OutpaintPreview.tsx        扩图目标画布尺寸过渡、居中原图与新增区域任务动效
@@ -104,7 +110,8 @@ src/                        React 单页应用
     catalog.ts              读取前后端共用的 server/plugins/catalog.json
     registry.ts             注册面板、按钮定义及历史任务类型映射
   ModelConfigView.tsx       图片模型、视觉识别模型配置界面
-  api.ts                    前端唯一的 HTTP API 封装及下载/上传辅助函数
+  imageModelPresets.ts      Seedream/Qwen/FLUX 推荐型号、默认协议/尺寸/格式与透明选项规则
+  api.ts                    前端唯一的 HTTP API 封装及下载/上传辅助函数；ApiError 保留本地化 message、HTTP status 和服务端 code
   types.ts                  前后端共享的数据形状（前端侧）
   sizes.ts                  根据图片模型声明的尺寸生成比例选项及校验规则
   gallery.raw.json          提示词画廊源数据（分类含 zh / en 名称）
@@ -112,6 +119,8 @@ src/                        React 单页应用
   styles.css                全站样式
 server/
   index.mjs                 HTTP 路由、插件宿主接线、生成任务/版本事务、模型调用、项目与备份逻辑
+  vision-request.mjs        视觉 HTTP 请求与完整 JSON 接收共用超时，保留任务取消与响应读取错误
+  vision-request.test.mjs   视觉默认/扩展时限、响应体接收超时及取消优先级回归
   plugins/                  显式注册九项内置操作（含 edit-text/remove-background/remove-watermark/outpaint/enhance）
     recipes/*/plugin.json    声明式插件目录；自动发现，当前包含 colorize
     recipes.mjs             扫描资源目录、校验注册及异常隔离
@@ -127,8 +136,8 @@ server/
   models.mjs                config/models.json 的读写、脱敏与模型规范化
   png.mjs                   演示图和缩略图的 PNG 工具
   local-edit.mjs            Sharp 图片规范化（含日日新请求副本）、坐标校验、选区细节裁剪、单区/多区域并集回填与保护区像素保留
-  cleanup.mjs               整图删除场景、保留人物点位校验、视觉规划/多目标保护校验与删除提示词
-  cleanup.test.mjs          整图删除隔离回归：四场景、四图片/三视觉协议、多区域像素保护、拒绝/取消与版本关联
+  cleanup.mjs               整图删除场景、保留人物点位校验、视觉规划/多目标保护校验与直接文字清理提示词
+  cleanup.test.mjs          整图删除隔离回归：三视觉场景/直接文字清理、四图片/三视觉协议、无视觉配置、像素保护、失败/取消与版本关联
   extraction.mjs            五种素材提取场景、意图识别与商品展示提示词规则
   extraction.test.mjs       隔离提取回归：五种场景、三种视觉协议、多候选、拒绝/取消与原图版本关联
   fusion.mjs                融合子模式、落点/要求校验、双图视觉规划规则和规划结果校验
@@ -136,6 +145,9 @@ server/
   local-edit.test.mjs       局部编辑的隔离图片处理与 HTTP 集成回归测试
   backup-restore.test.mjs   备份恢复前校验、安全快照与重启信号回归测试
   restore-concurrency.test.mjs 恢复与在途生成互斥的回归测试
+  image-providers.mjs       Seedream/Qwen JSON 与 BFL FLUX 异步图片协议、输出下载和只读连接探测
+  image-providers.test.mjs  原生协议边界、轮询取消和凭据隔离测试
+  native-image-api.test.mjs 七个原生型号的隔离 HTTP 任务与插件集成回归
   model-connection.test.mjs 模型连接测试错误状态回归测试
   local-model.test.mjs      本地服务隔离回归：配置保存、空/非空 Key、连接失败、文生图、multipart 改图及 Chat/Responses 图片识别
   project-data.test.mjs     项目导入、草稿 ID、缺文件缓存和默认模型回归测试
@@ -145,6 +157,7 @@ server/
 electron/
   main.cjs                  桌面窗口、原生菜单与本地服务生命周期；运行时将用户数据根目录传给 server/
   preload.cjs               沙箱 preload：经 contextBridge 把界面语言变化转发主进程以重建菜单
+docs/model-providers.md      Seedream/Qwen/FLUX 配置、兼容边界、测试与官方依据
 docs/image-plugins.md        内置图片插件 API v1 开发契约、扩展步骤与兼容边界
 scripts/
   dev.mjs                   并行启动前端和后端
@@ -187,13 +200,13 @@ work/                       临时工作目录（被 Git 忽略）
 - `.canvas-edit-area` / `.canvas-edit-body` 包裹画布；融合时 `.workspace-body.fusion-layout` 收起项目对话（保持挂载与状态），画布使用腾出的空间，退出融合后恢复对话。融合入口位于 `.canvas-edit-menu` 的最后（编辑文字之后）；进入后工具栏按钮改用关闭图标和「退出融合」文案。右侧 `.fusion-library` 桌面宽 280px，顶部 `.fusion-library-header` 固定显示紫色「退出融合」按钮及返回项目对话的说明，中间 `.fusion-library-content` 为唯一滚动区域，底部 `.fusion-library-footer` 固定显示拖拽/选中指引和带计数的补充要求输入框；生成中也可退出融合回到项目对话，任务继续运行并可在对话中取消。右侧 `.fusion-submenu` 为 2×2 图标卡片，附当前模式说明；参考图区含数量、虚线上传入口、粘贴快捷键、项目历史选择、棋盘背景缩略图及选中状态，主图上方不显示融合子菜单。窄屏融合时 `.workspace-shell.fusion-workspace` 保持视口高度，防止内容把首尾操作区撑出屏幕；退出后恢复常规工作台布局。融合任务的进度与取消按钮显示在该右侧栏，收起对话后仍可取消。融合图列表只存图片 ID 到 `draft.fusionImageIds`，另有 `draft.fusionType` / `draft.fusionInstruction`；融合上传调用 `/images` 的 `referenceOnly: true`，不复用会切换主图的常规上传。融合时工作台图片粘贴优先进入参考列表，文字输入仍优先粘贴文本；主图落点根据实际 `<img>` 内容边界计算，不把画框、空白区或缩放容器当作图片。
 - 图片任务进行中，草稿快照与自动 PATCH 不携带顶层 `currentImageId`，避免此前防抖排队的保存把快速完成任务的新图片指针写回旧主图；任务结束并切换至输出图后恢复保存当前图片。草稿的输入图和融合参考列表仍照常保存，刷新时从服务端项目指针恢复画布。
 - 右侧对话面板以「对话 / 批量」模式标签切换（组件状态，不入草稿；直接点「批量」默认进入批量文生图）：对话模式保留原消息列表与输入区；批量模式整体替换为批量面板，表单内容在 `.batch-panel-scroll` 内独立滚动，「开始生成」按钮和校验错误常驻底部 `.batch-panel-footer`，不随内容滚走。面板内含「批量改图（需画布图片 + `edit_prompt` 能力）/ 批量文生图（需 `text_to_image` 能力）」子模式、变量模板编辑器、提示词列表（含 TXT 导入）、变量值矩阵；尺寸、格式和透明背景均由当前图片模型声明控制，批量文生图另有「统一风格提示词」输入框（初始值取项目风格提示词）。提示词画廊按钮位于工作台顶栏（模型选择旁），两种模式都可用；`useGalleryPrompt` / `useGalleryStyle` 按当前面板和子模式把条目写入聊天输入框、批量提示词列表、项目风格或批量统一风格。
-- 每 1.5 秒轮询正在生成的任务；完成后重新读取项目 Bundle。图片改字点击提交时立即关闭文字编辑弹窗、在项目对话中展示等待状态并自动滚动到最新消息；服务端校验输入后即返回任务 ID，视觉规划与生成均可轮询/取消。插件声明需要视觉模型时初始进度为 planning；改字/去水印分别显示规划文案。改字提交失败或当前会话任务失败/取消时清除等待状态并重新打开原弹窗，保留输入。
+- 每 1.5 秒轮询正在生成的任务；完成后重新读取项目 Bundle。图片改字点击提交时立即关闭文字编辑弹窗、在项目对话中展示等待状态并自动滚动到最新消息；服务端校验输入后即返回任务 ID，视觉规划与生成均可轮询/取消。运行中任务列表返回实际 stage，刷新时据此恢复；新任务轮询保留当前提交的初始阶段，无上下文时才按插件声明设置；文字清理从 generating 开始，其余需要视觉规划的操作从 planning 开始；改字/去水印分别显示规划文案。改字提交失败或当前会话任务失败/取消时清除等待状态并重新打开原弹窗，保留输入。
 - 批量任务（批量改图 / 批量文生图 / 批量局部修改）共用约 900ms 的独立进度轮询分支；每当已处理数量增加就重新读取 Bundle，使新增图片、生成中的版本和项目当前图片立即可用。批量进度保留在画布下方，按任务的 `textBatch` / `localEdit` 标记区分文案，显示词条状态、缩略图、剩余数量与 ETA，任务结束后仍可查看或手动收起；切换到非该批次产出的历史版本时自动收起，避免候选列表与当前画布不一致。批量模板编辑器是命令式渲染的 `contenteditable`，只在面板/标签页/参考图变化时按状态重建，输入过程不重渲染以免光标跳动。
 - 局部编辑提交后立刻显示等待状态，取得任务 ID 后收起浮窗，并按任务 `stage` 显示视觉定位 / 双图生成 / 框外还原进度（旧任务 compositing 阶段仍可展示）。失败或取消时在同一工作台会话恢复选区、文字与参考图；成功后清空。参考图只在本次操作中使用，不替换当前画布或项目草稿；切换画布图片会清除旧参考图并使未完成的文件读取失效。局部编辑浮窗有选区时，图片粘贴优先进入参考图，文本框仍保持文本优先。
 - 监听 document 的 `paste` 事件：剪贴板含图片时复用上传流程（画布可直接 Ctrl+V 贴图）；文本框内文本优先，上传进行中忽略重复粘贴。
 - 维护当前查看图片、下一次编辑的输入图片、图片模型、视觉识别模型、尺寸、输出格式、数量、透明背景等本地状态。工作台选择的视觉模型随项目草稿保存，并通过请求体 `visionModelId` 传给所有视觉理解操作；视觉请求进行中禁止切换，避免界面选择与已提交请求不一致。
 - 使用百分比坐标 `{ x, y, width, height }` 记录文字/局部编辑/删除元素/提取素材选区；局部编辑、删除元素的框选模式和提取素材通过画布级 Pointer Events 与指针捕获支持从图片外起拖及越界拖拽，再将结果限制为图片内 0–100% 的有效交集；选区显示层必须以 `inset: 0` 对齐图片内容边缘，不能因容器已有边框而再次向内缩进；服务端和视觉模型提示词均以此为准。框选删除在有效选区松开时直接提交，无二次确认面板；失败或取消保留仍打开的模式与选区，不强制重开用户已退出的面板。
-- 删除元素同样共用融合布局，以 `.cleanup-library` 展示五种场景；每次进入默认 selection，场景/说明/保留人物点位只保存在组件状态。框选模式使用原画布 Pointer Events、松开即提交；其余模式不接受删除框选，people 模式的主图点击按真实 img 边界添加百分比点位，画布标记与侧栏标签均可移除。首尾操作固定，中间独立滚动；场景切换清理选区/点位/说明，换图清理面板。生成中可退出并在对话继续取消，失败/取消不强制重新打开已退出的侧栏。
+- 删除元素同样共用融合布局，以 `.cleanup-library` 展示五种场景；每次进入默认 selection，场景/说明/保留人物点位只保存在组件状态。框选模式使用原画布 Pointer Events、松开即提交；其余模式不接受删除框选，people 模式的主图点击按真实 img 边界添加百分比点位，画布标记与侧栏标签均可移除。首尾操作固定，中间独立滚动；场景切换清理选区/点位/说明，换图清理面板。生成中可退出并在对话继续取消，失败/取消不强制重新打开已退出的侧栏。 text 模式仅按图片模型能力启用提交，使用独立双语整图编辑说明与示例，不显示区域外像素保留承诺；提交不传 visionModelId，从 generating 开始，后处理显示 validating。
 - 提取素材共用融合模式的 `fusion-layout` / `fusion-workspace` 扩展画布布局，通过 `.extract-library` 显示五种场景；场景只保存在组件状态，每次进入重置为 selection。圈选完成或点击「使用整张图片」后用 canvas 生成截图预览（`cropImageRegion()`），异步预览在选区/图片/模式改变后失效，提交随请求发送截图 base64 和 `mode`。规划/生成期间侧栏显示阶段与取消入口，退出可在对话中继续取消；切换画布图片清理选区和面板。局部修改、删除元素、提取素材与扩图等模式互斥，变清晰/去水印也会退出提取侧栏。
 - 在版本树中按父子关系布局；从历史节点继续编辑会成为新的分支。
 - 顶栏模型日志弹窗通过 `/api/projects/:id/model-logs` 读取项目最近调用；左侧按时间倒序列出记录，右侧展示提示词、推理 / 分析、请求与产出数据。弹窗打开期间独立刷新，不影响任务轮询。
@@ -219,11 +232,11 @@ work/                       临时工作目录（被 Git 忽略）
 重要不变量：
 
 - 上传图片先作为未版本化素材保存；服务端用 `readImageDimensions()` 读取 PNG/JPEG/WebP 的宽高并写入 `images.width` / `images.height`。第一次拿它编辑时，`ensureUploadVersion()` 会补建 `upload` 起始版本。
-- 局部替换参考图保存在项目 `local-edits/`，`images.source_type` 为 `local_reference`，保持未版本化并带所属 `task_id`；新任务不再创建 `local_composite`。成功版本的 `version_inputs` 关联原图与参考图，父节点始终来自原图；参考素材不成为画布当前版本。历史 `local_composite` 素材与输入关系继续兼容保留。它们作为普通项目图片随复制、导出导入及备份保留，失败任务已保存的参考素材也会留存。`generation_tasks.input_json` 可附加 `stage`、`localEdit`（选区、意图、双图百分比坐标、规范化尺寸及视觉模型 ID；整图删除额外保存 cleanupMode / instruction / keepPoints / targets / keepRects / keepSubjects / confidence，不存图片字节）、`backgroundRemoval`（视觉模型 ID、保留主体、排除内容、判断依据和置信度）、`effectivePrompt`，或 `extraction`（mode、选区、说明、视觉模型 ID、识别主体；不存截图字节），或批量任务（`batch_edit` / `batch_generate`）的 `versionId` / `versionNumber` / `batch`（变量模式存模板与变量名数组，提示词列表模式存 `prompts` 数组；批量文生图任务额外带 `textBatch: true` 且无输入图；批量局部修改的 `batch` 额外带 `local: true` 且 `prompts` 为指令数组、逐项映射为 `{ 指令: 行内容 }`，任务同时带 `localEdit` 选区字段；均含总数、当前序号，以及逐项的变量值映射、状态、图片 ID、耗时和错误）；不存 API Key，不新增表或列，读取进度时兼容旧任务的单变量结构。
+- 局部替换参考图保存在项目 `local-edits/`，`images.source_type` 为 `local_reference`，保持未版本化并带所属 `task_id`；新任务不再创建 `local_composite`。成功版本的 `version_inputs` 关联原图与参考图，父节点始终来自原图；参考素材不成为画布当前版本。历史 `local_composite` 素材与输入关系继续兼容保留。它们作为普通项目图片随复制、导出导入及备份保留，失败任务已保存的参考素材也会留存。`generation_tasks.input_json` 可附加 `stage`、`localEdit`（选区、意图、双图百分比坐标、规范化尺寸及视觉模型 ID；整图删除额外保存 cleanupMode / instruction / keepPoints，视觉规划模式还保存 targets / keepRects / keepSubjects / confidence；text 不存视觉模型 ID 或虚构定位结果，不存图片字节）、`backgroundRemoval`（视觉模型 ID、保留主体、排除内容、判断依据和置信度）、`effectivePrompt`，或 `extraction`（mode、选区、说明、视觉模型 ID、识别主体；不存截图字节），或批量任务（`batch_edit` / `batch_generate`）的 `versionId` / `versionNumber` / `batch`（变量模式存模板与变量名数组，提示词列表模式存 `prompts` 数组；批量文生图任务额外带 `textBatch: true` 且无输入图；批量局部修改的 `batch` 额外带 `local: true` 且 `prompts` 为指令数组、逐项映射为 `{ 指令: 行内容 }`，任务同时带 `localEdit` 选区字段；均含总数、当前序号，以及逐项的变量值映射、状态、图片 ID、耗时和错误）；不存 API Key，不新增表或列，读取进度时兼容旧任务的单变量结构。
 - 每个成功生成任务都会创建一个版本、写入所有输出图片、选第一张作为 `selected_image_id`，并更新项目的当前图片/版本/封面。前端点击候选条或消息画廊中的任意候选图时，同时更新 `currentImageId` 和 `inputImageId`，确保画布所见候选就是下一次继续创作的输入。
 - 所有图片生成和编辑任务都把 `params.count` 规范为 1–4，并再限制为模型配置的 `maxCount`；服务端会把尺寸、输出格式和透明背景收敛为该模型声明的合法值。`callImageProviderBatch()` 以提示词数组为输入：单提示词时支持原生批量的协议优先使用 `n` 请求，兼容接口若忽略或拒绝 `n`，会按缺口补发单图请求（首波全部为限流错误时不再补发）；多提示词（拆分模式）一律逐条发 `count=1` 请求，输出顺序与提示词一一对应。所有扇出经 `mapWithConcurrency()` 限制为并发 2，单个请求对 429 / 限流类错误最多退避重试 2 次（约 1.5s / 4s，优先响应 `Retry-After`）。成功返回的图片统一写入同一版本，前端候选条与对话画廊展示全部结果；单图接口的多张生成意味着多次计费请求。
 - 项目 Bundle 会隐藏软删除版本所属的图片，未版本化上传图片仍可见。
-- 删除版本只软删除记录，**不会删除图片文件**。如被后续版本引用，须显式强制删除，后代会重新连接到被删节点的父节点。
+- 删除版本只软删除记录，**不会删除图片文件**。如被后续版本引用，须显式强制删除，后代会重新连接到被删节点的父节点。前端初次确认展示已知引用数量；删除请求失败只有 HTTP 409 且 `code=version.referenced` 才再次询问强制删除（处理本地项目快照之后新增的引用），网络失败、生成中及其他错误只显示错误，不提供强制删除。
 - 服务重启时所有仍为 `generating` 的任务会被标为失败，不能尝试恢复执行。
 - 服务端面向用户的固定文案（HTTP 错误与写库消息）都带稳定码：`httpError(status, code, message, params)` 抛出的错误经全局兜底返回 `{ error, code, params }`（中文 `error` 文本保持权威，便于旧客户端与测试）；任务失败 / 取消写入 `generation_tasks.error_json` 的内容为 `{ message, code?, params? }`，assistant 取消 / 错误消息与系统事件的 content JSON 同样可附 `code` / `params`。前端按 `err.*` / `msg.*` 字典本地化，查不到码回退中文原文；历史数据无码，保持中文展示。`friendlyModelMessage()` 返回 `{ text, code, params }`（安全审核 / 限流 / 额度 / 图片被拒各一类，未命中时 `code` 为 `null` 并原样透传平台信息）。
 - `model_execution_logs` 的 `running` 记录在服务重启时标记为失败；日志随项目复制、单项目导出 / 导入和完整备份保留，复制或导入时仍在执行的日志改为已取消。日志文本单字段最多保存约 120,000 字符，超出会截断。日志 `phase` 保持中文存储，属诊断记录，不做界面翻译。
@@ -256,9 +269,9 @@ work/                       临时工作目录（被 Git 忽略）
 - `/generate` 的多图意图判断在 `runGenerationTask()` 内使用工作台所选视觉模型（`visionModelId`，缺省回退全局识别默认模型）：数量大于 1 且提示词非空时把任务 `stage` 置为 `planning`，要求模型返回 `different` 与恰好 N 条可选子提示词。仅当 `different=true`、条数正确且互不重复时进入 `different` 模式并逐条生成；普通候选、含糊判断、条数不足或重复提示词均保守回退 `same` 模式，继续按原提示词生成 N 张。判断结果写入 `generation_tasks.input_json.promptMode`；不同提示词模式会为每个成功输出保留原始提示词索引，若部分请求失败则任务与版本为 `partial`，消息中的 `prompts` 只和实际输出图片一一对应。单张或空提示词不调用视觉模型；多图请求提交时即校验视觉模型存在，视觉请求硬失败则任务失败。旧消息的 `splitPrompts` 仅为历史展示兼容，新请求忽略该字段。
 - `/batch-edit` 不走 `/generate` 的多图意图判断，也不使用图片接口原生 `n`：`startBatchEdit()` 校验模板中的全部变量及其等长值列表，先创建一个 `generating` 批量版本和主任务；`runBatchEditTask()` 再按图片行同时替换多个变量，形成完整提示词，并以 `count=1` 串行调用同一模型和同一参考图。旧调用方仅传一个变量的 `values` 数组时仍兼容。每张输出文件写完后用独立 SQLite 事务追加 `images`、更新任务 JSON；第一张同时设置版本选中图和项目指针。全部完成后写一条结果消息；混合成功/失败为 `partial`，全失败时软删除空版本，取消时保留已有输出。
 - `/batch-generate` 复用批量任务的增量发布框架但不带输入图：`startBatchGenerate()` 校验模型 `text_to_image` 能力与模板 / 提示词列表（校验逻辑与 `/batch-edit` 共用），预建 `batch_generate` 版本与主任务；`runBatchGenerateTask()` 逐行替换变量或直接取列表提示词，可选 `stylePrompt`（≤2000 字符）以「，」追加到每条最终提示词末尾，不叠加参考图批次约束，`count=1` 串行调用文生图接口。任务 JSON 带 `textBatch: true`；增量发布、partial / 取消 / 空版本处理与 `/batch-edit` 一致。`/batch-edits/:taskId` 进度接口同时兼容两种 `operation_type`，并返回 `textBatch` 标记。
-- `edit_text`、`local_edit` 与 `remove_element` 先调用视觉模型生成严格 JSON 的编辑提示词，再调用图片生成模型。文字编辑允许替换、清空删除及手动框选新增；文字编辑、局部修改和删除元素提交时按源图片宽高匹配当前图片模型最接近的支持比例，不能回落到模型默认的 1:1。
+- `edit_text`、`local_edit` 与 `remove_element` 的非 text 场景先调用视觉模型生成严格 JSON 的编辑提示词，再调用图片生成模型；text 场景直接构建提示词。文字编辑允许替换、清空删除及手动框选新增；文字编辑、局部修改和删除元素提交时按源图片宽高匹配当前图片模型最接近的支持比例，不能回落到模型默认的 1:1。
 - `local_edit` 在校验后立即返回 202，视觉规划移入 `runGenerationTask()`。带 `reference: { data, mimeType, name? }` 时，后台用 Sharp 按 EXIF 方向规范化两图，最多解码 4000 万像素；参考图等比缩小至最长边不超过 4096px。视觉模型看到的图片与坐标计算使用同一份规范化数据，返回 `intent` / `target_rect` / `reference_rect` / `edit_prompt`。坐标必须有限且处于各自全图 0–100% 内，目标至少 80% 位于选区内，再限制为交集，否则终止。校验后的两图百分比坐标、替换意图和参考主体特征写入双图编辑提示词；图片模型收到同一份规范化完整原图和参考图，由内部 `referenceImages` 传递图2，不产生裁剪或合成图。生成后将结果缩放回原图尺寸，只拷贝选区像素并在内部最多 12px 羽化，以 PNG 避免框外二次有损压缩。自然融合质量仍依赖所选模型，选区应为主体衔接留出空间。
-- `remove_element` 复用局部编辑的 300 秒任务和像素保留链路，不保存参考素材。旧调用缺省 mode=selection、仍要求 rect，原双图视觉规划与 ≥0.65 置信度/90% 选区覆盖校验保持一致。people / clutter / text / room 使用规范化的完整原图单图视觉规划，忽略输入 rect，以整图为分析范围；validateCleanupPlan 要求整体及每个目标 confidence ≥0.65 且 ≤1、合法百分比坐标、1–100 个目标、非空保留内容和 edit_prompt。people 必须提供保留人物矩形并覆盖所有用户 keepPoints；删除框包含点位或与任一保护矩形大幅重叠（≥目标面积 80%）时以 cleanup.protectedConflict 停止。无目标以 cleanup.noTargets 停止，不创建删除版本。最终提示词明确追加场景、目标和保留约束。输出经 preserveOutsideRegions 以每个删除矩形向内羽化权重的最大值组成并集，保护矩形权重置零，再按原尺寸 PNG 保存；矩形定位和遮挡补全效果依赖模型。失败/取消保留原图，原图首删时补建 upload 父版本。
+- `remove_element`（插件 layerive.remove-element v1.1.0）共用 300 秒任务预算，不保存参考素材。缺省 mode=selection 仍要求 rect，双图视觉规划与 ≥0.65 置信度/90% 选区覆盖校验保持一致。people / clutter / room 使用完整规范化原图单图视觉规划，忽略输入 rect；validateCleanupPlan 要求整体及每目标 confidence 在 0.65–1、有效百分比坐标、1–100 个目标、非空保留内容和 edit_prompt。people 的保留矩形须覆盖用户 keepPoints；删除框含保留点或与保护区重叠 ≥目标面积 80% 时以 cleanup.protectedConflict 停止，无目标以 cleanup.noTargets 停止。三种模式按场景、目标、保护与背景修复要求生成，再用 preserveOutsideRegions 回填目标矩形并集、向内羽化并保护其余像素。text 创建时不解析/校验 visionModelId 和视觉凭据（传入过期 ID 也忽略），prepare 使用 textCleanupEditPrompt 直接返回规范化原图与原尺寸 outputDimensions；taskInput 初始为 generating，localEdit 不含视觉 ID 或定位结果。processOutput 在 validating 阶段用 Sharp 对完整模型结果转正、转 sRGB、缩放到原图尺寸并转 PNG，不混入原图边缘。其余内容保留依赖提示词与模型；无文字也可调用图片模型，不预判 cleanup.noTargets。所有模式失败/取消不发布结果版本，首次编辑上传图仍补建 upload 父版本。
 - 局部编辑各阶段共享 AbortController；视觉请求另有 120 秒上限。所有生成任务写完输出文件后再次检查取消，再用无异步间隙的 SQLite 事务写版本、输入关系、图片记录、结果消息、任务状态和项目指针，避免取消时发布成功版本。文件写入失败 / 取消可能留下未被数据库引用的输出文件，但不会发布部分成功记录或覆盖原图。
 - `recognize-text` 首次成功识别某张图片后，将分段结果持久化至 `text_recognitions`；再次打开“编辑文字”时，若工作台所选视觉模型 ID 和其 provider / API 格式 / Base URL / 模型名均未变化，则直接复用缓存，不再发送识别请求。`edit_text` 任务把修改后的完整文字快照与视觉模型指纹记录在 `generation_tasks.input_json.textEdit`，成功时为每张输出图写入对应 `text_recognitions`；替换后的文字成为新的 `originalText`，删除项不再返回，手动新增项保留框选坐标，全部删除时缓存合法的空数组。切换视觉模型会读取该模型自己的缓存或重新识别；缓存会随项目复制、导出导入和完整备份保留。
 - `outpaint` 直接构建保留原图、仅扩展新增区域的提示词；`enhance` 直接构建提升清晰度、但不改变原图内容的改图提示词。
@@ -279,14 +292,21 @@ work/                       临时工作目录（被 Git 忽略）
 | `openai_images` | Images `generations` / `edits` | 编辑走 multipart；文生图走 JSON；日日新预设使用该协议时走专用 JSON 分支，生成默认 `watermark: false`、`prompt_extend: true`，编辑输入自动规范化并使用 `size: auto` |
 | `gemini_interactions` | `/interactions` | 尺寸映射为 aspect ratio，返回图片块 |
 | `grok_images` | Images `generations` / `edits` | 输入图以 data URL 放入 JSON |
+| `seedream_images` | JSON `/images/generations` | 文生图省略 image，编辑用单个 data URL / 有序数组；固定无水印，每请求单图，不传 n / 组图 / 图层拆分参数 |
+| `qwen_images` | 百炼兼容模式 JSON `/images/generations` | 文生图/编辑统一端点，编辑为 image data URL / 有序数组；原生整数 n（应用限制 1–4），PNG / URL 下载，不走 multipart / mask；编辑关闭提示词扩写 |
+| `bfl_flux` | POST `/<模型名>` → 返回的 polling_url | x-key 认证；input_image / input_image_2… 按序传完整 Base64，每请求单图；Pending / Reasoning / Generating 等待，Ready 下载 result.sample，审核拒绝及其他终态失败 |
 | `mock` | 本地演示 PNG | 仅服务端兼容路径；配置 UI 的常规提供商集合不包含它 |
 
 - 图片模型保存 `provider` 预设和独立的 `imageApiFormat`。预设只提供默认服务地址、模型、尺寸和输出能力，不得从 Base URL 推断并覆盖用户已保存的预设或协议。旧配置读取时按原 `provider` 补齐协议和能力字段；下一次保存写入新字段。`sizeOptions` 为最多 20 个合法 `宽x高` 值，`outputFormats` 只可含 PNG/JPEG/WebP，`maxCount` 为 1–4；服务端必须在每条图片任务开始时再次规范化这些值。
+- 三家新增原生协议位于 `server/image-providers.mjs`，由 `index.mjs` 的统一图片调用分派，复用模型日志、限流重试、插件、版本事务与同一个 AbortSignal。Seedream/FLUX 不支持原生 n，由现有并发上限 2 的候选调度完成 1–4 张；Qwen 原生 n 继续共用候选补发规则。Seedream/Qwen 有序 image 数组及 FLUX 有序 input_image 字段不允许丢弃参考图。输入上限 Seedream=10、Qwen 3.0=3 / 2.1=10、FLUX Pro=8；调用前验证尺寸像素与比例限制（FLUX 额外为 16px 倍数、最多 4×1024×1024 像素），不以修改用户输入或降级单图绕过拒绝。
+- FLUX 使用平台返回的 polling_url（支持官方区域路由），带 Key 的请求拒绝跳转，轮询地址只能为配置的同源或 HTTPS 官方 bfl.ai 子域；输出下载不携带模型凭据。轮询 429 在原任务地址退避重试，不能重新提交收费生图任务；任务取消/超时停止轮询和下载，版本事务仍再次检查取消。平台未提供远端取消契约，本地取消不能承诺远端任务停止或不计费。普通生成使用既有任务总时限，专项插件仍使用其 300 秒预算。
+- 新增原生协议的连接测试不生图：Seedream/Qwen 查询 `/models` 并核对 ID；FLUX 查询 `/credits` 验证账号。查询不可用时仅 OPTIONS 探测实际端点，明确提示只验证可达、未验证 Key / 模型权限 / 编辑能力；401/403/5xx、未列出模型或无效响应不能报告认证成功。连接结果保持双语消息码，前端不重复添加 msg. 前缀。百炼默认北京旧域名仍可用，也支持同地域工作空间专属域名；Seedream 模型 ID 可换为方舟已开通接入点。
+- `image-providers.test.mjs` 覆盖原生请求、单/多图顺序、格式/透明/输入和尺寸边界、错误与限流元数据、FLUX 轮询/取消/安全地址及只读连接检查；`native-image-api.test.mjs` 在隔离数据目录和本地 HTTP stub 下验证七型号预设/保存、生成候选、单图编辑、融合、局部编辑框外像素与输入关系、两种批量、Qwen 2.1 透明校验、失败不发布版本及取消/日志凭据隔离，均由 `npm test` 执行，不使用真实账号或模型。
 - 视觉模型以独立的 `apiFormat` 字段选择 `anthropic_messages`、`chat_completions` 或 `responses`。该字段缺失的旧配置不会被重写：`askdiandian.com` 自动沿用 Anthropic Messages，其余配置沿用 Chat Completions；旧 `provider` 字段继续原样保留，视觉请求根据 Base URL 识别 SenseNova 专用端点，避免隐藏的旧提供商值干扰用户修改后的地址。
 - 项目工作台发起的视觉请求可携带 `visionModelId`。`visionModelOrThrow()` 优先严格解析该 ID；未携带时才沿用全局 `active_vision_model`，以兼容旧前端和其他调用方。请求的模型已删除时返回 400，不得静默切换到另一个模型。
 - `visionEndpoint()` 根据 Base URL 和 API 格式补全 `/v1/messages`、`/chat/completions` 或 `/responses`；若用户已填写完整端点则不会重复拼接。
 - `callVision()` 同时接受单张图片或按顺序排列的图片数组；Anthropic Messages、Chat Completions（含 SenseNova 两条兼容路径）、Responses 均按各自协议发送多张图片。局部替换固定图1为原图、图2为参考图；不支持多图理解的模型会使该任务失败，不降级为只看一张。
-- `callVision()` 可按调用传入 `maxOutputTokens`，分别映射到各视觉协议的输出上限字段；四种整图清理使用 8192，以容纳多目标及保护区规划，其余调用保持原有默认值。
+- `callVision()` 可按调用传入 `maxOutputTokens`，分别映射到各视觉协议的输出上限字段；三种整图清理使用 8192，以容纳多目标及保护区规划，其余调用保持原有默认值。`options.timeoutMs` 为服务端内部的每次视觉请求时限（有效整数 1–300000 毫秒，无效时回退默认 120000）；三种整图清理传入 240000，所有阶段仍受插件的 300 秒总预算约束。`server/vision-request.mjs` 将超时信号覆盖请求和完整 JSON 响应读取，保留先触发的任务取消；请求超时返回稳定码 `vision.timeout` 与 `params.seconds`（同步请求 HTTP 504、异步任务 failed），工作台按中英文显示重试/更换视觉模型/分区域清理建议。模型日志的请求元数据含 `timeoutMs`，响应体读取超时不再吞成“没有返回内容”。
 - 图片适配器通过内部 `referenceImages` 保留有序多图输入，融合和参考图局部修改（含批量）固定传原图+参考图：OpenAI Images 多图用 multipart `image[]`（原单图仍为 `image`），SenseNova JSON 用 `images` 并逐张生成规范化请求副本，Gemini Interactions 追加有序 image 块，Grok 多图用 `images` 数组（原单图仍用 `image`）。日志只额外记录 `inputImageCount`，不得存二进制或 Base64。自定义兼容网关/模型不一定支持多图，不得丢弃参考图静默降级。
 - `callVision()` 会从 Chat Completions 的 `reasoning_content` / `reasoning`、Anthropic 的 thinking / reasoning 内容块和 Responses 的 reasoning 输出中提取供应商显式返回的推理文本写入模型日志；不得把普通结构化结果伪装成隐藏思维链。图片模型日志在 `callImageWithRetry()` 层记录一次逻辑调用（含限流重试总耗时与尝试次数），仅记录输出数量、格式、尺寸和字节数等元数据。
 - SenseNova 视觉模型有两条不同的兼容路径：旧融合模态服务 `api.sensenova.cn/v1` 使用 `/llm/chat-completions` 和 `max_new_tokens`；Token Plan 的 `sensenova-6.8-flash-lite` 等模型使用 `token.sensenova.cn/v1/chat/completions`、标准 `max_tokens` 与 OpenAI Vision 图片块。不得仅按 `sensenova.cn` 域名笼统选择旧路径。
@@ -315,9 +335,9 @@ work/                       临时工作目录（被 Git 忽略）
 | `/api/projects/:id/{recognize-text,edit-text,local-edit,remove-element,remove-background,outpaint,enhance,remove-watermark,extract-asset}` | POST | 专项图片操作；使用视觉能力的请求可传 `visionModelId`；`remove-background` 强制单张透明 PNG，并校验 Alpha |
 | `/api/projects/:id/extract-asset` | POST | imageId、modelId、visionModelId?、rect、crop: {data,mimeType,padded?}、mode?: selection / clothing / accessory / pattern / background（默认 selection）、hint?（≤1000 字符）、parentVersionId? / params?；202 可取消任务，阶段 planning / generating，成功为 extract_asset 版本并关联原图/截图 |
 | `/api/projects/:id/local-edit` | POST | `imageId`、`modelId`、`visionModelId?`、百分比 `rect`、`instruction`、`params?`；可附 `reference: { data, mimeType, name? }`，有参考图时 instruction 可为空；校验后即返回 202，后台规划双图替换并保留框外像素，新任务阶段 planning / generating / preserving |
-| `/api/projects/:id/remove-element` | POST | imageId、modelId、visionModelId?、mode?: selection / people / clutter / text / room（默认 selection）；selection 要求百分比 rect，其他模式整图分析、可传 instruction（≤1000 字符），people 可传 keepPoints: [{x,y}]（≤20 个整图百分比点位）；可选 parentVersionId / params；202 可取消任务，阶段 planning / generating / preserving，单张原尺寸 PNG，其他模式只回填目标区域并保护保留主体 |
+| `/api/projects/:id/remove-element` | POST | imageId、modelId、visionModelId?、mode?: selection / people / clutter / text / room（默认 selection）；selection 要求百分比 rect，people / clutter / room 整图视觉分析，text 直接图片编辑、忽略 visionModelId；整图模式可传 instruction（≤1000 字符），people 可传 keepPoints: [{x,y}]（≤20 个整图百分比点位）；可选 parentVersionId / params；202 可取消任务，非 text 阶段 planning / generating / preserving，text 为 generating / validating；单张原尺寸 PNG，非 text 只回填删除区域，text 使用完整结果、不保证其他区域像素一致 |
 | `/api/projects/:id/local-edit-batch` | POST | 批量局部修改：`imageId`、`modelId`、`visionModelId?`、百分比 `rect`、`instructions: string[]`（2–50 条、单条 ≤1000 字符）、可选 `reference` / `parentVersionId` / `params`；每个子项独立运行局部修改流水线（含各自视觉规划；有参考图时传有序完整双图并保存参考素材），逐张追加到同一 `local_edit` 版本，返回任务和预建版本 ID，进度走 `/batch-edits/:taskId` |
-| `/api/projects/:id/tasks`、`/tasks/:taskId`、`/tasks/:taskId/cancel` | GET / GET / POST | 查询和取消生成任务 |
+| `/api/projects/:id/tasks`、`/tasks/:taskId`、`/tasks/:taskId/cancel` | GET / GET / POST | 查询和取消生成任务；运行中任务列表附带实际 stage，刷新恢复时避免把无视觉的文字清理显示为 planning |
 | `/api/projects/:id/tasks/:taskId` | GET | 单任务响应含可空 `plugin: {id, version, apiVersion}`（旧任务为 null）与可选 `stage: planning / generating / preserving / validating`（兼容历史 compositing；旧任务可为 null）与 `errorCode` / `errorParams`（错误码及插值参数，配合 `msg.*` 字典本地化） |
 | `/api/projects/:id/model-logs?limit=100` | GET | 查询当前项目最近模型调用日志，`limit` 范围 1–200；返回脱敏请求摘要、结构化产出、供应商显式推理字段、最终提示词、耗时与错误 |
 | `/api/projects/:id/versions/:versionId` | DELETE | 软删除版本，可加 `?force=1` |

@@ -19,7 +19,7 @@ export function TextEditorPanel({ textImage, textEditSubmitting, generating, set
   return (<div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !textEditSubmitting && !generating && setTextEditorOpen(false)}>
         <section className="text-editor-modal" role="dialog" aria-modal="true" aria-labelledby="text-editor-title">
           <div className="modal-heading"><div><p className="eyebrow">TEXT EDIT</p><h2 id="text-editor-title">{t('ws.textEditorTitle')}</h2><small>{recognitionModel ? t('ws.recognizedBy', { model: recognitionModel }) : t('ws.recognizingShort')}</small></div><button className="icon-button" disabled={textEditSubmitting || generating} onClick={() => setTextEditorOpen(false)}><Icon name="close" size={16} /></button></div>
-          <div className="text-editor-layout">
+          <div className="modal-body text-editor-body"><div className="text-editor-layout">
             <div className={`text-editor-preview ${boxMode ? 'box-mode' : ''}`} aria-busy={recognizingText}>
               <div className="text-editor-image" style={textImage.width && textImage.height ? { width: `min(100%, ${64 * textImage.width / textImage.height}vh)` } : undefined} onMouseDown={onBoxStart} onMouseMove={onBoxMove} onMouseUp={onBoxEnd} onMouseLeave={onBoxEnd}>
               <img src={textImage.url} alt={t('ws.textEditImageAlt')} draggable={false} />
@@ -44,7 +44,7 @@ export function TextEditorPanel({ textImage, textEditSubmitting, generating, set
                 </div>)}
               </>}
             </div>
-          </div>
+          </div></div>
           <div className="modal-actions text-editor-actions"><button className="button secondary" disabled={textEditSubmitting || generating} onClick={() => setTextEditorOpen(false)}>{t('common.cancel')}</button><button className="button primary" disabled={recognizingText || Boolean(textEditorError) || textEditSubmitting || generating || !hasTextChanges} onClick={() => void submitTextEdit()}>{generating ? t('ws.queued') : textEditSubmitting ? t('ws.submitting') : t('ws.submitTextEdit')}</button></div>
         </section>
       </div>);

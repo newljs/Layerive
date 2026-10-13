@@ -3,6 +3,13 @@ import type { ImagePluginManifest } from './types';
 import { tf } from './i18n';
 import type { BatchEditProgress, BatchEditResult, CleanupMode, ExtractionMode, FusionMode, GenerateResult, GenerationTask, GalleryEntryItem, LocalEditReference, ModelConfig, ModelExecutionLog, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number, public readonly code?: string) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -13,7 +20,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const status = response.status;
     const serverText: string = payload.error || tf('api.requestFailed', '请求失败', { status });
     // 服务端错误码化后按 err.<code> 取词；字典缺码时回退服务端原文（含旧版纯文本）。
-    throw new Error(payload.code ? tf(`err.${payload.code}`, serverText, payload.params) : serverText);
+    throw new ApiError(payload.code ? tf(`err.${payload.code}`, serverText, payload.params) : serverText, status, payload.code);
   }
   return payload as T;
 }

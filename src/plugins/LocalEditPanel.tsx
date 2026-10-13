@@ -30,10 +30,11 @@ export type LocalEditPanelProps = {
 
 export function LocalEditPanel({ localEditRect, localEditSubmitting, closeLocalEdit, localReferenceFileRef, selectLocalReference, localReference, localReferenceLoading, generating, localReferenceRevision, setLocalReference, localEditInstruction, setLocalEditInstruction, localBatchSubmitting, setLocalEditRect, setLocalBatchOpen, submitLocalEdit, localBatchOpen, localBatchText, setLocalBatchText, localBatchLines, localBatchError, submitLocalBatch }: LocalEditPanelProps) {
   const { t } = useLanguage();
-  return (<div className="local-edit-dock">
+  return (<div className={`local-edit-dock${localEditRect && localBatchOpen ? ' has-batch' : ''}`}>
     <section className="local-edit-panel" role="dialog" aria-label={t('ws.localEdit')}>
       <div className="local-edit-panel-head"><div><strong>{t('ws.localEdit')}</strong><span>{localEditRect ? t('ws.localPanelHintRect') : t('ws.localPanelHint')}</span></div><button className="local-edit-exit" disabled={localEditSubmitting} onClick={closeLocalEdit}><Icon name="close" size={13} /> {t('common.exit')}</button></div>
       {localEditRect && <>
+        <div className="canvas-tool-body">
         <input ref={localReferenceFileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; void selectLocalReference(file); }} />
         <div className="local-reference">
           {localReference && <img src={localReference.data} alt={t('ws.referenceAlt')} />}
@@ -44,15 +45,18 @@ export function LocalEditPanel({ localEditRect, localEditSubmitting, closeLocalE
         </div>
         <textarea aria-label={t('ws.instructionAria')} disabled={localEditSubmitting} value={localEditInstruction} onChange={(event) => setLocalEditInstruction(event.target.value)} placeholder={localReference ? t('ws.instructionPlaceholderRef') : t('ws.instructionPlaceholder')} rows={2} />
         {localReference && <p className="local-reference-note">{t('ws.localNote')}</p>}
+        </div>
         <div className="local-edit-panel-actions"><button className="button secondary" disabled={localEditSubmitting || localBatchSubmitting || generating} onClick={() => setLocalEditRect(null)}>{t('ws.reselect')}</button><button className="button secondary" disabled={localEditSubmitting || localBatchSubmitting || generating} onClick={() => setLocalBatchOpen((open) => !open)}>{t('ws.batchModify')}</button><button className="button primary" disabled={(!localEditInstruction.trim() && !localReference) || localReferenceLoading || localEditSubmitting || localBatchSubmitting || generating} onClick={() => void submitLocalEdit()}>{localEditSubmitting ? t('ws.submitting') : localReference ? t('ws.smartReplace') : t('ws.applyLocalEdit')}</button></div>
       </>}
     </section>
     {localEditRect && localBatchOpen && <aside className="local-batch-panel" role="dialog" aria-label={t('ws.localBatch')}>
       <div className="local-edit-panel-head"><div><strong>{t('ws.localBatch')}</strong><span>{t('ws.localBatchHint')}</span></div><button className="local-edit-exit" disabled={localBatchSubmitting} onClick={() => setLocalBatchOpen(false)}><Icon name="close" size={13} /> {t('ws.collapse')}</button></div>
+      <div className="canvas-tool-body">
       <textarea aria-label={t('ws.localBatchListAria')} value={localBatchText} onChange={(event) => setLocalBatchText(event.target.value)} rows={7} spellCheck={false} placeholder={t('ws.localBatchPlaceholder')} />
       <small className={localBatchLines.length >= 2 && !localBatchError ? 'local-batch-count valid' : 'local-batch-count'}>{localBatchLines.length ? t('ws.localBatchCount', { count: localBatchLines.length }) : t('ws.localBatchCountEmpty')}</small>
       {localReference && <p className="local-batch-reference">{t('ws.localBatchReference', { name: localReference.name || t('ws.referenceFallback') })}</p>}
       {localBatchLines.length > 0 && localBatchError && <p className="batch-validation-error">{localBatchError}</p>}
+      </div>
       <div className="local-edit-panel-actions"><button className="button secondary" disabled={localBatchSubmitting} onClick={() => setLocalBatchOpen(false)}>{t('ws.collapse')}</button><button className="button primary" disabled={Boolean(localBatchError) || localBatchSubmitting || generating || localReferenceLoading} onClick={() => void submitLocalBatch()}>{localBatchSubmitting ? t('ws.creatingBatch') : t('ws.localBatchStart', { count: localBatchLines.length })}</button></div>
     </aside>}
   </div>);

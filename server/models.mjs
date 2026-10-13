@@ -10,8 +10,8 @@ export function normalizeBaseUrl(value) {
 }
 
 const VISION_API_FORMATS = new Set(['anthropic_messages', 'chat_completions', 'responses']);
-const IMAGE_API_FORMATS = new Set(['openai_images', 'gemini_interactions', 'grok_images']);
-const IMAGE_PROVIDERS = new Set(['sensenova', 'openai', 'gemini', 'grok', 'custom', 'local', 'mock']);
+const IMAGE_API_FORMATS = new Set(['openai_images', 'gemini_interactions', 'grok_images', 'seedream_images', 'qwen_images', 'bfl_flux']);
+const IMAGE_PROVIDERS = new Set(['sensenova', 'openai', 'gemini', 'grok', 'seedream', 'qwen', 'flux', 'custom', 'local', 'mock']);
 
 // Local OpenAI-compatible services may run without authentication. Never send
 // an empty Bearer token; retain normal authentication when a key is configured.
@@ -29,6 +29,9 @@ const IMAGE_PRESETS = {
   openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-image-2', imageApiFormat: 'openai_images', sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png', 'jpeg', 'webp'], transparentBackground: true, maxCount: 4 },
   gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.1-flash-image', imageApiFormat: 'gemini_interactions', sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png', 'jpeg'], transparentBackground: false, maxCount: 1 },
   grok: { baseUrl: 'https://api.x.ai/v1', model: 'grok-imagine-image-2.0', imageApiFormat: 'grok_images', sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['jpeg'], transparentBackground: false, maxCount: 4 },
+  seedream: { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seedream-5-0-pro-260628', imageApiFormat: 'seedream_images', sizeOptions: ['2048x2048', '2304x1536', '1536x2304', '2560x1440', '1440x2560', '1024x1024'], outputFormats: ['png', 'jpeg'], transparentBackground: false, maxCount: 4 },
+  qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-image-3.0-pro', imageApiFormat: 'qwen_images', sizeOptions: ['1024x1024', '1536x1024', '1024x1536', '2048x2048', '1664x928', '928x1664'], outputFormats: ['png'], transparentBackground: false, maxCount: 4 },
+  flux: { baseUrl: 'https://api.bfl.ai/v1', model: 'flux-2-pro', imageApiFormat: 'bfl_flux', sizeOptions: ['1024x1024', '1536x1024', '1024x1536', '2048x2048', '1920x1088', '1088x1920'], outputFormats: ['png', 'jpeg', 'webp'], transparentBackground: false, maxCount: 4 },
   custom: { baseUrl: '', model: '', imageApiFormat: 'openai_images', sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png'], transparentBackground: false, maxCount: 1 },
   mock: { baseUrl: 'mock://local', model: 'mock-image', imageApiFormat: 'openai_images', sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png'], transparentBackground: false, maxCount: 4 },
 };
@@ -38,32 +41,36 @@ function validSizeOptions(value, fallback) {
   return [...new Set(sizes)].slice(0, 20).length ? [...new Set(sizes)].slice(0, 20) : fallback;
 }
 
-function imagePreset(provider) {
-  return IMAGE_PRESETS[IMAGE_PROVIDERS.has(provider) ? provider : 'openai'];
+function imagePreset(provider, modelName = '') {
+  const preset = IMAGE_PRESETS[IMAGE_PROVIDERS.has(provider) ? provider : 'openai'];
+  return provider === 'qwen' && /^qwen-image-2\.1-(pro|turbo)$/.test(modelName) ? { ...preset, transparentBackground: true } : preset;
 }
 
 export function imageApiFormat(model) {
   if (IMAGE_API_FORMATS.has(model?.imageApiFormat)) return model.imageApiFormat;
   if (model?.provider === 'gemini') return 'gemini_interactions';
   if (model?.provider === 'grok') return 'grok_images';
+  if (model?.provider === 'seedream') return 'seedream_images';
+  if (model?.provider === 'qwen') return 'qwen_images';
+  if (model?.provider === 'flux') return 'bfl_flux';
   return 'openai_images';
 }
 
 function normalizeImageModel(model) {
   const provider = IMAGE_PROVIDERS.has(model.provider) ? model.provider : 'openai';
-  const preset = imagePreset(provider);
+  const preset = imagePreset(provider, model.model);
   const protocol = imageApiFormat(model);
-  const allowedFormats = protocol === 'gemini_interactions' ? ['png', 'jpeg'] : protocol === 'grok_images' ? ['jpeg'] : ['png', 'jpeg', 'webp'];
+  const allowedFormats = protocol === 'qwen_images' ? ['png'] : ['gemini_interactions', 'seedream_images'].includes(protocol) ? ['png', 'jpeg'] : protocol === 'grok_images' ? ['jpeg'] : ['png', 'jpeg', 'webp'];
   const outputFormats = Array.isArray(model.outputFormats)
     ? [...new Set(model.outputFormats.map((item) => String(item).toLowerCase()).filter((item) => allowedFormats.includes(item)))].slice(0, 3)
-    : preset.outputFormats;
+    : preset.outputFormats.filter(item => allowedFormats.includes(item));
   return {
     ...model,
     provider,
     imageApiFormat: protocol,
     sizeOptions: validSizeOptions(model.sizeOptions, preset.sizeOptions),
-    outputFormats: outputFormats.length ? outputFormats : ['png'],
-    transparentBackground: protocol === 'openai_images' && Boolean(model.transparentBackground ?? preset.transparentBackground),
+    outputFormats: outputFormats.length ? outputFormats : [allowedFormats[0]],
+    transparentBackground: (protocol === 'openai_images' || (protocol === 'qwen_images' && /^qwen-image-2\.1-(pro|turbo)$/.test(model.model))) && Boolean(model.transparentBackground ?? preset.transparentBackground),
     maxCount: Math.max(1, Math.min(4, Number(model.maxCount) || preset.maxCount)),
   };
 }
@@ -143,9 +150,9 @@ export function upsertModel(input, modelId) {
   const requestedId = String(input.id || '').trim();
   const type = input.type === 'vision' ? 'vision' : 'image';
   const requestedProvider = IMAGE_PROVIDERS.has(input.provider) ? input.provider : 'openai';
-  if (type === 'vision' && ['gemini', 'grok'].includes(requestedProvider)) throw Object.assign(new Error('Gemini 和 Grok 当前仅支持配置为图片生成模型'), { status: 400 });
+  if (type === 'vision' && ['gemini', 'grok', 'seedream', 'qwen', 'flux'].includes(requestedProvider)) throw Object.assign(new Error('该预设当前仅支持配置为图片生成模型'), { status: 400 });
   const provider = requestedProvider;
-  const preset = imagePreset(provider);
+  const preset = imagePreset(provider, input.model);
   const defaultBaseUrl = type === 'vision' ? (provider === 'local' ? 'http://127.0.0.1:1234/v1' : provider === 'sensenova' ? 'https://api.sensenova.cn/v1' : 'https://api.openai.com/v1') : preset.baseUrl;
   const defaultModel = type === 'vision' ? (provider === 'local' ? '' : provider === 'sensenova' ? 'SenseChat-V6.5' : 'gpt-4.1-mini') : preset.model;
   if (existing && config.active_model === existing.id && type === 'vision') {

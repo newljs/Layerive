@@ -85,7 +85,9 @@ export default function App() {
   }
 
   async function deleteProject(id: string) {
-    try { await api.deleteProject(id); await refreshProjects(); notify(t('app.projectDeleted')); }
+    await api.deleteProject(id);
+    notify(t('app.projectDeleted'));
+    try { await refreshProjects(); }
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
@@ -108,7 +110,9 @@ export default function App() {
   }
 
   async function deleteModel(id: string) {
-    try { await api.deleteModel(id); await refreshModels(); notify(t('app.modelDeleted')); }
+    await api.deleteModel(id);
+    notify(t('app.modelDeleted'));
+    try { await refreshModels(); }
     catch (error) { notify((error as Error).message, 'error'); }
   }
 
@@ -125,7 +129,7 @@ export default function App() {
   async function testModelConfig(model: Partial<ModelConfig>) {
     try {
       const result = await api.testModelConfig(model);
-      const message = result.code ? tf(`msg.${result.code}`, result.message) : result.message;
+      const message = result.code ? tf(result.code.startsWith('msg.') ? result.code : `msg.${result.code}`, result.message) : result.message;
       return t('app.testOk', { message, latency: result.latency });
     } catch (error) { return t('app.testFailed', { message: (error as Error).message }); }
   }

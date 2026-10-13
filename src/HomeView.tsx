@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import { Icon } from './Icon';
+import { useConfirm } from './ConfirmDialog';
 import { LanguageToggle, useLanguage, type Language } from './i18n';
 import { useTheme } from './theme';
 import type { Project } from './types';
@@ -22,6 +23,7 @@ const localeFor = (language: Language) => (language === 'zh' ? 'zh-CN' : 'en-US'
 
 export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDuplicate, onImport, onRefreshProjects, onModels, notify }: Props) {
   const { language, t } = useLanguage();
+  const confirm = useConfirm();
   const { theme, toggleTheme } = useTheme();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'recent' | 'favorite'>('all');
@@ -92,17 +94,24 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
   }
 
   async function restore(file: File) {
-    if (!window.confirm(t('home.restoreConfirm'))) return;
-    setRestoring(true);
     try {
-      await api.restoreBackup(file);
-      notify(t('home.restoreDone'), 'success');
-      setDataOpen(false);
-      window.setTimeout(() => window.location.reload(), 2500);
-    } catch (error) {
-      notify((error as Error).message, 'error');
+      await confirm({
+        title: t('home.restoreTitle'),
+        message: t('home.restoreConfirm'),
+        detail: t('confirm.backupFile', { name: file.name }),
+        confirmLabel: t('confirm.restore'),
+        icon: 'data',
+        onConfirm: async () => {
+          setRestoring(true);
+          try {
+            await api.restoreBackup(file);
+            notify(t('home.restoreDone'), 'success');
+            setDataOpen(false);
+            window.setTimeout(() => window.location.reload(), 2500);
+          } finally { setRestoring(false); }
+        },
+      });
     } finally {
-      setRestoring(false);
       if (restoreRef.current) restoreRef.current.value = '';
     }
   }
@@ -113,7 +122,7 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
       <button className="action-button" title={t('home.renameTitle')} aria-label={t('home.renameProject', { name: project.name })} onClick={() => openRename(project)}><Icon name="edit" size={15} /></button>
       <button className="action-button" title={t('home.duplicateTitle')} onClick={() => void onDuplicate(project.id)}><Icon name="duplicate" size={15} /></button>
       <button className="action-button" title={t('home.exportTitle')} onClick={() => api.exportProject(project.id)}><Icon name="export" size={15} /></button>
-      <button className="more-button danger-hover" aria-label={t('home.deleteProject', { name: project.name })} title={t('home.deleteTitle')} onClick={() => { if (window.confirm(t('home.deleteConfirm', { name: project.name }))) void onDelete(project.id); }}><Icon name="close" size={15} /></button>
+      <button className="more-button danger-hover" aria-label={t('home.deleteProject', { name: project.name })} title={t('home.deleteTitle')} onClick={() => void confirm({ title: t('home.deleteTitle'), message: t('home.deleteConfirm', { name: project.name }), confirmLabel: t('home.deleteTitle'), onConfirm: () => onDelete(project.id) })}><Icon name="close" size={15} /></button>
     </>
   );
 
@@ -232,9 +241,11 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setCreateOpen(false)}>
           <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="create-title">
             <div className="modal-heading"><div><p className="eyebrow">NEW PROJECT</p><h2 id="create-title">{t('home.createTitle')}</h2></div><button className="icon-button" onClick={() => setCreateOpen(false)}><Icon name="close" size={16} /></button></div>
+            <div className="modal-body">
             <label className="field"><span>{t('home.nameLabel')}</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder={t('home.namePlaceholder')} onKeyDown={(event) => event.key === 'Enter' && void submit()} /></label>
             <label className="field"><span>{t('home.descriptionLabel')}</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t('home.descriptionPlaceholder')} rows={3} /></label>
             <div className="create-hint"><span>{t('home.autoSave')}</span><p>{t('home.autoSaveHint')}</p></div>
+            </div>
             <div className="modal-actions"><button className="button secondary" onClick={() => setCreateOpen(false)}>{t('common.cancel')}</button><button className="button primary" disabled={!name.trim() || creating} onClick={() => void submit()}>{creating ? t('home.creating') : t('home.createAndOpen')}</button></div>
           </section>
         </div>
@@ -244,8 +255,10 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setRenameTarget(null)}>
           <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="rename-title">
             <div className="modal-heading"><div><p className="eyebrow">RENAME</p><h2 id="rename-title">{t('home.renameTitle')}</h2></div><button className="icon-button" onClick={() => setRenameTarget(null)}><Icon name="close" size={16} /></button></div>
+            <div className="modal-body">
             <label className="field"><span>{t('home.nameLabel')}</span><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} placeholder={t('home.renamePlaceholder')} onKeyDown={(event) => { if (event.key === 'Enter') void submitRename(); if (event.key === 'Escape') setRenameTarget(null); }} /></label>
             <div className="create-hint"><span>{t('home.renameOnly')}</span><p>{t('home.renameHint')}</p></div>
+            </div>
             <div className="modal-actions"><button className="button secondary" onClick={() => setRenameTarget(null)}>{t('common.cancel')}</button><button className="button primary" disabled={!renameValue.trim() || renaming} onClick={() => void submitRename()}>{renaming ? t('home.saving') : t('home.saveNewName')}</button></div>
           </section>
         </div>
@@ -255,7 +268,7 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setDataOpen(false)}>
           <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="data-title">
             <div className="modal-heading"><div><p className="eyebrow">DATA</p><h2 id="data-title">{t('home.dataTitle')}</h2></div><button className="icon-button" onClick={() => setDataOpen(false)}><Icon name="close" size={16} /></button></div>
-            <div className="data-actions">
+            <div className="modal-body data-actions">
               <article>
                 <h3>{t('home.backupTitle')}</h3>
                 <p>{t('home.backupDesc')}</p>

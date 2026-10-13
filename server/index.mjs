@@ -1,6 +1,8 @@
 import { imagePlugins, recipeLoadErrors } from './plugins/index.mjs';
 import { pluginSnapshot, pluginSupportsModel, preparePlugin, processPluginOutput } from './plugins/registry.mjs';
 import { createPluginHost } from './plugins/host.mjs';
+import { fetchVisionJson } from './vision-request.mjs';
+import { callSeedream, callQwen, callFlux, testNativeImageConnection } from './image-providers.mjs';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
@@ -577,6 +579,12 @@ async function callGrok(model, prompt, params, inputImage, signal) {
 }
 
 async function callImageProvider(model, prompt, params, inputImage, signal) {
+  const protocol = imageApiFormat(model);
+  const native = { seedream_images: callSeedream, qwen_images: callQwen, bfl_flux: callFlux }[protocol];
+  if (native) {
+    const inputs = await Promise.all(providerInputs(inputImage).map(async image => ({ bytes: await providerInputBytes(image), mimeType: image.mime_type })));
+    return native({ ...model, baseUrl: normalizeBaseUrl(model.baseUrl) }, prompt, params, inputs, signal);
+  }
   return imageApiFormat(model) === 'gemini_interactions'
     ? callGemini(model, prompt, params, inputImage, signal)
     : imageApiFormat(model) === 'grok_images'
@@ -685,7 +693,7 @@ async function mapWithConcurrency(items, limit, worker) {
 // per image. Partial failures keep whatever came back, as before.
 async function callImageProviderBatch(model, prompts, params, inputImage, signal, logContext = null) {
   const distinctPrompts = prompts.length > 1;
-  const nativeBatch = !distinctPrompts && imageApiFormat(model) !== 'gemini_interactions' && !isSenseNovaImageModel(model);
+  const nativeBatch = !distinctPrompts && !['gemini_interactions', 'seedream_images', 'bfl_flux'].includes(imageApiFormat(model)) && !isSenseNovaImageModel(model);
   const requestPrompts = nativeBatch
     ? [prompts[0]]
     : distinctPrompts ? prompts : Array.from({ length: requestedImageCount(params) }, () => prompts[0]);
@@ -783,6 +791,7 @@ function visionReasoningText(payload) {
 
 async function callVision(model, image, instruction, signal, logContext = null, options = {}) {
   if (!hasModelCredentials(model)) throw httpError(400, 'vision.missingApiKey', '请先在模型配置中填写视觉识别模型的 API Key');
+  const timeoutMs = Number.isInteger(options.timeoutMs) && options.timeoutMs > 0 && options.timeoutMs <= 300000 ? options.timeoutMs : 120000;
   // image 通常来自数据库行（按 file_path 读盘）；gallery 分析直接携带 buffer。
   const images = await Promise.all((Array.isArray(image) ? image : [image]).map(async (item) => {
     const encoded = (item.buffer || await readFile(path.join(PROJECTS_ROOT, item.project_id, item.file_path))).toString('base64');
@@ -801,6 +810,7 @@ async function callVision(model, image, instruction, signal, logContext = null, 
       apiFormat,
       imageCount: images.length,
       imageTypes: images.map((item) => item.mimeType),
+      timeoutMs,
     },
   });
   const headers = apiFormat === 'anthropic_messages'
@@ -830,8 +840,7 @@ async function callVision(model, image, instruction, signal, logContext = null, 
     : { model: model.model, messages: [{ role: 'system', content: '你是严谨的图像文字识别与编辑规划助手。必须只返回用户要求的 JSON，不要使用 Markdown。' }, { role: 'user', content: [{ type: 'text', text: instruction }, ...images.map((item) => ({ type: 'image_url', image_url: { url: item.dataUrl } }))] }], ...(!isSenseNovaTokenChat ? { response_format: { type: 'json_object' } } : {}), temperature: 0.1 };
   if (options.maxOutputTokens) requestBody[apiFormat === 'responses' ? 'max_output_tokens' : apiFormat !== 'anthropic_messages' && isSenseNovaLegacyVision ? 'max_new_tokens' : 'max_tokens'] = options.maxOutputTokens;
   try {
-    const response = await fetch(visionEndpoint(model), { method: 'POST', headers, body: JSON.stringify(requestBody), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000) });
-    const payload = await response.json().catch(() => ({}));
+    const { response, payload } = await fetchVisionJson(visionEndpoint(model), { method: 'POST', headers, body: JSON.stringify(requestBody), signal }, timeoutMs);
     if (!response.ok) throw new Error(payload?.error?.message || payload?.message || `视觉识别请求失败（${response.status}）`);
     const responseOutput = Array.isArray(payload?.output)
       ? payload.output.flatMap((item) => Array.isArray(item?.content) ? item.content : []).map((item) => item?.text || '').join('')
@@ -849,6 +858,10 @@ async function callVision(model, image, instruction, signal, logContext = null, 
     }, visionReasoningText(payload));
     return content;
   } catch (error) {
+    if (error.name === 'TimeoutError' && !signal?.aborted) {
+      const seconds = timeoutMs / 1000;
+      error = httpError(504, 'vision.timeout', `视觉模型分析超过 ${seconds} 秒，尚未收到完整结果。请重试或切换响应更快的视觉模型；文字密集图片可分区域清理。`, { seconds });
+    }
     failModelExecutionLog(log, error);
     throw error;
   }
@@ -2023,6 +2036,7 @@ function listGeneratingTasks(projectId) {
     status: task.status,
     operationType: task.operation_type,
     plugin: parseJson(task.input_json).plugin || null,
+    stage: parseJson(task.input_json).stage || null,
     createdAt: task.created_at,
     startedAt: task.started_at,
   }));
@@ -2463,6 +2477,10 @@ async function testModelConnection(model) {
   if (model.provider === 'mock') return { ok: true, latency: Date.now() - started, message: '本地演示模型可用', code: 'msg.testMockOk' };
   if (!hasModelCredentials(model)) throw httpError(400, 'model.missingApiKey', '请先填写 API Key');
   const baseUrl = normalizeBaseUrl(model.baseUrl);
+  if (model.type === 'image' && ['seedream_images', 'qwen_images', 'bfl_flux'].includes(imageApiFormat(model))) {
+    const result = await testNativeImageConnection({ ...model, baseUrl }, imageApiFormat(model), AbortSignal.timeout(15000));
+    return { ok: true, latency: Date.now() - started, ...result };
+  }
   if (model.type === 'image' && imageApiFormat(model) === 'gemini_interactions') {
     const response = await fetch(`${baseUrl}/models/${encodeURIComponent(model.model)}`, {
       headers: { 'x-goog-api-key': model.apiKey },

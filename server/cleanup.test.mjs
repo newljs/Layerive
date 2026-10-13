@@ -3,8 +3,9 @@ import { test } from 'node:test';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import sharp from 'sharp';
 import { validateCleanupInput, validateCleanupPlan, cleanupLabels } from './cleanup.mjs';
 import { normalizeLocalImage, pixelRect, preserveOutsideRegions } from './local-edit.mjs';
@@ -71,6 +72,7 @@ test('whole-image cleanup API: scenarios, provider protocols, pixel retention, c
   const output = await sharp({ create: { width: 128, height: 96, channels: 4, background: '#99ff22' } }).png().toBuffer();
   const calls = [];
   let plan = validPlan;
+  let imageFailure = false;
   let hold = null;
   let release;
   const stub = http.createServer(async (req, res) => {
@@ -82,6 +84,13 @@ test('whole-image cleanup API: scenarios, provider protocols, pixel retention, c
       calls.push({ url: req.url, bytes, contentType: req.headers['content-type'] });
       if (hold === (isImage ? 'image' : 'vision')) await new Promise(resolve => { release = resolve; });
       res.setHeader('Content-Type', 'application/json');
+      if (!isImage && hold === 'vision-slow') await pause(2000);
+      if (!isImage && hold === 'vision-body') {
+        res.write('{"choices":');
+        await new Promise(resolve => { release = resolve; });
+        return res.end('[]}');
+      }
+      if (isImage && imageFailure) { res.statusCode = 400; return res.end(JSON.stringify({ error: { message: 'fixture image edit failed' } })); }
       if (isImage) return res.end(JSON.stringify(req.url.endsWith('/interactions') ? { output_image: { data: output.toString('base64'), mime_type: 'image/png' } } : { data: [{ b64_json: output.toString('base64') }] }));
       const content = JSON.stringify(plan);
       res.end(JSON.stringify(req.url.endsWith('/messages') ? { content: [{ type: 'text', text: content }] } : req.url.endsWith('/responses') ? { output_text: content } : { choices: [{ message: { content } }] }));
@@ -95,7 +104,13 @@ test('whole-image cleanup API: scenarios, provider protocols, pixel retention, c
     ...imageFormats.map(id => ({ id, name: id, type: 'image', provider: id === 'sensenova' ? 'sensenova' : 'custom', imageApiFormat: id === 'sensenova' ? 'openai_images' : id, model: id === 'sensenova' ? 'sensenova-u1.5-lite' : 'fixture', baseUrl: stubUrl, apiKey: 'local-fixture-key', capabilities: ['edit_prompt'], sizeOptions: ['1024x1024'], outputFormats: ['png'], transparentBackground: true, maxCount: 4, defaultParams: { size: '1024x1024' } })),
     ...visionFormats.map(apiFormat => ({ id: apiFormat, name: apiFormat, type: 'vision', provider: 'custom', apiFormat, model: 'fixture', baseUrl: stubUrl, apiKey: 'local-fixture-key' })),
   ] }));
-  const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, windowsHide: true, env: { ...process.env, PIXELFLOW_API_PORT: '0', LAYERIVE_DATA_ROOT: path.join(temporary, 'data'), LAYERIVE_CONFIG_ROOT: configRoot }, stdio: ['ignore', 'pipe', 'pipe'] });
+  // Scale only vision deadlines in this isolated child: slow planning must
+  // survive the old 120-second cutoff without spending minutes in tests.
+  const preload = path.join(temporary, 'vision-deadlines.mjs');
+  await writeFile(preload, `const original = AbortSignal.timeout.bind(AbortSignal);
+AbortSignal.timeout = ms => original(ms === 120000 ? 1500 : ms === 240000 ? 3000 : ms);
+`);
+  const child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, 'server/index.mjs'], { cwd: root, windowsHide: true, env: { ...process.env, PIXELFLOW_API_PORT: '0', LAYERIVE_DATA_ROOT: path.join(temporary, 'data'), LAYERIVE_CONFIG_ROOT: configRoot }, stdio: ['ignore', 'pipe', 'pipe'] });
   let logs = '';
   child.stdout.on('data', chunk => { logs += chunk; }); child.stderr.on('data', chunk => { logs += chunk; });
   t.after(async () => {
@@ -125,17 +140,19 @@ test('whole-image cleanup API: scenarios, provider protocols, pixel retention, c
   let saved;
   for (const [index, mode] of ['people', 'clutter', 'text', 'room'].entries()) {
     const f = await fixture(); const mark = calls.length;
-    // Text is allowed to modify surfaces of the main product; no full carrier protection.
-    plan = mode === 'text' ? { ...validPlan, keep_rects: [] } : validPlan;
+    plan = validPlan;
     const started = await request(f.prefix + '/remove-element', { ...input(f), mode, modelId: imageFormats[index], visionModelId: visionFormats[index % 3], instruction: '保留主要主体，不添加新物体', ...(mode === 'people' ? { keepPoints: options.keepPoints } : {}) }, 202);
     assert.equal((await finished(f, started.taskId)).status, 'success');
-    const vision = JSON.parse(calls[mark].bytes);
-    assert.equal(vision.max_tokens || vision.max_output_tokens || vision.max_new_tokens, 8192, 'multi-target planning needs a larger output budget');
-    const content = vision.input?.[0].content || vision.messages.at(-1).content;
-    assert.equal(content.filter(item => ['input_image', 'image_url', 'image'].includes(item.type)).length, 1);
-    assert.match(JSON.stringify(content), new RegExp(cleanupLabels[mode]));
-    assert.match(JSON.stringify(content), rules[index]);
-    if (mode === 'people') assert.match(JSON.stringify(content), /55/);
+    if (mode === 'text') assert.equal(calls.length - mark, 1, 'text cleanup calls only the image model');
+    else {
+      const vision = JSON.parse(calls[mark].bytes);
+      assert.equal(vision.max_tokens || vision.max_output_tokens || vision.max_new_tokens, 8192, 'multi-target planning needs a larger output budget');
+      const content = vision.input?.[0].content || vision.messages.at(-1).content;
+      assert.equal(content.filter(item => ['input_image', 'image_url', 'image'].includes(item.type)).length, 1);
+      assert.match(JSON.stringify(content), new RegExp(cleanupLabels[mode]));
+      assert.match(JSON.stringify(content), rules[index]);
+      if (mode === 'people') assert.match(JSON.stringify(content), /55/);
+    }
     const imageCalls = calls.slice(mark).filter(call => call.url.endsWith('/images/edits') || call.url.endsWith('/interactions'));
     assert.equal(imageCalls.length, 1, 'cleanup is always one output');
     let prompt;
@@ -146,7 +163,12 @@ test('whole-image cleanup API: scenarios, provider protocols, pixel retention, c
       const body = JSON.parse(imageCalls[0].bytes); prompt = body.prompt || body.input.find(item => item.type === 'text').text;
       if (body.n) assert.equal(body.n, 1);
     }
-    assert.match(prompt, rules[index]); assert.match(prompt, /仅删除以下目标/); assert.match(prompt, /必须保留/);
+    assert.match(prompt, rules[index]);
+    if (mode === 'text') {
+      assert.match(prompt, /logo（包括纯图形 logo）/); assert.match(prompt, /不删除整个载体/);
+      assert.match(prompt, /保留主要主体，不添加新物体/); assert.match(prompt, /保持其他人物身份/);
+      assert.doesNotMatch(prompt, /仅删除以下目标|保护区域/);
+    } else { assert.match(prompt, /仅删除以下目标/); assert.match(prompt, /必须保留/); }
     const bundle = await request(f.prefix);
     const version = bundle.versions.find(v => v.operation === 'remove_element');
     assert.equal(version.outputs.length, 1); assert.equal(version.outputs[0].mimeType, 'image/png');
@@ -155,10 +177,13 @@ test('whole-image cleanup API: scenarios, provider protocols, pixel retention, c
     assert.ok(version.inputs.some(image => image.id === f.imageId));
     const raw = await sharp(Buffer.from(await (await fetch(base + version.outputs[0].url)).arrayBuffer())).ensureAlpha().raw().toBuffer();
     const pixel = (x, y) => Array.from(raw.subarray((y * 160 + x) * 4, (y * 160 + x) * 4 + 4));
-    assert.deepEqual(pixel(150, 10), [18, 52, 86, 255], 'outside target regions must be unchanged');
+    assert.deepEqual(pixel(150, 10), mode === 'text' ? [153, 255, 34, 255] : [18, 52, 86, 255], 'text uses the complete edited output; other modes preserve outside pixels');
+    if (mode === 'text') assert.deepEqual(pixel(0, 0), [153, 255, 34, 255], 'do not feather original text back into image edges');
     assert.deepEqual(pixel(20, 15), [153, 255, 34, 255], 'identified target must use generated repair');
     if (mode !== 'text') assert.deepEqual(pixel(70, 40), [18, 52, 86, 255], 'protected subject overlapping a target must keep original pixels');
     const modelLogs = (await request(f.prefix + '/model-logs')).logs;
+    if (mode === 'text') assert.ok(modelLogs.every(log => log.modelType === 'image'));
+    else assert.equal(modelLogs.find(log => log.modelType === 'vision').request.timeoutMs, 240000);
     assert.ok(modelLogs.every(log => log.taskId === started.taskId && !JSON.stringify(log).includes('local-fixture-key') && !JSON.stringify(log).includes('base64,')));
     saved = f;
   }
@@ -173,6 +198,29 @@ test('whole-image cleanup API: scenarios, provider protocols, pixel retention, c
     assert.equal((await request(f.prefix)).project.currentImageId, f.imageId);
   }
   plan = validPlan;
+  hold = 'vision-slow';
+  const slowFixture = await fixture();
+  const slowTask = await request(slowFixture.prefix + '/remove-element', { ...input(slowFixture), mode: 'clutter' }, 202);
+  assert.equal((await finished(slowFixture, slowTask.taskId)).status, 'success', 'dense planning may take longer than the default vision deadline');
+  hold = null;
+  for (const phase of ['vision', 'vision-body']) {
+    const timedFixture = await fixture();
+    hold = phase; release = null; const mark = calls.length;
+    const timedTask = await request(timedFixture.prefix + '/remove-element', { ...input(timedFixture), mode: 'clutter' }, 202);
+    const failure = await finished(timedFixture, timedTask.taskId);
+    assert.equal(failure.status, 'failed');
+    assert.equal(failure.errorCode, 'vision.timeout');
+    assert.deepEqual(failure.errorParams, { seconds: 240 });
+    assert.match(failure.error, /240 秒/);
+    release?.(); hold = null;
+    assert.ok(!calls.slice(mark).some(call => call.url.endsWith('/images/edits')));
+    const result = await request(timedFixture.prefix);
+    assert.equal(result.project.currentImageId, timedFixture.imageId);
+    assert.ok(!result.versions.some(v => v.operation === 'remove_element'));
+    const modelLog = (await request(timedFixture.prefix + '/model-logs')).logs[0];
+    assert.equal(modelLog.status, 'failed');
+    assert.match(modelLog.error, /240 秒/);
+  }
   for (const phase of ['vision', 'image']) {
     hold = phase; release = null; const mark = calls.length;
     const started = await request(f.prefix + '/remove-element', { ...input(f), ...options }, 202);
@@ -186,4 +234,58 @@ test('whole-image cleanup API: scenarios, provider protocols, pixel retention, c
   }
   const duplicate = await request(saved.prefix + '/duplicate', {}, 201);
   assert.ok(duplicate.versions.find(v => v.operation === 'remove_element').inputs.every(image => duplicate.images.some(item => item.id === image.id)));
+
+  // Text cleanup must remain usable without vision credentials or any vision
+  // configuration, even when a caller sends a stale visionModelId.
+  const configFile = path.join(configRoot, 'models.json');
+  const config = JSON.parse(await readFile(configFile, 'utf8'));
+  config.models = config.models.map(model => model.type === 'vision' ? { ...model, apiKey: '' } : model);
+  await writeFile(configFile, JSON.stringify(config));
+  const keylessFixture = await fixture();
+  const keylessMark = calls.length;
+  const keyless = await request(keylessFixture.prefix + '/remove-element', { ...input(keylessFixture), mode: 'text', visionModelId: visionFormats[0] }, 202);
+  assert.equal((await finished(keylessFixture, keyless.taskId)).status, 'success');
+  assert.equal(calls.length - keylessMark, 1);
+  config.models = config.models.filter(model => model.type !== 'vision');
+  delete config.active_vision_model;
+  await writeFile(configFile, JSON.stringify(config));
+  for (const [index, modelId] of imageFormats.entries()) {
+    const direct = await fixture(); const mark = calls.length;
+    const route = index % 2 ? '/plugins/layerive.remove-element/run' : '/remove-element';
+    const started = await request(direct.prefix + route, { ...input(direct), mode: 'text', modelId, ...(index % 2 ? { visionModelId: 'deleted-vision-model' } : {}) }, 202);
+    assert.equal((await finished(direct, started.taskId)).status, 'success');
+    assert.equal(calls.length - mark, 1, 'each image protocol makes no vision requests');
+    const bundle = await request(direct.prefix);
+    const version = bundle.versions.find(v => v.operation === 'remove_element');
+    assert.equal(version.outputs.length, 1);
+    assert.equal(version.outputs[0].width, 160); assert.equal(version.outputs[0].height, 120);
+    assert.equal(version.outputs[0].mimeType, 'image/png');
+    assert.ok(version.inputs.some(image => image.id === direct.imageId));
+  }
+  const directFailure = await fixture();
+  await request(directFailure.prefix + '/remove-element', { ...input(directFailure), mode: 'text', instruction: 'a'.repeat(1001) }, 400);
+  await request(directFailure.prefix + '/remove-element', { ...input(directFailure), mode: 'clutter' }, 400);
+  imageFailure = true;
+  const failureMark = calls.length;
+  const failed = await request(directFailure.prefix + '/remove-element', { ...input(directFailure), mode: 'text' }, 202);
+  assert.equal((await finished(directFailure, failed.taskId)).status, 'failed');
+  assert.ok(calls.length > failureMark);
+  assert.ok(calls.slice(failureMark).every(call => call.url.endsWith('/images/edits')), 'provider failure and supplement retries must not call vision');
+  imageFailure = false;
+  assert.equal((await request(directFailure.prefix)).project.currentImageId, directFailure.imageId);
+  assert.ok(!(await request(directFailure.prefix)).versions.some(v => v.operation === 'remove_element'));
+
+  hold = 'image'; release = null;
+  const cancelMark = calls.length;
+  const cancelTask = await request(directFailure.prefix + '/plugins/layerive.remove-element/run', { ...input(directFailure), mode: 'text' }, 202);
+  await waitUntil(() => Boolean(release));
+  assert.equal((await request(directFailure.prefix + '/tasks/' + cancelTask.taskId)).stage, 'generating');
+  assert.equal((await request(directFailure.prefix + '/tasks')).tasks.find(task => task.id === cancelTask.taskId).stage, 'generating', 'refresh must recover the actual image-only phase');
+  assert.equal(calls.length - cancelMark, 1);
+  await request(directFailure.prefix + '/tasks/' + cancelTask.taskId + '/cancel', {});
+  release(); hold = null;
+  assert.equal((await finished(directFailure, cancelTask.taskId)).status, 'canceled');
+  const canceledBundle = await request(directFailure.prefix);
+  assert.equal(canceledBundle.project.currentImageId, directFailure.imageId);
+  assert.ok(!canceledBundle.versions.some(v => v.operation === 'remove_element'));
 });

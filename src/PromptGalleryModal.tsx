@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, readFileAsDataUrl } from './api';
 import { GALLERY_CATEGORIES, GALLERY_ENTRIES, type GalleryCategory, type GalleryEntry } from './gallery';
 import { Icon } from './Icon';
+import { useConfirm } from './ConfirmDialog';
 import { tf, useLanguage, type TranslationKey } from './i18n';
 import type { GalleryEntryItem } from './types';
 
@@ -69,6 +70,7 @@ function userToItem(entry: GalleryEntryItem): GalleryItem {
 
 export function PromptGalleryModal({ visionModelId, onClose, onUsePrompt, onUseStyle }: Props) {
   const { language, t } = useLanguage();
+  const confirm = useConfirm();
   const [categoryId, setCategoryId] = useState<string>('all');
   const [query, setQuery] = useState('');
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -162,18 +164,21 @@ export function PromptGalleryModal({ visionModelId, onClose, onUsePrompt, onUseS
   }
 
   async function remove(item: GalleryItem) {
-    if (!item.userEntry) return;
-    if (!window.confirm(t('pg.deleteConfirm', { title: item.title }))) return;
-    try {
-      await api.deleteGalleryEntry(item.userEntry.id);
-      setUserEntries((entries) => entries.filter((entry) => entry.id !== item.userEntry!.id));
-      if (activeKey === item.key) setActiveKey(null);
-    } catch { /* keep entry on failure */ }
+    const entry = item.userEntry;
+    if (!entry) return;
+    await confirm({
+      title: t('pg.deleteTitle'), message: t('pg.deleteConfirm', { title: item.title }), confirmLabel: t('pg.delete'),
+      onConfirm: async () => {
+        await api.deleteGalleryEntry(entry.id);
+        setUserEntries((entries) => entries.filter((existing) => existing.id !== entry.id));
+        if (activeKey === item.key) setActiveKey(null);
+      },
+    });
   }
 
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="gallery-modal" role="dialog" aria-modal="true" aria-labelledby="gallery-title">
+      <section className={`gallery-modal${editor ? ' is-editing' : ''}`} role="dialog" aria-modal="true" aria-labelledby={editor ? 'gallery-editor-title' : 'gallery-title'}>
         <div className="modal-heading gallery-heading">
           <div>
             <p className="eyebrow">PROMPT GALLERY</p>
@@ -246,29 +251,39 @@ export function PromptGalleryModal({ visionModelId, onClose, onUsePrompt, onUseS
         {editor && (
           <div className="gallery-editor">
             <div className="gallery-editor-head">
-              <strong>{editor.id ? t('pg.editEntry') : t('pg.addEntry')}</strong>
+              <div className="gallery-editor-heading">
+                <span className="gallery-editor-heading-icon"><Icon name="gallery" size={22} /></span>
+                <div><h3 id="gallery-editor-title">{editor.id ? t('pg.editEntry') : t('pg.addEntry')}</h3><p>{t('pg.editorSubtitle')}</p></div>
+              </div>
               <button className="icon-button" onClick={() => setEditor(null)} aria-label={t('pg.closeEditor')}><Icon name="close" size={15} /></button>
             </div>
             <div className="gallery-editor-body">
               <div className="gallery-editor-image">
-                <div className="gallery-editor-preview">
-                  {editor.uploaded ? <img src={editor.uploaded.dataUrl} alt={t('pg.newImageAlt')} /> : editor.existingImage && !editor.removedExisting ? <img src={editor.existingImage} alt={t('pg.currentImageAlt')} /> : <span>{t('pg.noImageLine1')}<br />{t('pg.noImageLine2')}</span>}
-                </div>
+                <div className="gallery-editor-section-label"><span>{t('pg.referenceImage')}</span><small>{t('pg.optional')}</small></div>
+                <button type="button" className={`gallery-editor-preview${editor.uploaded || (editor.existingImage && !editor.removedExisting) ? ' has-image' : ''}`} onClick={() => fileRef.current?.click()} aria-label={editor.uploaded || (editor.existingImage && !editor.removedExisting) ? t('pg.replaceImage') : t('pg.uploadImage')}>
+                  {editor.uploaded ? <img src={editor.uploaded.dataUrl} alt={t('pg.newImageAlt')} /> : editor.existingImage && !editor.removedExisting ? <img src={editor.existingImage} alt={t('pg.currentImageAlt')} /> : <span className="gallery-editor-upload-empty"><span className="gallery-editor-upload-icon"><Icon name="image" size={26} /></span><strong>{t('pg.uploadImage')}</strong><span>{t('pg.noImageLine2')}</span></span>}
+                </button>
+                <small className="gallery-editor-image-formats">PNG / JPG / WebP · {t('pg.imageSizeHint')}</small>
                 <input ref={fileRef} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) void chooseImage(file); if (fileRef.current) fileRef.current.value = ''; }} />
-                <button className="button secondary" onClick={() => fileRef.current?.click()}><Icon name="image" size={14} /> {editor.uploaded || (editor.existingImage && !editor.removedExisting) ? t('pg.replaceImage') : t('pg.uploadImage')}</button>
-                <button className="button secondary" disabled={(!editor.uploaded && (!editor.existingImage || editor.removedExisting)) || editor.analyzing} onClick={() => void analyze()}>{editor.analyzing ? t('pg.analyzing') : <><Icon name="sparkle" size={14} /> {t('pg.analyzeAction')}</>}</button>
-                <small>{t('pg.analyzeHint')}</small>
+                {(editor.uploaded || (editor.existingImage && !editor.removedExisting)) && <button className="button secondary gallery-editor-replace" onClick={() => fileRef.current?.click()}><Icon name="image" size={14} /> {t('pg.replaceImage')}</button>}
+                <div className="gallery-editor-analyze">
+                  <button className="button secondary" disabled={(!editor.uploaded && (!editor.existingImage || editor.removedExisting)) || editor.analyzing} onClick={() => void analyze()}><Icon name="sparkle" size={16} /> {editor.analyzing ? t('pg.analyzing') : t('pg.analyzeAction')}</button>
+                  <small>{t('pg.analyzeHint')}</small>
+                </div>
               </div>
               <div className="gallery-editor-fields">
-                <label className="gallery-editor-field"><span>{t('pg.titleLabel')}</span><input value={editor.title} onChange={(event) => patchEditor({ title: event.target.value })} placeholder={t('pg.titlePlaceholder')} /></label>
-                <label className="gallery-editor-field"><span>{t('pg.categoryLabel')}</span><select value={editor.category} onChange={(event) => patchEditor({ category: event.target.value })}>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.emoji} {catName(cat)}</option>)}</select></label>
-                <label className="gallery-editor-field"><span>{t('pg.promptLabel')}</span><textarea value={editor.prompt} onChange={(event) => patchEditor({ prompt: event.target.value })} rows={6} placeholder={t('pg.promptPlaceholder')} /></label>
-                <label className="gallery-editor-field"><span>{t('pg.styleLabel')}</span><textarea value={editor.stylePrompt} onChange={(event) => patchEditor({ stylePrompt: event.target.value })} rows={2} placeholder={t('pg.stylePlaceholder')} /></label>
+                <div className="gallery-editor-meta">
+                  <label className="gallery-editor-field"><span>{t('pg.titleLabel')}</span><input value={editor.title} onChange={(event) => patchEditor({ title: event.target.value })} placeholder={t('pg.titlePlaceholder')} /></label>
+                  <label className="gallery-editor-field"><span>{t('pg.categoryLabel')}</span><select value={editor.category} onChange={(event) => patchEditor({ category: event.target.value })}>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.emoji} {catName(cat)}</option>)}</select></label>
+                </div>
+                <label className="gallery-editor-field gallery-editor-prompt"><span><Icon name="edit" size={14} /> {t('pg.promptLabel')}</span><small>{t('pg.promptHelp')}</small><textarea value={editor.prompt} onChange={(event) => patchEditor({ prompt: event.target.value })} rows={6} placeholder={t('pg.promptPlaceholder')} /></label>
+                <label className="gallery-editor-field gallery-editor-style"><span><Icon name="sliders" size={14} /> {t('pg.editorStyleLabel')}<em>{t('pg.optional')}</em></span><small>{t('pg.styleHelp')}</small><textarea value={editor.stylePrompt} onChange={(event) => patchEditor({ stylePrompt: event.target.value })} rows={3} placeholder={t('pg.stylePlaceholder')} /></label>
               </div>
             </div>
             <div className="gallery-editor-actions">
+              <small>{t('pg.saveHint')}</small>
               <button className="button secondary" onClick={() => setEditor(null)}>{t('common.cancel')}</button>
-              <button className="button primary" disabled={editor.saving || (!editor.prompt.trim() && !editor.stylePrompt.trim())} onClick={() => void save()}>{editor.saving ? t('pg.saving') : t('pg.saveToGallery')}</button>
+              <button className="button primary" disabled={editor.saving || (!editor.prompt.trim() && !editor.stylePrompt.trim())} onClick={() => void save()}><Icon name="check" size={15} /> {editor.saving ? t('pg.saving') : t('pg.saveToGallery')}</button>
             </div>
           </div>
         )}

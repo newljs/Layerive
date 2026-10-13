@@ -1,5 +1,6 @@
 // Built-in plugin: no database, filesystem paths, credentials or provider protocols.
-import { cleanupEditPrompt, cleanupLabels, cleanupPlanningInstruction, validateCleanupInput, validateCleanupPlan } from '../cleanup.mjs';
+import sharp from 'sharp';
+import { cleanupEditPrompt, cleanupLabels, cleanupPlanningInstruction, textCleanupEditPrompt, validateCleanupInput, validateCleanupPlan } from '../cleanup.mjs';
 import { cropLocalSelection, normalizeLocalImage, validateRect } from '../local-edit.mjs';
 import catalog from './catalog.json' with { type: 'json' };
 import { preserveOutput } from './preserve-output.mjs';
@@ -11,9 +12,9 @@ async function create(host, input) {
   const rect = cleanup.mode === 'selection' ? validateRect(input.rect) : { x: 0, y: 0, width: 100, height: 100 };
   if (rect.width < 2 || rect.height < 2) throw httpError(400, 'localEdit.rectTooSmall', '框选区域太小，请重新框选');
   const config = readModels();
-  const visionModel = visionModelOrThrow(config, input.visionModelId);
+  const visionModel = cleanup.mode === 'text' ? null : visionModelOrThrow(config, input.visionModelId);
   const image = imageOrThrow(projectId, input.imageId);
-  if (!hasModelCredentials(visionModel)) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
+  if (visionModel && !hasModelCredentials(visionModel)) throw httpError(400, 'vision.missingApiKey', '请先配置视觉识别模型的 API Key');
   return host.generation({
     prompt: cleanup.mode === 'selection' ? '识别并删除用户圈选的元素，自然补全其遮挡的背景' : `${cleanupLabels[cleanup.mode]}${cleanup.instruction ? `：${cleanup.instruction}` : ''}`,
     operation: 'remove_element',
@@ -28,12 +29,16 @@ async function prepare(host, sourceImage, localEdit) {
   const { projectId, taskId, signal, httpError, callVision, parseVisionJson, updateTaskInput } = host;
   const { mode, rect, visionModel } = localEdit;
   const region = `原图左上角为原点，x=${rect.x}%、y=${rect.y}%、宽=${rect.width}%、高=${rect.height}%`;
-  updateTaskInput(taskId, { stage: 'planning' });
+  updateTaskInput(taskId, { stage: localEdit.cleanup?.mode === 'text' ? 'generating' : 'planning' });
   signal.throwIfAborted();
   const source = await normalizeLocalImage(await host.readImage(sourceImage));
+  if (localEdit.cleanup?.mode === 'text') {
+    updateTaskInput(taskId, { localEdit: { sourceDimensions: { width: source.width, height: source.height } } });
+    return { image: source, prompt: textCleanupEditPrompt(localEdit.cleanup.instruction), outputDimensions: { width: source.width, height: source.height } };
+  }
   if (localEdit.cleanup) {
     const cleanup = localEdit.cleanup;
-    const planned = parseVisionJson(await callVision(visionModel, source, cleanupPlanningInstruction(cleanup), signal, { projectId, taskId, operationType: 'remove_element', phase: '整图清理意图识别与多目标定位' }, { maxOutputTokens: 8192 }));
+    const planned = parseVisionJson(await callVision(visionModel, source, cleanupPlanningInstruction(cleanup), signal, { projectId, taskId, operationType: 'remove_element', phase: '整图清理意图识别与多目标定位' }, { maxOutputTokens: 8192, timeoutMs: 240000 }));
     signal.throwIfAborted();
     const plan = validateCleanupPlan(planned, cleanup);
     updateTaskInput(taskId, { localEdit: { cleanupMode: cleanup.mode, instruction: cleanup.instruction, keepPoints: cleanup.keepPoints, targets: plan.targets, keepRects: plan.keepRects, keepSubjects: plan.keepSubjects, confidence: plan.confidence, sourceDimensions: { width: source.width, height: source.height } } });
@@ -87,7 +92,16 @@ export default {
   ...catalog.find(plugin => plugin.operation === 'remove_element'),
   generationPhase: '删除元素与背景修复',
   create,
-  taskInput: state => ({ stage: 'planning', localEdit: { mode: state.mode || 'local_edit', rect: state.rect, hasReference: Boolean(state.reference), visionModelId: state.visionModel.id, ...(state.cleanup ? { cleanupMode: state.cleanup.mode, instruction: state.cleanup.instruction, keepPoints: state.cleanup.keepPoints } : {}) } }),
+  taskInput: state => ({ stage: state.cleanup?.mode === 'text' ? 'generating' : 'planning', localEdit: { mode: state.mode || 'local_edit', rect: state.rect, hasReference: Boolean(state.reference), ...(state.visionModel ? { visionModelId: state.visionModel.id } : {}), ...(state.cleanup ? { cleanupMode: state.cleanup.mode, instruction: state.cleanup.instruction, keepPoints: state.cleanup.keepPoints } : {}) } }),
   prepare: async (host, source, state) => ({ ...await prepare(host, source, state), rect: state.rect }),
-  processOutput: preserveOutput,
+  processOutput: async (host, prepared, output) => {
+    if (!prepared.outputDimensions) return preserveOutput(host, prepared, output);
+    // Direct full-image editing has no located regions to composite. Normalize
+    // the entire generated result, including edges, to the original PNG canvas.
+    host.updateTask({ stage: 'validating' });
+    const { width, height } = prepared.outputDimensions;
+    const bytes = await sharp(output.bytes, { limitInputPixels: 40_000_000, failOn: 'error' }).autoOrient().toColourspace('srgb')
+      .resize(width, height, { fit: 'fill' }).png().toBuffer();
+    return { bytes, mimeType: 'image/png', width, height };
+  },
 };

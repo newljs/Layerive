@@ -1,7 +1,7 @@
-// Image size options differ per provider. SenseNova exposes eleven 2K
-// constants, while OpenAI's image API accepts only three fixed sizes plus an
-// `auto` default. The workspace picker filters this list by the active
-// model's provider so users can only choose sizes the provider supports.
+// Prefer each model's declared sizes; presets are only fallbacks for older
+// configurations. Native protocols additionally validate their pixel limits.
+import { NATIVE_IMAGE_PRESETS } from './imageModelPresets';
+
 export type SizeOption = { value: string; ratio: string; label: string };
 
 export const SENSENOVA_SIZES: SizeOption[] = [
@@ -40,6 +40,7 @@ function sizeOption(value: string): SizeOption | null {
 
 function fallbackOptions(model: ModelSizing): SizeOption[] {
   const provider = typeof model === 'string' ? model : model?.provider;
+  if (provider === 'seedream' || provider === 'qwen' || provider === 'flux') return NATIVE_IMAGE_PRESETS[provider].sizes.map(sizeOption).filter((option): option is SizeOption => Boolean(option));
   return provider === 'sensenova' ? SENSENOVA_SIZES : OPENAI_SIZES;
 }
 
@@ -76,7 +77,7 @@ export function closestSizeForDimensions(model: ModelSizing, width: number | nul
   }, defaultSizeForProvider(model));
 }
 
-// Output format and transparent background are OpenAI-only capabilities.
+// The active model declares which output formats and Alpha workflows it supports.
 export const OUTPUT_FORMATS = [
   { value: 'png', label: 'PNG' },
   { value: 'jpeg', label: 'JPEG' },

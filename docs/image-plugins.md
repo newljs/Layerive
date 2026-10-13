@@ -1,6 +1,6 @@
 # 内置图片操作插件（API v1）
 
-最后核对：2026-10-04。
+最后核对：2026-10-13。
 
 第二阶段已将全部九项专项图片操作迁移为随应用一起发布的内置插件：局部修改、删除元素、素材提取、融合、去除背景、去水印、变清晰、扩图和文字编辑。局部批量修改复用局部修改插件的规划与结果处理。功能入口、场景、模型协议、编辑约束和历史操作类型保持兼容。
 
@@ -69,7 +69,7 @@
 | --- | --- |
 | id / version / apiVersion | 稳定命名空间 ID / 三段版本号 / 当前为 1 |
 | operation / route | 持久化操作类型 / 兼容路由名；注册时都必须唯一 |
-| requirements | image 为所需基础图片能力数组；vision 为是否使用视觉模型；multipleImages 描述多图条件 |
+| requirements | image 为所需基础图片能力数组；vision 为插件是否包含需要视觉模型的流程（删除元素的 text 场景例外，不需要视觉配置）；multipleImages 描述多图条件 |
 | timeoutMs | 单任务总超时，包括规划、生成、后处理 |
 | create(host, input) | 校验请求，返回 host.generation(request, state)；此阶段不得调用远程模型 |
 | taskInput(state) | 返回可持久化的初始阶段/文本元数据；禁止图片字节、Base64、密钥和模型配置对象 |
@@ -88,13 +88,13 @@
 
 prepare 返回的 image 沿用模型适配层输入形式。双图使用主图对象的 referenceImages 数组；顺序固定为主图、参考图，不能丢弃参考图静默降级。inputs 为附加版本关系数组，例如 [{ imageId, role: 'fusion_reference' }]；宿主再次验证图片属于当前项目后写入，source 关系由宿主自动写入。
 
-局部修改有参考图时返回 source / rect 并使用 preserveOutput。删除元素返回 source / rect，或 source / regions / protectedRegions。融合不使用像素回填。纯文字局部修改保持旧行为，不额外回填。
+局部修改有参考图时返回 source / rect 并使用 preserveOutput。删除元素的 selection / people / clutter / room 返回 source / rect，或 source / regions / protectedRegions。text 场景直接使用规范化原图与固定文字/数字/水印/logo（含纯图形 logo）清理提示词，不调用视觉模型；返回 outputDimensions，processOutput 用 Sharp 将完整结果转为原尺寸 PNG（validating 阶段），不进行像素回填或边缘羽化，也不保证其他内容逐像素一致。创建时忽略 visionModelId（包括过期 ID），初始阶段为 generating；无需视觉配置/凭据。插件版本为 1.1.0，共用原取消、日志及版本事务。融合不使用像素回填。纯文字局部修改保持旧行为，不额外回填。
 
 multipleImages 是插件需求说明，不表示用户配置的兼容服务已通过能力验证。现有图片服务仍通过实际协议请求判断是否支持多图，失败则报告错误。
 
 `outputMetadata.textRecognition` 是目前唯一支持的输出元数据，使用 `host.textRecognitionSnapshot(model, segments)` 构造。包含模型 ID、配置指纹、名称和规范化文字分段；成功事务为每张输出写入识别缓存（包括空快照）。插件不访问数据库，不提供任意 SQL 或事务回调；失败/取消不写输出缓存。增加其他元数据种类时，需先扩展宿主的存储契约。
 
-去背景的 Alpha 校验已由插件 `processOutput` 执行；强制单图、PNG、透明参数与主体/透明像素占比校验保持原规则。扩图和变清晰不调用视觉模型。九项插件任务统一使用 300 秒总预算；普通生成仍沿用按图片数量计算的超时。
+去背景的 Alpha 校验已由插件 `processOutput` 执行；强制单图、PNG、透明参数与主体/透明像素占比校验保持原规则。扩图、变清晰和删除元素的全图文字清理不调用视觉模型。九项插件任务统一使用 300 秒总预算；普通生成仍沿用按图片数量计算的超时。
 
 ## 宿主接口
 
@@ -102,7 +102,7 @@ host 自带 projectId；执行期另有 taskId、signal。接口兼容现有辅�
 
 - readModels()、visionModelOrThrow(config, id)：获取不含 API Key 的配置副本与视觉模型元数据。
 - hasModelCredentials(model)：读取宿主计算的可用凭据标记，本地空 Key 仍合法。
-- callVision(model, image, instruction, signal, logContext, options)：宿主用创建时捕获的真实配置调用模型并记录日志；不接受插件传入的凭据或服务地址覆盖。
+- callVision(model, image, instruction, signal, logContext, options)：宿主用创建时捕获的真实配置调用模型并记录日志；不接受插件传入的凭据或服务地址覆盖。`options.maxOutputTokens` 指定输出上限；`options.timeoutMs` 指定请求及完整响应读取的时限（整数 1–300000 毫秒，默认/无效值为 120000）。去路人、清杂物、房屋整理三种整图清理使用 8192 输出上限与 240000 毫秒视觉时限，任务总预算仍为 300000 毫秒；用户取消可随时中止。视觉请求超时通过 `vision.timeout` / `params.seconds` 上报，模型日志请求中记录 `timeoutMs`。
 - imageOrThrow(projectId, imageId)、readImage(image)、providerInputBytes(image)：按当前项目查询/读取素材。
 - ensureUploadVersion(projectId, image)、saveExtractMaterial(bytes, mimeType, dimensions)、saveLocalEditMaterial(projectId, taskId, image, type)：素材持久化与原图版本补建。
 - listMaterials(types)：读取本任务指定类型的素材关系；局部批量保留原有累计素材关联策略。

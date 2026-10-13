@@ -8,6 +8,11 @@ export const cleanupModeKeys: Record<CleanupMode, TranslationKey> = { selection:
 export const cleanupDescriptionKeys: Record<CleanupMode, TranslationKey> = { selection: 'cleanup.selectionDescription', people: 'cleanup.peopleDescription', clutter: 'cleanup.clutterDescription', text: 'cleanup.textDescription', room: 'cleanup.roomDescription' };
 export const cleanupIcons: Record<CleanupMode, IconName> = { selection: 'box', people: 'users', clutter: 'trash', text: 'edit', room: 'home' };
 export const cleanupStageKeys: Record<string, TranslationKey> = { planning: 'cleanup.stagePlanning', generating: 'cleanup.stageGenerating', preserving: 'cleanup.stagePreserving' };
+export function removeElementStageKey(mode: CleanupMode, stage?: string | null): TranslationKey {
+  if (stage === 'validating') return 'cleanup.stageValidating';
+  if (mode === 'text' && (!stage || stage === 'generating')) return 'cleanup.stageTextGenerating';
+  return (mode === 'selection' ? removeElementStageKeys : cleanupStageKeys)[stage || 'planning'];
+}
 export const extractionModeKeys: Record<ExtractionMode, TranslationKey> = { selection: 'extract.selection', clothing: 'extract.clothing', accessory: 'extract.accessory', pattern: 'extract.pattern', background: 'extract.background' };
 export const extractionDescriptionKeys: Record<ExtractionMode, TranslationKey> = { selection: 'extract.selectionDescription', clothing: 'extract.clothingDescription', accessory: 'extract.accessoryDescription', pattern: 'extract.patternDescription', background: 'extract.backgroundDescription' };
 export const extractionIcons: Record<ExtractionMode, IconName> = { selection: 'box', clothing: 'shirt', accessory: 'gem', pattern: 'grid', background: 'image' };
