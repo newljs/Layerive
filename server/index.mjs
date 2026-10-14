@@ -18,7 +18,7 @@ import { createZip, readZip } from './zip.mjs';
 import { normalizeLocalImage, normalizeSenseNovaInput, preserveOutsideRegion, preserveOutsideRegions, referenceBytes, validateRect } from './local-edit.mjs';
 
 const PORT = Number(process.env.PIXELFLOW_API_PORT || 8788);
-const HOST = '127.0.0.1';
+const HOST = process.env.LAYERIVE_HOST || '127.0.0.1';
 const DIST_ROOT = path.join(APP_ROOT, 'dist');
 const MODELS_CONFIG_PATH = path.join(CONFIG_ROOT, 'models.json');
 
@@ -258,7 +258,8 @@ function messageWithCode(message, code, params) {
 function restartAfterResponse(res) {
   res.once('finish', () => {
     setTimeout(() => {
-      if (process.env.LAYERIVE_ELECTRON === '1') process.exit(75);
+      // Electron and Docker supervise the service and restart it themselves.
+      if (process.env.LAYERIVE_ELECTRON === '1' || process.env.LAYERIVE_CONTAINER === '1') process.exit(75);
       try {
         spawn(process.execPath, [path.join(APP_ROOT, 'server', 'index.mjs')], { cwd: APP_ROOT, detached: true, stdio: 'ignore', env: process.env }).unref();
       } catch { /* user can restart manually */ }

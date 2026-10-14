@@ -123,6 +123,16 @@ npm start      # Serve the frontend and local API
 > [!TIP]
 > For everyday local use, run `npm run build` once and then use `npm start`. Use `npm run dev` while changing code.
 
+### Docker
+
+```bash
+docker compose up -d --build
+```
+
+Open [http://127.0.0.1:8788](http://127.0.0.1:8788). The multi-stage Dockerfile uses `library/node:24-alpine`, skips the Electron binary download, and runs as a non-root user with the built frontend, server, and production dependencies.
+
+Compose publishes the port on localhost only; the app retains its local Host / Origin checks. The `layerive-data` and `layerive-config` named volumes persist the database/images and model configuration separately from the source tree's `data/` and `config/` directories. Use full backup/restore to migrate existing data. `docker compose down` retains these volumes; adding `-v` deletes them. Docker handles the service restart after a backup restore.
+
 ### Desktop app
 
 The same source can be packaged as an Electron desktop application:

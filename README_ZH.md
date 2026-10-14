@@ -123,6 +123,16 @@ npm start      # 启动本地服务，同时托管前端与 API
 > [!TIP]
 > 日常本地使用时，先执行一次 `npm run build`，之后运行 `npm start` 即可；开发或修改代码时使用 `npm run dev`。
 
+### Docker 运行
+
+```bash
+docker compose up -d --build
+```
+
+浏览器访问 [http://127.0.0.1:8788](http://127.0.0.1:8788)。Dockerfile 使用 `library/node:24-alpine` 多阶段构建，跳过 Electron 二进制下载，最终以非 root 用户运行，仅包含前端产物、服务端与生产依赖。
+
+Compose 默认只映射本机端口；应用仍限制本机 Host / Origin。`layerive-data` 和 `layerive-config` 命名卷分别保存数据库/图片与模型配置，独立于源码目录的 `data/`、`config/`；可用完整备份/恢复迁移已有数据。`docker compose down` 保留数据卷，添加 `-v` 会删除它们。备份恢复后的重启由 Docker 自动接管。
+
 ### 桌面版
 
 同一份源码可以构建为 Electron 桌面应用：

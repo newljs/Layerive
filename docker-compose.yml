@@ -1,0 +1,17 @@
+services:
+  layerive:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: layerive:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8788:8788"
+    volumes:
+      - layerive-data:/app/data
+      - layerive-config:/app/config
+
+volumes:
+  layerive-data:
+  layerive-config:
