@@ -7,7 +7,7 @@ import { test } from 'node:test';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test('restore waits for active generation to settle before closing its database', { timeout: 30000 }, async (t) => {
+async function verifySupervisedRestore(t, supervisor) {
   const root = path.resolve(import.meta.dirname, '..');
   const fixture = await mkdtemp(path.join(root, 'work', 'restore-concurrency-test-'));
   const dataRoot = path.join(fixture, 'data');
@@ -22,7 +22,7 @@ test('restore waits for active generation to settle before closing its database'
   const child = spawn(process.execPath, ['server/index.mjs'], {
     cwd: root,
     windowsHide: true,
-    env: { ...process.env, PIXELFLOW_API_PORT: '0', LAYERIVE_DATA_ROOT: dataRoot, LAYERIVE_CONFIG_ROOT: configRoot, LAYERIVE_ELECTRON: '1' },
+    env: { ...process.env, PIXELFLOW_API_PORT: '0', LAYERIVE_DATA_ROOT: dataRoot, LAYERIVE_CONFIG_ROOT: configRoot, LAYERIVE_ELECTRON: '', LAYERIVE_CONTAINER: '', [supervisor]: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
@@ -31,7 +31,8 @@ test('restore waits for active generation to settle before closing its database'
   t.after(async () => {
     if (child.exitCode == null) { const exited = once(child, 'exit'); child.kill(); await exited; }
   });
-  for (let i = 0; i < 100 && !/127\.0\.0\.1:\d+/.test(logs); i += 1) await pause(30);
+  const startupDeadline = Date.now() + 10000;
+  while (Date.now() < startupDeadline && child.exitCode == null && !/127\.0\.0\.1:\d+/.test(logs)) await pause(30);
   const base = logs.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
   assert.ok(base, logs);
   const post = async (endpoint, input, expected) => {
@@ -60,4 +61,10 @@ test('restore waits for active generation to settle before closing its database'
   await once(child, 'exit');
   assert.equal(child.exitCode, 75, logs);
   assert.doesNotMatch(logs, /database is not open/);
-});
+}
+
+for (const supervisor of ['LAYERIVE_ELECTRON', 'LAYERIVE_CONTAINER']) {
+  test(`restore waits for active generation and exits for ${supervisor}`, { timeout: 30000 }, async (t) => {
+    await verifySupervisedRestore(t, supervisor);
+  });
+}

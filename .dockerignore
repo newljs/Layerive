@@ -1,0 +1,18 @@
+# Only send build inputs; exclude local databases, credentials and media.
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!index.html
+!tsconfig.json
+!vite.config.ts
+!LICENSE
+!src/
+!src/**
+!public/
+!public/**
+!scripts/
+!scripts/make-icons.mjs
+!server/
+!server/**
+server/**/*.test.mjs

@@ -101,8 +101,8 @@ The workspace header lets you choose image-generation and vision-recognition mod
 
 ### Requirements
 
-- Node.js **22.13+**
-- npm **10+**
+- For npm development or production: Node.js **22.13+** and npm **10+**.
+- For Docker: Docker Desktop, or Docker Engine with the Docker Compose v2 plugin. Node.js and npm are provided by the image.
 
 ### Development
 
@@ -122,6 +122,49 @@ npm start      # Serve the frontend and local API
 
 > [!TIP]
 > For everyday local use, run `npm run build` once and then use `npm start`. Use `npm run dev` while changing code.
+
+### Docker
+
+Install and start Docker, then run these commands for the first launch:
+
+```bash
+git clone https://github.com/newljs/Layerive.git
+cd Layerive
+docker compose up -d --build
+```
+
+Open [http://127.0.0.1:8788](http://127.0.0.1:8788). The multi-stage Dockerfile uses `library/node:24-alpine`, skips the Electron binary download, and runs as a non-root user with the built frontend, server, and production dependencies.
+
+Run subsequent commands from the same checkout directory:
+
+```bash
+docker compose ps                 # View container and health status
+docker compose logs -f layerive    # Follow logs; Ctrl+C stops following
+docker compose down               # Stop and remove the container; retain data
+docker compose up -d              # Start again
+```
+
+To upgrade, export a full backup in Layerive, then update the source and rebuild:
+
+```bash
+git pull --ff-only
+docker compose up -d --build
+```
+
+Compose publishes the port on localhost only; the app retains its local Host / Origin checks. If port `8788` is occupied, change the mapping in `docker-compose.yml` to `127.0.0.1:8789:8788` and open `http://127.0.0.1:8789`.
+
+The `layerive-data` and `layerive-config` named volumes persist the database/images and model configuration separately from the source tree's `data/` and `config/` directories and the desktop app. Use full backup/restore to migrate existing data. Keep the same checkout directory or Compose project name when upgrading so the same volumes are reused. `docker compose down` retains these volumes; adding `-v` deletes the persisted data and configuration. Docker handles the service restart after a backup restore.
+
+**Connecting to a model on the host:** Inside the container, `127.0.0.1` and `localhost` refer to the container itself. For a model running on your computer, use a container-reachable address in Layerive's model configuration, such as `http://host.docker.internal:8000/v1` for images or `http://host.docker.internal:1234/v1` for vision. Docker Desktop resolves this hostname automatically. On Linux Docker Engine, create `docker-compose.override.yml` beside `docker-compose.yml`:
+
+```yaml
+services:
+  layerive:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+Apply it with `docker compose up -d`. The model service must listen on an interface reachable from the container, and the host firewall must allow that connection; a Linux host service bound only to `127.0.0.1` cannot be reached through the bridge gateway. Existing loopback model URLs imported from a backup also need updating. See [Docker's host gateway networking guide](https://docs.docker.com/compose/how-tos/networking/#custom-dns-with-extra_hosts).
 
 ### Desktop app
 

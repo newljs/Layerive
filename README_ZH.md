@@ -101,8 +101,8 @@ Layerive 把这些常见操作做成了工作台中的直接工具：识别并�
 
 ### 环境要求
 
-- Node.js **22.13+**
-- npm **10+**
+- 使用 npm 开发或运行：Node.js **22.13+**、npm **10+**。
+- 使用 Docker：安装 Docker Desktop，或 Docker Engine 与 Docker Compose v2 插件；镜像内已包含 Node.js 和 npm。
 
 ### 本地开发
 
@@ -122,6 +122,49 @@ npm start      # 启动本地服务，同时托管前端与 API
 
 > [!TIP]
 > 日常本地使用时，先执行一次 `npm run build`，之后运行 `npm start` 即可；开发或修改代码时使用 `npm run dev`。
+
+### Docker 运行
+
+安装并启动 Docker 后，首次运行：
+
+```bash
+git clone https://github.com/newljs/Layerive.git
+cd Layerive
+docker compose up -d --build
+```
+
+浏览器访问 [http://127.0.0.1:8788](http://127.0.0.1:8788)。Dockerfile 使用 `library/node:24-alpine` 多阶段构建，跳过 Electron 二进制下载，最终以非 root 用户运行，仅包含前端产物、服务端与生产依赖。
+
+后续命令均在同一个仓库目录运行：
+
+```bash
+docker compose ps                 # 查看容器和健康状态
+docker compose logs -f layerive    # 持续查看日志，Ctrl+C 退出查看
+docker compose down               # 停止并移除容器，保留数据
+docker compose up -d              # 再次启动
+```
+
+升级前先在 Layerive 内导出完整备份，再更新源码并重建：
+
+```bash
+git pull --ff-only
+docker compose up -d --build
+```
+
+Compose 默认只映射本机端口，应用仍限制本机 Host / Origin。若 `8788` 已被占用，可将 `docker-compose.yml` 中的映射改为 `127.0.0.1:8789:8788`，然后访问 `http://127.0.0.1:8789`。
+
+`layerive-data` 和 `layerive-config` 命名卷分别保存数据库/图片与模型配置，独立于源码目录的 `data/`、`config/` 和桌面版数据；可用完整备份/恢复迁移已有数据。升级时保持同一个仓库目录或 Compose 项目名，以便继续使用原有数据卷。`docker compose down` 保留数据卷，添加 `-v` 会删除持久化数据与配置。备份恢复后的重启由 Docker 自动接管。
+
+**连接宿主机上的本地模型：** 容器中的 `127.0.0.1` 和 `localhost` 指向容器自身。如果模型运行在你的电脑上，需要在 Layerive 模型配置中使用容器可访问的地址，例如图片模型 `http://host.docker.internal:8000/v1`、视觉模型 `http://host.docker.internal:1234/v1`。Docker Desktop 默认解析该主机名；Linux Docker Engine 可在 `docker-compose.yml` 旁新建 `docker-compose.override.yml`：
+
+```yaml
+services:
+  layerive:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+执行 `docker compose up -d` 应用配置。模型服务需要监听容器可访问的网卡地址，宿主机防火墙也需允许该连接；Linux 宿主机上仅监听 `127.0.0.1` 的服务无法通过桥接网关访问。通过备份迁入的原有本机模型地址也需要同步修改。详见 [Docker 宿主机网关配置说明](https://docs.docker.com/compose/how-tos/networking/#custom-dns-with-extra_hosts)。
 
 ### 桌面版
 
