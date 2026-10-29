@@ -642,6 +642,8 @@ export const enUS: Record<TranslationKey, DictValue> = {
   'plugin.modelRequired': "Select an image editing model and the vision model required by this plugin",
   'plugin.imageOption': "Image {index} · {width} × {height}",
   'plugin.uploadReference': "Upload reference",
+  'plugin.sourceImage': "Source image",
+  'plugin.settings': "Settings",
   'plugin.uploadFailed': "Reference upload failed",
   'plugin.planning': "Analyzing the image and planning the edit…",
   'plugin.generating': "Generating the image using the plugin…",

@@ -12,6 +12,7 @@ export type PluginField = {
   key: string; type: 'text' | 'select' | 'boolean' | 'number' | 'image'; label: PluginText;
   required?: boolean; default?: string | number | boolean; maxLength?: number; min?: number; max?: number;
   options?: { value: string; label: PluginText }[];
+  visibleWhen?: { field: string; equals: string[] };
 };
 export type CleanupMode = 'selection' | 'people' | 'clutter' | 'text' | 'room';
 

@@ -24,6 +24,14 @@ export function validateRecipe(recipe) {
       field.options.some(option => !safeKey(option.value) || !localized(option.label)) || new Set(field.options.map(option => option.value)).size !== field.options.length)) fail('select options');
     if (field.type === 'number' && (!Number.isFinite(field.min) || !Number.isFinite(field.max) || field.min > field.max)) fail('number range');
     if (field.type === 'image' && field.default !== undefined) fail('image defaults');
+    if (field.visibleWhen !== undefined) {
+      const controller = recipe.ui.fields.find(previous => previous.key === field.visibleWhen?.field);
+      if (!plain(field.visibleWhen) || controller?.type !== 'select' ||
+        recipe.ui.fields.indexOf(controller) >= recipe.ui.fields.indexOf(field) ||
+        !Array.isArray(field.visibleWhen.equals) || !field.visibleWhen.equals.length ||
+        field.visibleWhen.equals.some(value => !controller.options.some(option => option.value === value)) ||
+        new Set(field.visibleWhen.equals).size !== field.visibleWhen.equals.length) fail('field visibility');
+    }
   }
   if (recipe.ui.fields.filter(field => field.type === 'image').length > 3) fail('reference limit');
   const { workflow, requirements } = recipe;
@@ -37,16 +45,17 @@ export function validateRecipe(recipe) {
     JSON.stringify(requirements.image) !== '["edit_prompt"]' ||
     requirements.multipleImages !== (recipe.ui.fields.some(field => field.type === 'image') ? 'with-reference' : 'none')) fail('requirements');
   if (!Number.isInteger(recipe.timeoutMs) || recipe.timeoutMs < 1000 || recipe.timeoutMs > 300000) fail('timeout');
-  normalizeFields(recipe, {}, (field) => fail('invalid default: ' + field), true);
+  normalizeFields(recipe, {}, (field) => fail('invalid default: ' + field), true, true);
   return recipe;
 }
 
-function normalizeFields(recipe, input, fail, defaultsOnly = false) {
+function normalizeFields(recipe, input, fail, defaultsOnly = false, ignoreVisibility = false) {
   if (!plain(input)) fail('fields');
   const known = new Set(recipe.ui.fields.map(field => field.key));
   if (Object.keys(input).some(key => !known.has(key))) fail('fields');
   const values = {};
   for (const field of recipe.ui.fields) {
+    if (!ignoreVisibility && field.visibleWhen && !field.visibleWhen.equals.includes(values[field.visibleWhen.field])) continue;
     const value = Object.hasOwn(input, field.key) ? input[field.key] : field.default;
     if (value === undefined || value === '') {
       if (!defaultsOnly && field.required) fail(field.key);

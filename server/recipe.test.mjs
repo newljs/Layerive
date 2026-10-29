@@ -67,10 +67,37 @@ test('recipe schemas reject malformed fields, unsupported output rules and inval
     r => { r.timeoutMs = 999999; },
     r => { r.operation = 'generate'; },
     r => { r.route = 'images'; },
-    r => { r.ui.fields[2].maxLength = 100000; },
+    r => { r.ui.fields.find(field => field.key === 'instruction').maxLength = 100000; },
     r => { r.ui.fields[0].label = { zh: '缺少英语' }; },
+    r => { r.ui.fields.find(field => field.key === 'style').visibleWhen.field = 'missing'; },
+    r => { r.ui.fields.find(field => field.key === 'style').visibleWhen.equals = ['missing']; },
   ];
   for (const mutate of mutations) { const recipe = structuredClone(colorize); mutate(recipe); assert.throws(() => createRecipePlugin(recipe), /Invalid recipe/); }
+});
+
+test('transformation mode includes only relevant settings and references', async () => {
+  const plugin = createRecipePlugin(colorize);
+  const { host, calls } = hostFixture();
+  const lineArt = plugin.create(host, { imageId: 'source', fields: {
+    mode: 'photo_to_lineart', style: 'vintage', preserveGrain: false,
+    palette: 'vivid', lineDetail: 'detailed', reference: 'ref',
+  } });
+  assert.deepEqual(lineArt.state.fields, { mode: 'photo_to_lineart', lineDetail: 'detailed' });
+  assert.deepEqual(lineArt.state.referenceImageIds, {});
+  const preparedLineArt = await preparePlugin(plugin, host, { id: 'source' }, lineArt.state);
+  assert.match(preparedLineArt.prompt, /彩色照片转线稿/);
+  assert.match(preparedLineArt.prompt, /丰富细节/);
+  assert.doesNotMatch(preparedLineArt.prompt, /上色风格：|线稿配色：|保留原有颗粒质感：|色彩参考图：/);
+  assert.deepEqual(preparedLineArt.inputs, []);
+  assert.equal(calls[0][1].id, 'source');
+
+  const colorLines = plugin.create(host, { imageId: 'source', fields: { mode: 'lineart_colorize', palette: 'vivid', reference: 'ref' } });
+  assert.deepEqual(colorLines.state.fields, { mode: 'lineart_colorize', palette: 'vivid' });
+  const preparedColor = await preparePlugin(plugin, host, { id: 'source' }, colorLines.state);
+  assert.match(preparedColor.prompt, /线稿画上色/);
+  assert.match(preparedColor.prompt, /明快鲜艳/);
+  assert.deepEqual(preparedColor.inputs, [{ imageId: 'ref', role: 'plugin_reference' }]);
+  assert.deepEqual(calls[1][1].map(image => image.id), ['source', 'ref']);
 });
 
 test('a missing recipe directory does not prevent built-in operations from loading', () => {

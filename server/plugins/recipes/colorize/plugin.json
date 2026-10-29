@@ -1,28 +1,41 @@
 {
   "id": "layerive.colorize",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "apiVersion": 1,
   "operation": "recipe_colorize",
   "route": "recipe-colorize",
   "timeoutMs": 300000,
   "requirements": { "image": ["edit_prompt"], "vision": true, "multipleImages": "with-reference" },
   "ui": {
-    "name": { "zh": "黑白照片上色", "en": "Colorize photo" },
-    "description": { "zh": "为黑白或褪色照片补充合理色彩，保留人物身份、构图和细节。原始颜色不确定时由模型推断，可提供色彩参考。", "en": "Add plausible colors to monochrome or faded photos while preserving identity, composition and detail. Unknown original colors are inferred; a color reference is optional." },
+    "name": { "zh": "上色与线稿", "en": "Color & line art" },
+    "description": { "zh": "为黑白照片或线稿上色，也可把彩色照片转换为线稿。选择模式后设置风格，尽量保留原图主体与构图。", "en": "Colorize monochrome photos or line art, or turn a color photo into line art. Choose a mode and style while keeping the original subject and composition." },
     "icon": "sparkle",
     "fields": [
-      { "key": "style", "type": "select", "required": true, "default": "natural", "label": { "zh": "上色风格", "en": "Color style" }, "options": [
+      { "key": "mode", "type": "select", "required": true, "default": "photo_colorize", "label": { "zh": "处理模式", "en": "Mode" }, "options": [
+        { "value": "photo_colorize", "label": { "zh": "黑白照片上色", "en": "Colorize photo" } },
+        { "value": "lineart_colorize", "label": { "zh": "线稿画上色", "en": "Colorize line art" } },
+        { "value": "photo_to_lineart", "label": { "zh": "彩色照片转线稿", "en": "Photo to line art" } }
+      ] },
+      { "key": "style", "type": "select", "required": true, "default": "natural", "visibleWhen": { "field": "mode", "equals": ["photo_colorize"] }, "label": { "zh": "上色风格", "en": "Color style" }, "options": [
         { "value": "natural", "label": { "zh": "自然真实", "en": "Natural" } },
         { "value": "vintage", "label": { "zh": "复古柔和", "en": "Soft vintage" } }
       ] },
-      { "key": "preserveGrain", "type": "boolean", "default": true, "label": { "zh": "保留原有颗粒质感", "en": "Preserve original grain" } },
+      { "key": "preserveGrain", "type": "boolean", "default": true, "visibleWhen": { "field": "mode", "equals": ["photo_colorize"] }, "label": { "zh": "保留原有颗粒质感", "en": "Preserve original grain" } },
+      { "key": "palette", "type": "select", "required": true, "default": "soft", "visibleWhen": { "field": "mode", "equals": ["lineart_colorize"] }, "label": { "zh": "线稿配色", "en": "Line art palette" }, "options": [
+        { "value": "soft", "label": { "zh": "柔和自然", "en": "Soft and natural" } },
+        { "value": "vivid", "label": { "zh": "明快鲜艳", "en": "Bright and vivid" } }
+      ] },
+      { "key": "lineDetail", "type": "select", "required": true, "default": "clean", "visibleWhen": { "field": "mode", "equals": ["photo_to_lineart"] }, "label": { "zh": "线条细节", "en": "Line detail" }, "options": [
+        { "value": "clean", "label": { "zh": "简洁轮廓", "en": "Clean outlines" } },
+        { "value": "detailed", "label": { "zh": "丰富细节", "en": "Detailed lines" } }
+      ] },
       { "key": "instruction", "type": "text", "maxLength": 1000, "default": "", "label": { "zh": "补充要求", "en": "Additional instructions" } },
-      { "key": "reference", "type": "image", "label": { "zh": "色彩参考图（可选）", "en": "Color reference (optional)" } }
+      { "key": "reference", "type": "image", "visibleWhen": { "field": "mode", "equals": ["photo_colorize", "lineart_colorize"] }, "label": { "zh": "色彩参考图（可选）", "en": "Color reference (optional)" } }
     ]
   },
   "workflow": {
-    "vision": "分析图1是否为适合上色的黑白、低饱和或褪色照片。分析人物肤色、衣物、环境和年代感，结合用户要求制定合理上色方案；不确定的颜色采用保守自然的推断，不声称恢复历史真实颜色。若已经是正常彩色图或不适合此操作，返回 applicable=false。如有图2等参考图，只借鉴其配色，不迁移人物、物体或构图。",
-    "prompt": "仅为图1补充颜色，严格保留人物身份、五官、表情、姿态、文字、构图、几何结构、细节、明暗关系和原有宽高比。不得增加、删除或替换主体。按所选风格和颗粒保留参数处理，不磨皮、不改变年代特征、不添加水印。如有参考图，只使用其配色线索。",
+    "vision": "首先读取用户参数中的处理模式，只按该模式判断图1是否适用并规划，不混用其他模式。黑白照片上色：图1应为黑白、低饱和或褪色照片；分析主体、年代感和合理颜色，正常彩色图不适用。线稿画上色：图1应为尚未完整上色的绘画线稿；识别封闭区域、线条、人物与场景，照片或已完整上色图不适用。彩色照片转线稿：图1应为彩色照片；识别主体轮廓、关键纹理及必要背景，绘画线稿不适用。结合当前模式的专属参数与补充要求给出完整编辑提示词；其他模式的参数一律忽略。有图2时仅在上色模式借鉴配色，不迁移主体、物体或构图。无法可靠判断或执行所选模式时返回 applicable=false。",
+    "prompt": "严格按用户参数中的处理模式编辑图1，仅执行该模式，不混合上色和去色。黑白照片上色：补充合理色彩，保留照片质感、人物身份、五官、表情、姿态、文字、构图、明暗和年代特征；未知历史颜色仅保守推断，不声称真实还原，按上色风格和颗粒参数处理。线稿画上色：在线条下方自然填色，保持原有线条、角色设计、造型、姿态、文字、背景布局和画风；按线稿配色参数处理，不把绘画改成照片。彩色照片转线稿：去除色彩、照片质感与大面积连续色块，绘制清晰的深色轮廓线和白色底，按线条细节参数保留主体身份、姿态、构图、关键细节及必要背景，不额外上色。所有模式均不得添加、删除或替换主体，不添加水印，保持原有宽高比；有参考图时仅在上色模式使用其配色线索。",
     "output": { "format": "png", "transparent": false, "dimensions": "any" }
   }
 }

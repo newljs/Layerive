@@ -640,6 +640,8 @@ export const zhCN = {
   'plugin.modelRequired': "需要支持改图的图片模型，以及插件要求的视觉模型",
   'plugin.imageOption': "素材 {index} · {width} × {height}",
   'plugin.uploadReference': "上传参考图",
+  'plugin.sourceImage': "当前原图",
+  'plugin.settings': "处理设置",
   'plugin.uploadFailed': "参考图上传失败",
   'plugin.planning': "正在分析图片并规划处理…",
   'plugin.generating': "正在按插件要求生成图片…",
