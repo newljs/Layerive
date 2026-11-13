@@ -3,7 +3,7 @@ import { Icon } from './Icon';
 import { useConfirm } from './ConfirmDialog';
 import { LanguageToggle, useLanguage } from './i18n';
 import { useTheme } from './theme';
-import type { ModelConfig } from './types';
+import type { KeyPoolEntry, ModelConfig, UpstreamModel } from './types';
 import { nativeImagePreset, supportsTransparentProtocol } from './imageModelPresets';
 
 type Props = {
@@ -16,11 +16,15 @@ type Props = {
   onActivate: (id: string) => Promise<void>;
   onActivateVision: (id: string) => Promise<void>;
   onTestConfig: (model: Partial<ModelConfig>) => Promise<string>;
-  onRevealApiKey: (id: string) => Promise<string>;
+  onRevealApiKey: (id: string) => Promise<{ apiKey: string; apiKeys: string[] }>;
+  onKeyPoolStatus: (id: string) => Promise<{ count: number; keys: KeyPoolEntry[] }>;
+  onFetchModels: (model: Partial<ModelConfig>, includeAll?: boolean) => Promise<{ models: UpstreamModel[]; total: number; filtered: boolean }>;
 };
 
+// 日日新图片与视觉/对话模型都走 token.sensenova.cn；旧的 api.sensenova.cn
+// 只保留为既有配置的兼容路径（server/models.mjs 仍能识别）。
 const senseNovaUrl = 'https://token.sensenova.cn/v1';
-const senseNovaVisionUrl = 'https://api.sensenova.cn/v1';
+const senseNovaVisionUrl = 'https://token.sensenova.cn/v1';
 const openAiUrl = 'https://api.openai.com/v1';
 const geminiUrl = 'https://generativelanguage.googleapis.com/v1beta';
 const grokUrl = 'https://api.x.ai/v1';
@@ -49,7 +53,7 @@ function imageOptionsForPreset(provider: ModelConfig['provider']) {
   const native = nativeImagePreset(provider);
   if (native) return { sizeOptions: [...native.sizes], outputFormats: native.formats, transparentBackground: false, maxCount: 4 };
   if (provider === 'local') return { sizeOptions: ['1024x1024'], outputFormats: ['png'] as const, transparentBackground: false, maxCount: 1 };
-  if (provider === 'sensenova') return { sizeOptions: ['1664x2496', '2496x1664', '1760x2368', '2368x1760', '1824x2272', '2272x1824', '2048x2048', '2752x1536', '1536x2752', '3072x1376', '1344x3136'], outputFormats: ['png'] as const, transparentBackground: false, maxCount: 4 };
+  if (provider === 'sensenova') return { sizeOptions: ['2048x2048', '2720x1536', '1536x2720', '1664x2496', '2496x1664', '4096x4096', '1760x2368', '2368x1760', '1824x2272', '2272x1824', '2752x1536', '1536x2752', '3072x1376', '1344x3136'], outputFormats: ['png', 'jpeg', 'webp'] as const, transparentBackground: false, maxCount: 4 };
   if (provider === 'gemini') return { sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png', 'jpeg'] as const, transparentBackground: false, maxCount: 1 };
   if (provider === 'grok') return { sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['jpeg'] as const, transparentBackground: false, maxCount: 4 };
   if (provider === 'custom') return { sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png'] as const, transparentBackground: false, maxCount: 1 };
@@ -70,7 +74,7 @@ function defaultModel(type: ModelConfig['type'], provider: ModelConfig['provider
   const native = nativeImagePreset(provider);
   if (type === 'image' && native) return native.models[0].id;
   if (provider === 'local') return '';
-  if (type === 'vision') return provider === 'sensenova' ? 'SenseChat-V6.5' : 'gpt-4.1-mini';
+  if (type === 'vision') return provider === 'sensenova' ? 'sensenova-6.8-flash' : 'gpt-4.1-mini';
   if (provider === 'sensenova') return 'sensenova-u1.5-lite';
   if (provider === 'gemini') return 'gemini-3.1-flash-image';
   if (provider === 'grok') return 'grok-imagine-image-2.0';
@@ -82,7 +86,7 @@ function localForm(type: ModelConfig['type']): ModelConfig {
   return { ...blankFor(type), provider: 'local', baseUrl: providerBaseUrl(type, 'local'), model: '', capabilities: type === 'image' ? ['text_to_image'] : ['image_understanding'], ...imageOptionsForPreset('local'), outputFormats: ['png'] };
 }
 
-export function ModelConfigView({ models, activeModel, activeVisionModel, onBack, onSave, onDelete, onActivate, onActivateVision, onTestConfig, onRevealApiKey }: Props) {
+export function ModelConfigView({ models, activeModel, activeVisionModel, onBack, onSave, onDelete, onActivate, onActivateVision, onTestConfig, onRevealApiKey, onKeyPoolStatus, onFetchModels }: Props) {
   const { t } = useLanguage();
   const confirm = useConfirm();
   const { theme, toggleTheme } = useTheme();
@@ -93,6 +97,15 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
   const [testResult, setTestResult] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
   const [revealingApiKey, setRevealingApiKey] = useState(false);
+  // Keys are edited as one key per line so a batch can be pasted in one go.
+  // The textarea is derived from the form rather than mirrored in its own
+  // state, which keeps trailing newlines stable while typing.
+  const [pool, setPool] = useState<KeyPoolEntry[] | null>(null);
+  // Model names come from the provider's own catalogue; the picker is the only
+  // way to set one, so a typo cannot reach the request.
+  const [upstream, setUpstream] = useState<UpstreamModel[] | null>(null);
+  const [upstreamNote, setUpstreamNote] = useState('');
+  const [loadingModels, setLoadingModels] = useState(false);
   const imageModels = useMemo(() => models.filter((model) => model.type !== 'vision'), [models]);
   const visionModels = useMemo(() => models.filter((model) => model.type === 'vision'), [models]);
   const isSenseNova = form.provider === 'sensenova';
@@ -100,6 +113,24 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
   const isGrok = form.provider === 'grok';
   const isLocal = form.provider === 'local';
   const nativePreset = form.type === 'image' ? nativeImagePreset(form.provider) : undefined;
+  const keyList = form.apiKeys?.length ? form.apiKeys : (form.apiKey ? [form.apiKey] : []);
+  const keyCount = keyList.filter((value) => value.trim()).length;
+
+  // Each credential gets its own row so keys can be added, replaced and removed
+  // one at a time. The list is the form value: an empty row is a placeholder the
+  // operator is still typing into, and the server drops blank entries on save.
+  function setKeyAt(index: number, value: string) {
+    const next = [...keyList];
+    next[index] = value;
+    update('apiKeys', next);
+  }
+  function addKey() {
+    update('apiKeys', [...keyList, '']);
+  }
+  function removeKeyAt(index: number) {
+    const next = keyList.filter((_, position) => position !== index);
+    update('apiKeys', next.length ? next : ['']);
+  }
 
   useEffect(() => {
     if (creating) return;
@@ -108,14 +139,42 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
     else if (models[0]) { setSelectedId(models[0].id); setForm(models[0]); }
   }, [models, selectedId, creating]);
 
+  // Live rotation state, so the operator can see which credential is parked
+  // without reading the server log.
+  useEffect(() => {
+    let cancelled = false;
+    setPool(null);
+    if (!selectedId) return () => { cancelled = true; };
+    void onKeyPoolStatus(selectedId)
+      .then((result) => { if (!cancelled) setPool(result.keys); })
+      .catch(() => { if (!cancelled) setPool(null); });
+    return () => { cancelled = true; };
+  }, [selectedId, onKeyPoolStatus]);
+
+  async function loadUpstreamModels(includeAll = false) {
+    setLoadingModels(true);
+    setUpstreamNote('');
+    try {
+      const result = await onFetchModels(form, includeAll);
+      setUpstream(result.models);
+      setUpstreamNote(result.filtered ? t('mc.modelListFiltered', { shown: result.models.length, total: result.total }) : t('mc.modelListLoaded', { total: result.total }));
+    } catch (error) {
+      setUpstream(null);
+      setUpstreamNote(error instanceof Error ? error.message : String(error));
+    } finally { setLoadingModels(false); }
+  }
+
+  // A catalogue belongs to one provider/endpoint, so switching models must drop
+  // it: a stale list would offer names the new upstream does not serve.
+  function resetUpstream() { setUpstream(null); setUpstreamNote(''); }
   function choose(id: string) {
     const selected = models.find((item) => item.id === id);
-    if (selected) { setCreating(false); setSelectedId(id); setForm(selected); setTestResult(''); setShowApiKey(false); }
+    if (selected) { setCreating(false); setSelectedId(id); setForm(selected); setTestResult(''); setShowApiKey(false); resetUpstream(); }
   }
-  function startCreate(type: ModelConfig['type'], local = false) { setCreating(true); setSelectedId(''); setForm(local ? localForm(type) : blankFor(type)); setTestResult(''); setShowApiKey(false); }
+  function startCreate(type: ModelConfig['type'], local = false) { setCreating(true); setSelectedId(''); setForm(local ? localForm(type) : blankFor(type)); setTestResult(''); setShowApiKey(false); resetUpstream(); }
   function update<K extends keyof ModelConfig>(key: K, value: ModelConfig[K]) { setForm((current) => ({ ...current, [key]: value })); }
   function changeType(type: ModelConfig['type']) {
-    setTestResult('');
+    setTestResult(''); resetUpstream();
     if (isLocal) {
       setForm(current => ({ ...localForm(type), id: current.id, name: current.name, apiKey: current.apiKey }));
       return;
@@ -123,7 +182,7 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
     setForm((current) => ({ ...current, type, provider: 'openai', apiFormat: type === 'vision' ? defaultVisionApiFormat : undefined, imageApiFormat: type === 'image' ? 'openai_images' : undefined, baseUrl: openAiUrl, model: defaultModel(type, 'openai'), capabilities: type === 'vision' ? ['image_understanding'] : ['text_to_image', 'image_to_image', 'edit_prompt'], defaultParams: type === 'vision' ? {} : { size: '1024x1024', count: 1, quality: 'auto' }, ...(type === 'image' ? { sizeOptions: ['1024x1024', '1536x1024', '1024x1536'], outputFormats: ['png', 'jpeg', 'webp'], transparentBackground: true, maxCount: 4 } : {}) }));
   }
   function changeProvider(provider: ModelConfig['provider']) {
-    setTestResult(''); setShowApiKey(false);
+    setTestResult(''); setShowApiKey(false); resetUpstream();
     if (provider === 'local') {
       setForm(current => ({ ...localForm(current.type), id: current.id, name: current.name }));
       return;
@@ -134,6 +193,7 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
     });
   }
   function changeImageApiFormat(imageApiFormat: NonNullable<ModelConfig['imageApiFormat']>) {
+    resetUpstream();
     const allowed = outputFormatsForProtocol(imageApiFormat);
     setForm((current) => {
       const outputFormats = (current.outputFormats || []).filter((format): format is typeof allowed[number] => (allowed as readonly string[]).includes(format));
@@ -149,12 +209,12 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
   }
   async function toggleApiKeyVisibility() {
     if (showApiKey) { setShowApiKey(false); return; }
-    if (selectedId && form.apiKey === '••••••••') {
+    if (selectedId && (form.apiKey === '••••••••' || keyList.some((value) => value === '••••••••'))) {
       setRevealingApiKey(true);
       try {
-        const apiKey = await onRevealApiKey(selectedId);
-        if (!apiKey) return;
-        setForm((current) => current.id === selectedId ? { ...current, apiKey } : current);
+        const revealed = await onRevealApiKey(selectedId);
+        if (!revealed?.apiKey) return;
+        setForm((current) => current.id === selectedId ? { ...current, apiKey: revealed.apiKey, apiKeys: revealed.apiKeys } : current);
       } finally { setRevealingApiKey(false); }
     }
     setShowApiKey(true);
@@ -223,8 +283,46 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
 
           <label className="field"><span>{form.type === 'vision' ? 'API Base URL' : isSenseNova ? t('mc.baseUrlSenseNova') : isGemini ? 'Gemini API Base URL' : isGrok ? 'xAI API Base URL' : 'API Base URL'}</span><input disabled={form.type === 'image' && isSenseNova} value={form.baseUrl} onChange={(event) => update('baseUrl', event.target.value)} placeholder={providerBaseUrl(form.type, form.provider)} /><small className="field-help">{isLocal ? t('mc.localBaseUrlHelp') : nativePreset ? t('mc.baseUrlNativeHelp', { url: nativePreset.baseUrl }) : form.type === 'vision' ? t('mc.baseUrlVisionHelp') : isSenseNova ? t('mc.baseUrlSenseNovaHelp', { url: providerBaseUrl(form.type, form.provider) }) : isGemini ? t('mc.baseUrlGeminiHelp') : isGrok ? t('mc.baseUrlGrokHelp') : t('mc.baseUrlOpenAiHelp')}</small></label>
           <div className="form-grid two-columns">
-            <label className="field"><span>{isLocal ? t('mc.localKey') : nativePreset || form.type === 'vision' ? 'API Key' : isSenseNova ? t('mc.keySenseNova') : isGemini ? 'Gemini API Key' : isGrok ? 'xAI API Key' : 'OpenAI API Key'}</span><div className="secret-input"><input type={showApiKey ? 'text' : 'password'} value={form.apiKey} onChange={(event) => update('apiKey', event.target.value)} placeholder={isLocal ? t('mc.localKeyPlaceholder') : isGemini ? 'AIza...' : nativePreset ? 'API Key' : 'sk-...'} /><button type="button" disabled={revealingApiKey} onClick={() => void toggleApiKeyVisibility()} title={showApiKey ? t('mc.hideKey') : t('mc.showKey')} aria-label={showApiKey ? t('mc.hideKey') : t('mc.showKey')} aria-pressed={showApiKey}>{revealingApiKey ? <span className="secret-loading" /> : <Icon name={showApiKey ? 'eyeOff' : 'eye'} size={17} />}</button></div></label>
-            <label className="field"><span>{form.type === 'vision' ? t('mc.modelNameVision') : t('mc.modelNameImage')}</span><input value={form.model} onChange={(event) => changeModel(event.target.value)} placeholder={isLocal ? t('mc.localModelPlaceholder') : defaultModel(form.type, form.provider)} /></label>
+            <label className="field key-pool-field">
+              <span>{isLocal ? t('mc.localKey') : nativePreset || form.type === 'vision' ? 'API Key' : isSenseNova ? t('mc.keySenseNova') : isGemini ? 'Gemini API Key' : isGrok ? 'xAI API Key' : 'OpenAI API Key'}{keyCount > 1 ? <em className="key-count">{t('mc.keyCount', { count: keyCount })}</em> : null}</span>
+              <div className="key-rows">
+                {keyList.map((value, index) => (
+                  <div className="key-row" key={index}>
+                    <span className="key-row-index">#{index + 1}</span>
+                    <div className="secret-input">
+                      <input
+                        value={value}
+                        spellCheck={false}
+                        autoComplete="off"
+                        aria-label={t('mc.keyRowLabel', { index: index + 1 })}
+                        onChange={(event) => setKeyAt(index, event.target.value)}
+                        placeholder={isLocal ? t('mc.localKeyPlaceholder') : isGemini ? 'AIza...' : nativePreset ? 'API Key' : 'sk-...'}
+                        style={{ WebkitTextSecurity: showApiKey ? 'none' : 'disc' } as React.CSSProperties}
+                      />
+                      {index === 0 && <button type="button" disabled={revealingApiKey} onClick={() => void toggleApiKeyVisibility()} title={showApiKey ? t('mc.hideKey') : t('mc.showKey')} aria-label={showApiKey ? t('mc.hideKey') : t('mc.showKey')} aria-pressed={showApiKey}>{revealingApiKey ? <span className="secret-loading" /> : <Icon name={showApiKey ? 'eyeOff' : 'eye'} size={17} />}</button>}
+                    </div>
+                    <button type="button" className="key-row-remove" disabled={keyList.length < 2} onClick={() => removeKeyAt(index)} title={t('mc.keyRemove')} aria-label={t('mc.keyRemove')}><Icon name="trash" size={15} /></button>
+                  </div>
+                ))}
+                <button type="button" className="key-row-add" onClick={addKey}><Icon name="plus" size={15} /> {t('mc.keyAdd')}</button>
+              </div>
+              <small className="field-help">{t('mc.keysMultiHelp')}</small>
+              {pool && pool.length > 1 && <ul className="key-pool-list">{pool.map((entry) => <li key={entry.index} className={entry.cooling ? 'cooling' : ''}><code>#{entry.index + 1} {entry.label}</code><span>{entry.cooling ? t('mc.keyCooling', { seconds: Math.ceil(entry.cooldownMs / 1000) }) : t('mc.keyReady')}</span><small>{t('mc.keyStats', { success: entry.successCount, failure: entry.failureCount })}</small></li>)}</ul>}
+            </label>
+            <label className="field">
+              <span>{form.type === 'vision' ? t('mc.modelNameVision') : t('mc.modelNameImage')}</span>
+              {upstream?.length
+                ? <select value={form.model} onChange={(event) => changeModel(event.target.value)}>
+                    {!upstream.some((item) => item.id === form.model) && <option value={form.model}>{form.model || t('mc.modelPickPlaceholder')}</option>}
+                    {upstream.map((item) => <option key={item.id} value={item.id} title={item.description || undefined}>{item.label === item.id ? item.id : `${item.label} · ${item.id}`}</option>)}
+                  </select>
+                : <input value={form.model} onChange={(event) => changeModel(event.target.value)} placeholder={isLocal ? t('mc.localModelPlaceholder') : defaultModel(form.type, form.provider)} />}
+              <div className="model-picker-actions">
+                <button type="button" className="text-button" disabled={loadingModels} onClick={() => void loadUpstreamModels()}>{loadingModels ? t('mc.modelListLoading') : t('mc.modelListFetch')}</button>
+                {upstream && upstream.length > 0 && <button type="button" className="text-button" disabled={loadingModels} onClick={() => void loadUpstreamModels(true)}>{t('mc.modelListAll')}</button>}
+                {upstreamNote && <small className="field-help">{upstreamNote}</small>}
+              </div>
+            </label>
           </div>
 
           {form.type === 'image' ? <>
@@ -236,8 +334,12 @@ export function ModelConfigView({ models, activeModel, activeVisionModel, onBack
             <div className="form-grid three-columns">
               <label className="field"><span>{t('mc.defaultSize')}</span><select value={form.defaultParams.size || form.sizeOptions?.[0] || '1024x1024'} onChange={(event) => update('defaultParams', { ...form.defaultParams, size: event.target.value })}>{(form.sizeOptions?.length ? form.sizeOptions : ['1024x1024']).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
               <label className="field"><span>{t('mc.defaultCount')}</span><select value={Math.min(form.defaultParams.count || 1, form.maxCount || 1)} onChange={(event) => update('defaultParams', { ...form.defaultParams, count: Number(event.target.value) })}>{Array.from({ length: form.maxCount || 1 }, (_, index) => <option key={index + 1} value={index + 1}>{t('common.countImages', { count: index + 1 })}</option>)}</select></label>
-              <label className="field"><span>{t('mc.defaultQuality')}</span><select disabled={isGemini || ['seedream_images', 'qwen_images', 'bfl_flux'].includes(form.imageApiFormat || '')} value={form.defaultParams.quality || 'auto'} onChange={(event) => update('defaultParams', { ...form.defaultParams, quality: event.target.value })}><option value="auto">{t('mc.qualityAuto')}</option><option value="low">{t('mc.qualityLow')}</option><option value="medium">{t('mc.qualityMedium')}</option><option value="high">{t('mc.qualityHigh')}</option></select></label>
+              <label className="field"><span>{t('mc.defaultQuality')}</span><select disabled={isGemini || isSenseNova || ['seedream_images', 'qwen_images', 'bfl_flux'].includes(form.imageApiFormat || '')} value={form.defaultParams.quality || 'auto'} onChange={(event) => update('defaultParams', { ...form.defaultParams, quality: event.target.value })}><option value="auto">{t('mc.qualityAuto')}</option><option value="low">{t('mc.qualityLow')}</option><option value="medium">{t('mc.qualityMedium')}</option><option value="high">{t('mc.qualityHigh')}</option></select></label>
             </div>
+            {isSenseNova && <fieldset className="capability-field sensenova-params"><legend>{t('mc.sensenovaParams')}</legend><div className="capability-options">
+              <label className={form.defaultParams.watermark ? 'checked' : ''}><input type="checkbox" checked={Boolean(form.defaultParams.watermark)} onChange={() => update('defaultParams', { ...form.defaultParams, watermark: !form.defaultParams.watermark })} /><span>{t('mc.watermark')}</span></label>
+              <label className={form.defaultParams.promptExtend === false ? '' : 'checked'}><input type="checkbox" checked={form.defaultParams.promptExtend !== false} onChange={() => update('defaultParams', { ...form.defaultParams, promptExtend: form.defaultParams.promptExtend === false })} /><span>{t('mc.promptExtend')}</span></label>
+            </div><small className="field-help">{t('mc.watermarkHelp')} {t('mc.promptExtendHelp')}</small></fieldset>}
             <div className="form-grid two-columns">
               <label className="field"><span>{t('mc.sizeOptions')}</span><input value={(form.sizeOptions || []).join(', ')} onChange={(event) => update('sizeOptions', event.target.value.split(',').map((value) => value.trim()).filter(Boolean))} placeholder={t('mc.sizeOptionsPlaceholder')} /><small className="field-help">{t('mc.sizeOptionsHelp')}</small></label>
               <label className="field"><span>{t('mc.maxCount')}</span><select value={form.maxCount || 1} onChange={(event) => update('maxCount', Number(event.target.value))}><option value="1">{t('common.countImages', { count: 1 })}</option><option value="2">{t('common.countImages', { count: 2 })}</option><option value="3">{t('common.countImages', { count: 3 })}</option><option value="4">{t('common.countImages', { count: 4 })}</option></select></label>

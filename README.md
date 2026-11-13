@@ -76,6 +76,8 @@ The work stays in one project. Each generation or edit creates a version that ca
 
 - Every generation, edit, batch run, image-enhancement, regional-edit, and outpaint operation creates a new version. Batch results are appended incrementally to one version. You can upload additional images even after a project already has images, then use each new upload as the input for later edits.
 - Open the complete version tree, zoom and pan it, select a node to jump to it on the canvas, and branch from any version. Multi-image versions are marked with a thumbnail mosaic and image count in history, and all candidates can be downloaded together as a ZIP.
+- Clicking a history card switches both the canvas and the input used by "edit", and later automatic refreshes no longer switch a manual choice back; newly generated versions still appear on the canvas by themselves. The edit, download, and delete buttons on a version card are always visible, so touch and quick clicks reach them.
+- The canvas loads a WebP copy sized for display and only fetches the original when you download it; image responses carry cache validators, so reopening the same picture comes straight from the browser cache instead of re-downloading the full original.
 - The workspace keeps the prompt, selected model, version number, and output images for every turn. Prompts can be reused, and any result can become the next input.
 - Compare images side by side or with a before/after slider, including against a selected historical image.
 
@@ -87,13 +89,14 @@ The workspace header lets you choose image-generation and vision-recognition mod
 
 | Provider | Integration | Typical use |
 | --- | --- | --- |
-| SenseNova | Dedicated request adapter | Text-to-image, image-to-image, prompt editing; official watermark output is disabled by default, and edit inputs are normalized automatically with automatic output sizing |
+| SenseNova | Dedicated request adapter | Text-to-image, image-to-image, prompt editing; the watermark and prompt-extension flags are per-request options (defaults live in the model config, each run can flip them), edit inputs are normalized automatically and follow the main image's size, a primary image plus up to five references are supported, and the requested png/jpeg/webp output format is honoured |
 | OpenAI-compatible | Images API or compatible gateway | Text-to-image, image-to-image, and prompt editing; exact support depends on the upstream model |
 | Gemini | Native Gemini image API | Gemini Nano Banana and other supported image models |
 | Grok | Native xAI image API | Grok Imagine image models |
 
 - Configure a separate **vision model** for image text editing and regional-edit planning.
-- Vision models support Anthropic Messages, Chat Completions, and Responses API formats while retaining compatibility with existing SenseNova and `dots3-note` configurations.
+- Vision models support Anthropic Messages, Chat Completions, and Responses API formats while retaining compatibility with existing SenseNova and `dots3-note` configurations. For the SenseNova Token Plan, point the vision model at `https://token.sensenova.cn/v1` (the legacy `api.sensenova.cn` host is kept for compatibility only); `sensenova-6.8-flash` and `sensenova-6.8-flash-lite` both use the standard `/chat/completions` path.
+- SenseNova 6.8 Flash always thinks, and the official docs advise against combining `thinking` with `response_format=json_object`, so that endpoint is called without `json_object`; the vision prompt already asks for JSON only.
 - Each model declares its own capabilities: text-to-image, image-to-image, prompt editing, or image understanding. The workspace only presents operations and sizes supported by the selected model.
 - A built-in demo model lets you try projects, conversations, and versioning without an API key.
 

@@ -10,8 +10,13 @@ export const DATA_ROOT = process.env.LAYERIVE_DATA_ROOT ? path.resolve(process.e
 export const CONFIG_ROOT = process.env.LAYERIVE_CONFIG_ROOT ? path.resolve(process.env.LAYERIVE_CONFIG_ROOT) : path.join(APP_ROOT, 'config');
 export const PROJECTS_ROOT = path.join(DATA_ROOT, 'projects');
 export const GALLERY_ROOT = path.join(DATA_ROOT, 'gallery');
+// The picture library is a first-class store, deliberately separate from the
+// projects tree: a picture that lives inside a project must never surface in the
+// library, and a library picture only joins a project when the user opens it.
+export const LIBRARY_ROOT = path.join(DATA_ROOT, 'library');
 mkdirSync(PROJECTS_ROOT, { recursive: true });
 mkdirSync(GALLERY_ROOT, { recursive: true });
+mkdirSync(LIBRARY_ROOT, { recursive: true });
 
 export const db = new DatabaseSync(path.join(DATA_ROOT, 'app.db'));
 db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
@@ -130,10 +135,22 @@ db.exec(`
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS library_images (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    file_size INTEGER NOT NULL DEFAULT 0,
+    project_id TEXT,
+    created_at TEXT NOT NULL
+  );
   CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_messages_project_created ON messages(project_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_versions_project_created ON image_versions(project_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_images_project_version ON images(project_id, version_id);
+  CREATE INDEX IF NOT EXISTS idx_library_images_created ON library_images(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_text_recognitions_image ON text_recognitions(image_id);
   CREATE INDEX IF NOT EXISTS idx_model_logs_project_created ON model_execution_logs(project_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_model_logs_task ON model_execution_logs(task_id);

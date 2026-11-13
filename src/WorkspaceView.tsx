@@ -11,12 +11,12 @@ import { workspacePlugins, taskKindForOperation } from './plugins/registry';
 import type { TaskKind } from './plugins/types';
 import { localEditStageKeys, removeElementStageKey } from './plugins/definitions';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, ApiError, readFileAsDataUrl, thumbUrl } from './api';
+import { api, ApiError, canvasUrl, fullUrl, readFileAsDataUrl, thumbUrl } from './api';
 import { useConfirm } from './ConfirmDialog';
 import { Icon, type IconName } from './Icon';
 import { LanguageToggle, useLanguage, tf, type Language, type TranslationKey } from './i18n';
 import { PromptGalleryModal } from './PromptGalleryModal';
-import { sizesForProvider, defaultSizeForProvider, closestSizeForDimensions, isValidSizeForProvider, type OutputFormat } from './sizes';
+import { sizesForProvider, defaultSizeForProvider, closestSizeForDimensions, isKnownSizeToken, ORIGINAL_SIZE, RATIO_OPTIONS, type OutputFormat } from './sizes';
 import { useTheme } from './theme';
 import type { GalleryEntry } from './gallery';
 import type { BatchEditProgress, CleanupMode, ExtractionMode, FusionMode, GenerationTask, LocalEditReference, ModelConfig, ModelExecutionLog, ProjectBundle, ProjectImage, TextSegment, Version } from './types';
@@ -32,15 +32,21 @@ const {
 
 type Props = {
   projectId: string;
+  // Set when the home screen opens a specific picture; the workspace then shows
+  // that picture instead of the project's last-used one.
+  focusImageId?: string | null;
   models: ModelConfig[];
   activeModel: string;
   activeVisionModel: string;
+  // Local matting is available on the server; background removal then works
+  // even with a model that cannot return transparent PNG.
+  cutoutEnabled?: boolean;
   onBack: () => void;
   onModels: () => void;
   onProjectChanged: () => void;
   notify: (message: string, kind?: 'success' | 'error') => void;
 };
-const removeBackgroundStageKeys: Record<string, TranslationKey> = { planning: 'ws.removeBackgroundStagePlanning', generating: 'ws.removeBackgroundStageGenerating', validating: 'ws.removeBackgroundStageValidating' };
+const removeBackgroundStageKeys: Record<string, TranslationKey> = { planning: 'ws.removeBackgroundStagePlanning', cutting: 'ws.removeBackgroundStageCutting', generating: 'ws.removeBackgroundStageGenerating', validating: 'ws.removeBackgroundStageValidating' };
 
 const operationKeys: Record<string, TranslationKey> = { fusion: 'op.fusion', auto: 'op.auto', upload: 'op.upload', text_to_image: 'op.text_to_image', image_to_image: 'op.image_to_image', edit_prompt: 'op.edit_prompt', batch_edit: 'op.batch_edit', batch_generate: 'op.batch_generate', edit_text: 'op.edit_text', recognize_text: 'op.recognize_text', local_edit: 'op.local_edit', remove_element: 'op.remove_element', outpaint: 'op.outpaint', enhance: 'op.enhance', remove_watermark: 'op.remove_watermark', remove_background: 'op.remove_background', extract_asset: 'op.extract_asset', gallery_analyze: 'op.gallery_analyze' };
 const localeFor = (language: Language) => (language === 'zh' ? 'zh-CN' : 'en-US');
@@ -410,7 +416,7 @@ function ModelLogsModal({ projectId, onClose }: { projectId: string; onClose: ()
   );
 }
 
-export function WorkspaceView({ projectId, models, activeModel, activeVisionModel, onBack, onModels, onProjectChanged, notify }: Props) {
+export function WorkspaceView({ projectId, focusImageId = null, models, activeModel, activeVisionModel, cutoutEnabled = false, onBack, onModels, onProjectChanged, notify }: Props) {
   const { language, t } = useLanguage();
   const confirm = useConfirm();
   const recipeCatalog = useRecipeCatalog();
@@ -434,6 +440,10 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [size, setSize] = useState(defaultSizeForProvider(imageModels.find((model) => model.id === activeModel)));
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('png');
   const [transparentBg, setTransparentBg] = useState(false);
+  // 日日新把水印与提示词扩写当作逐次请求参数；这里跟随所选模型的默认值，
+  // 其它模型不带这两个键（服务端也不会转发）。
+  const [watermark, setWatermark] = useState(false);
+  const [promptExtend, setPromptExtend] = useState(true);
   const [count, setCount] = useState(1);
   // 右侧面板双模式：对话保留原输入区；批量面板承载批量改图与批量文生图。
   const [rightMode, setRightMode] = useState<'chat' | 'batch'>('chat');
@@ -449,6 +459,14 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const [currentImageId, setCurrentImageId] = useState<string | null>(null);
   const [inputImageId, setInputImageId] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<ActiveImageTask | null>(null);
+  const activeTaskRef = useRef<ActiveImageTask | null>(null);
+  activeTaskRef.current = activeTask;
+  // Set when the person picks a picture themselves (history card, candidate,
+  // upload). The background revision watcher then stops re-applying the server's
+  // project pointer, which otherwise snaps the canvas back to the newest picture
+  // a few seconds after a deliberate click. Starting a task clears it so a fresh
+  // result still lands on the canvas by itself.
+  const manualPickRef = useRef(false);
   const [uploading, setUploading] = useState(false);
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'failed'>('saved');
   const [compareOpen, setCompareOpen] = useState(false);
@@ -601,7 +619,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   const inputImage = inputImageId ? imageMap.get(inputImageId) || null : null;
   const currentVersion = bundle?.versions.find((version) => version.outputs.some((image) => image.id === currentImageId));
   const selectedModel = imageModels.find((model) => model.id === modelId);
-  const backgroundRemovalSupported = Boolean(selectedModel?.transparentBackground && selectedModel.outputFormats?.includes('png'));
+  // Local matting finishes the picture on the server, so it works with any
+  // image model; only the model-based path needs transparent PNG output.
+  const backgroundRemovalSupported = cutoutEnabled || Boolean(selectedModel?.transparentBackground && selectedModel.outputFormats?.includes('png'));
   const batchEditSupported = Boolean(selectedModel?.capabilities.includes('edit_prompt'));
   const batchTextSupported = Boolean(selectedModel?.capabilities.includes('text_to_image'));
   const selectedVisionModel = visionModels.find((model) => model.id === visionModelId);
@@ -614,7 +634,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   bundleRef.current = bundle;
   // While a task owns the project image pointer, a pending draft save must not
   // overwrite a fast model result with the image that was visible at submit.
-  draftSnapshot.current = { draft: { prompt, stylePrompt, operation, modelId, visionModelId, size, outputFormat, transparentBg, count, inputImageId, fusionImageIds, fusionType, fusionInstruction }, ...(!generating ? { currentImageId } : {}), defaultModelId: modelId };
+  draftSnapshot.current = { draft: { prompt, stylePrompt, operation, modelId, visionModelId, size, outputFormat, transparentBg, watermark, promptExtend, count, inputImageId, fusionImageIds, fusionType, fusionInstruction }, ...(!generating ? { currentImageId } : {}), defaultModelId: modelId };
   const detectedBatchVariables = batchVariableNames(batchTemplate);
   const batchRows = Array.from({ length: batchQuantity }, (_, index) => Object.fromEntries(
     detectedBatchVariables.map((name) => [name, String(batchVariableValues[name]?.[index] || '').trim()]),
@@ -688,6 +708,9 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
 
   const startPolling = useCallback((taskId: string, kind: TaskKind, target?: ProcessingTarget, initialStage?: ActiveImageTask['stage']) => {
     stopPolling();
+    // A new task re-arms automatic following: its result should appear on the
+    // canvas without the user clicking anything.
+    manualPickRef.current = false;
     const revision = pollRevision.current;
     const isCurrent = () => pollRevision.current === revision;
     let inFlight = false;
@@ -795,6 +818,61 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     }, kind === 'batch-edit' ? 900 : 1500);
   }, [projectId, notify, onProjectChanged, stopPolling]);
 
+  // Work can start outside this tab — an MCP call, another browser window. The
+  // page only polls tasks it launched itself, so watch a cheap revision stamp and
+  // pull the bundle when it moves. The stamp lives in a ref that survives effect
+  // re-subscription; callbacks go through refs so the watcher is not torn down on
+  // every render. Any change is applied, not only new versions: an outside upload
+  // adds a picture without adding a version.
+  const revisionRef = useRef('');
+  const notifyRef = useRef(notify);
+  notifyRef.current = notify;
+  const projectChangedRef = useRef(onProjectChanged);
+  projectChangedRef.current = onProjectChanged;
+  useEffect(() => {
+    revisionRef.current = '';
+    let inFlight = false;
+    let disposed = false;
+    const check = async () => {
+      if (inFlight || disposed || document.visibilityState === 'hidden') return;
+      if (!initialized.current || activeTaskRef.current) return;
+      inFlight = true;
+      try {
+        const next = await api.projectRevision(projectId);
+        if (disposed) return;
+        const first = revisionRef.current === '';
+        const changed = !first && next.revision !== revisionRef.current;
+        revisionRef.current = next.revision;
+        if (!changed) return;
+        const data = await api.getProject(projectId);
+        if (disposed) return;
+        const knownVersions = new Set((bundleRef.current?.versions || []).map((version) => version.id));
+        bundleRef.current = data;
+        setBundle(data);
+        const added = data.versions.filter((version) => !knownVersions.has(version.id) && version.outputs.length > 0);
+        // Follow the project pointer unless the person picked a picture by hand.
+        // A brand-new version still wins even then, so outside work (MCP, another
+        // window) keeps appearing on the canvas instead of being ignored forever.
+        if ((!manualPickRef.current || added.length > 0) && data.project.currentImageId) {
+          manualPickRef.current = false;
+          setCurrentImageId(data.project.currentImageId);
+          setInputImageId(data.project.currentImageId);
+        }
+        if (added.length > 0) {
+          setRecentVersionIds(added.map((version) => version.id));
+          notifyRef.current(tRef.current('ws.syncedVersion', { number: added[0].number }), 'success');
+        }
+        projectChangedRef.current();
+      } catch { /* transient network error: try again on the next tick */ }
+      finally { inFlight = false; }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 3000);
+    const onVisible = () => { if (document.visibilityState === 'visible') void check(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { disposed = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, [projectId]);
+
   useEffect(() => () => stopPolling(), [stopPolling]);
 
   // 批量模板编辑器是命令式渲染的 contenteditable，只在面板/标签页切换（或换参考图）
@@ -829,9 +907,13 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       setSize(String(draft.size || defaultSizeForProvider(imageModels.find((model) => model.id === String(draft.modelId || data.project.defaultModelId || activeModel)))));
       setOutputFormat((draft.outputFormat as OutputFormat) || 'png');
       setTransparentBg(Boolean(draft.transparentBg));
+      const draftModel = imageModels.find((model) => model.id === String(draft.modelId || data.project.defaultModelId || activeModel));
+      setWatermark(typeof draft.watermark === 'boolean' ? draft.watermark : Boolean(draftModel?.defaultParams.watermark));
+      setPromptExtend(typeof draft.promptExtend === 'boolean' ? draft.promptExtend : draftModel?.defaultParams.promptExtend !== false);
       setCount(Number(draft.count || 1));
       const cachedCurrentImageId = typeof cached.currentImageId === 'string' && data.images.some((image) => image.id === cached.currentImageId) ? cached.currentImageId : null;
-      setCurrentImageId(cachedCurrentImageId || data.project.currentImageId || data.versions[0]?.selectedImageId || data.images.at(-1)?.id || null);
+      const focusedImageId = focusImageId && data.images.some((image) => image.id === focusImageId) ? focusImageId : null;
+      setCurrentImageId(focusedImageId || cachedCurrentImageId || data.project.currentImageId || data.versions[0]?.selectedImageId || data.images.at(-1)?.id || null);
       const cachedInputImageId = typeof draft.inputImageId === 'string' && data.images.some((image) => image.id === draft.inputImageId) ? draft.inputImageId : null;
       setInputImageId(cachedInputImageId);
       initialized.current = true;
@@ -850,7 +932,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setSaveState('saving');
     const timer = window.setTimeout(() => { void flushDraft(); }, 900);
     return () => window.clearTimeout(timer);
-  }, [fusionImageIds, fusionType, fusionInstruction, prompt, stylePrompt, operation, modelId, visionModelId, size, outputFormat, transparentBg, count, inputImageId, currentImageId, flushDraft, draftCacheKey]);
+  }, [fusionImageIds, fusionType, fusionInstruction, prompt, stylePrompt, operation, modelId, visionModelId, size, outputFormat, transparentBg, watermark, promptExtend, count, inputImageId, currentImageId, flushDraft, draftCacheKey]);
 
   useEffect(() => {
     const persistDraft = () => {
@@ -863,26 +945,65 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [bundle?.messages.length, generating]);
 
+  // 服务端指针可能指向已被软删除的版本，此时 bundle 里查不到这张图，画布会
+  // 变成空白、点历史版本也像没反应。这里回落到最新一张可用图片。
+  useEffect(() => {
+    if (!bundle || !initialized.current) return;
+    if (currentImageId && imageMap.has(currentImageId)) return;
+    const fallback = bundle.project.currentImageId && imageMap.has(bundle.project.currentImageId)
+      ? bundle.project.currentImageId
+      : bundle.versions[0]?.selectedImageId && imageMap.has(bundle.versions[0].selectedImageId)
+        ? bundle.versions[0].selectedImageId
+        : bundle.images.at(-1)?.id;
+    if (fallback && fallback !== currentImageId) {
+      setCurrentImageId(fallback);
+      setInputImageId(fallback);
+    }
+  }, [bundle, currentImageId, imageMap]);
+
   const availableOutputFormats = selectedModel?.outputFormats?.length ? selectedModel.outputFormats : ['png'];
   const canChooseOutputFormat = availableOutputFormats.length > 1;
   const canUseTransparentBackground = Boolean(selectedModel?.transparentBackground);
   const maxImageCount = selectedModel?.maxCount || 1;
+  // 日日新专用：水印与提示词扩写是逐次请求参数，官方要求每次都显式下发。
+  // 其它模型不携带这两个键，避免把无用字段写进任务参数。
+  const isSenseNovaModel = selectedModel?.provider === 'sensenova';
+  const senseNovaParams = isSenseNovaModel ? { watermark, promptExtend } : {};
   // Switching models invalidates the current size — snap back to a size the
   // selected model actually supports instead of letting the API reject it.
   useEffect(() => {
     if (!selectedModel) return;
-    setSize((current) => (isValidSizeForProvider(selectedModel, current) ? current : defaultSizeForProvider(selectedModel)));
+    // Ratio tokens and the original-ratio token stay valid across models: the
+    // server fits them to whichever provider is active.
+    setSize((current) => (isKnownSizeToken(selectedModel, current) ? current : defaultSizeForProvider(selectedModel)));
     setCount((current) => Math.min(current, selectedModel.maxCount || 1));
     if (!availableOutputFormats.includes(outputFormat)) setOutputFormat(availableOutputFormats[0] as OutputFormat);
+    if (selectedModel.provider === 'sensenova') {
+      setWatermark(Boolean(selectedModel.defaultParams.watermark));
+      setPromptExtend(selectedModel.defaultParams.promptExtend !== false);
+    }
   }, [selectedModel, availableOutputFormats, outputFormat]);
   // Transparent background only works with png/webp output.
   useEffect(() => {
     if (outputFormat === 'jpeg' || !canUseTransparentBackground) setTransparentBg(false);
   }, [outputFormat, canUseTransparentBackground]);
+  // "Keep source aspect ratio" only means something while an input image is
+  // attached. Clearing the image removes that option, so fall back to a real
+  // size rather than leaving the picker holding a value it no longer offers.
+  useEffect(() => {
+    if (inputImage || !selectedModel) return;
+    setSize((current) => (current === ORIGINAL_SIZE ? defaultSizeForProvider(selectedModel) : current));
+  }, [inputImage, selectedModel]);
 
   function chooseVersion(version: Version) {
     const image = version.outputs.find((item) => item.id === version.selectedImageId) || version.outputs[0];
-    if (image) setCurrentImageId(image.id);
+    if (image) {
+      // 选中历史版本同时切换输入图：否则画布显示的是这一版，而「改图」仍拿
+      // 上一张图当输入，两个指针不一致会让人以为点击没反应。
+      manualPickRef.current = true;
+      setCurrentImageId(image.id);
+      setInputImageId(image.id);
+    }
     // 批量结果面板只属于其产出的版本。查看其他历史版本时收起它，避免
     // 把上一轮批量结果误当成当前画布的候选图。
     setBatchProgress((progress) => progress?.versionId === version.id ? progress : null);
@@ -906,6 +1027,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
   }
 
   function useImage(image: ProjectImage) {
+    manualPickRef.current = true;
     setCurrentImageId(image.id);
     setInputImageId(image.id);
     if (image.sourceType === 'upload') setSize(closestSizeForDimensions(selectedModel, image.width, image.height));
@@ -1174,7 +1296,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     setFusionFeedback({ imageId: currentImage.id, referenceId: referenceImageId, point, key: performance.now() });
     setActiveTask({ id: null, kind: 'fusion', stage: 'planning', target: { imageId: currentImage.id } });
     try {
-      const result = await api.fusion(projectId, { imageId: currentImage.id, referenceImageId, modelId, visionModelId, mode: fusionType, point, instruction: fusionInstruction.trim(), params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count: 1, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false } });
+      const result = await api.fusion(projectId, { imageId: currentImage.id, referenceImageId, modelId, visionModelId, mode: fusionType, point, instruction: fusionInstruction.trim(), params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count: 1, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat, transparent: false } });
       startPolling(result.taskId, 'fusion');
     } catch (error) { setActiveTask(null); setFusionPoint(null); setFusionFeedback(null); notify((error as Error).message, 'error'); }
     finally { fusionSubmitLock.current = false; }
@@ -1267,7 +1389,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         rect: cleanupType === 'selection' ? rect : undefined,
         instruction: cleanupType === 'selection' ? undefined : cleanupInstruction.trim() || undefined,
         keepPoints: cleanupType === 'people' ? cleanupKeepPoints : undefined,
-        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count: 1, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: 'png', transparent: false },
+        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count: 1, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat: 'png', transparent: false },
       });
       startPolling(result.taskId, 'remove-element');
     } catch (error) {
@@ -1311,7 +1433,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         instruction: localEditInstruction.trim(),
         reference: localReference || undefined,
         rect: localEditRect,
-        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: localReference ? 'png' : outputFormat, transparent: localReference ? false : transparentBg },
+        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat: localReference ? 'png' : outputFormat, transparent: localReference ? false : transparentBg },
       });
       setLocalEditMode(false);
       startPolling(result.taskId, 'local-edit');
@@ -1332,7 +1454,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         rect: localEditRect,
         instructions: localBatchLines,
         reference: localReference || undefined,
-        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: localReference ? 'png' : outputFormat, transparent: localReference ? false : transparentBg },
+        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat: localReference ? 'png' : outputFormat, transparent: localReference ? false : transparentBg },
       });
       setLocalEditMode(false);
       setLocalBatchOpen(false);
@@ -1374,7 +1496,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         modelId,
         parentVersionId: currentVersion?.id || null,
         size: outpaintSize,
-        params: { count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: transparentBg },
+        params: { count, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat, transparent: transparentBg },
       });
       closeOutpaint();
       startPolling(result.taskId, 'outpaint', target);
@@ -1438,7 +1560,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         crop: { data: crop.dataUrl, mimeType: crop.mimeType, padded: crop.padded },
         mode: extractionType,
         hint: extractHint.trim() || undefined,
-        params: { size: closestSizeForDimensions(selectedModel, crop.width, crop.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false },
+        params: { size: closestSizeForDimensions(selectedModel, crop.width, crop.height), count, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat, transparent: false },
       });
       startPolling(result.taskId, 'extract-asset');
     } catch (error) { setActiveTask(null); notify((error as Error).message, 'error'); }
@@ -1457,7 +1579,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         imageId: currentImage.id,
         modelId,
         parentVersionId: currentVersion?.id || null,
-        params: { size, count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false },
+        params: { size, count, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat, transparent: false },
       });
       startPolling(result.taskId, 'enhance', { imageId: currentImage.id });
     } catch (error) { notify((error as Error).message, 'error'); }
@@ -1477,7 +1599,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         modelId,
         visionModelId,
         parentVersionId: currentVersion?.id || null,
-        params: { size, count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: transparentBg },
+        params: { size, count, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat, transparent: transparentBg },
       });
       startPolling(result.taskId, 'remove-watermark', { imageId: currentImage.id });
     } catch (error) { notify((error as Error).message, 'error'); }
@@ -1501,7 +1623,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         modelId,
         visionModelId,
         parentVersionId: currentVersion?.id || null,
-        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count: 1, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat: 'png', transparent: true },
+        params: { size: closestSizeForDimensions(selectedModel, currentImage.width, currentImage.height), count: 1, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat: 'png', transparent: true },
       });
       startPolling(result.taskId, 'remove-background');
     } catch (error) {
@@ -1526,7 +1648,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
         visionModelId,
         parentVersionId: sourceVersion?.id || null,
         segments: textSegments,
-        params: { size: closestSizeForDimensions(selectedModel, textImage.width, textImage.height), count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: false },
+        params: { size: closestSizeForDimensions(selectedModel, textImage.width, textImage.height), count, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat, transparent: false },
       });
       setTextEditorError('');
       startPolling(result.taskId, 'text-edit');
@@ -1608,7 +1730,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
       const result = await api.generate(projectId, {
         prompt: prompt.trim(), operation, modelId, inputImageId, parentVersionId: inputVersion?.id || null,
         visionModelId: count > 1 && prompt.trim() ? visionModelId || undefined : undefined,
-        params: { size, count, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: transparentBg },
+        params: { size, count, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat, transparent: transparentBg },
       });
       startPolling(result.taskId, 'generate', { imageId: inputImageId, size });
     } catch (error) {
@@ -1720,7 +1842,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
     if (batchType === 'text' && !batchTextSupported) return;
     setBatchSubmitting(true);
     try {
-      const params = { size, quality: selectedModel?.defaultParams.quality || 'auto', outputFormat, transparent: transparentBg };
+      const params = { size, quality: selectedModel?.defaultParams.quality || 'auto', ...senseNovaParams, outputFormat, transparent: transparentBg };
       const promptsInput = batchPromptTab === 'list'
         ? { prompts: batchPromptLines }
         : { template: batchTemplate.trim(), quantity: batchQuantity, variables: detectedBatchVariables.map((name) => ({ name, values: batchRows.map((row) => row[name]) })) };
@@ -1874,7 +1996,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           <div className="canvas-toolbar">
             <div className="canvas-toolbar-main">
               <div className="canvas-context">{currentVersion ? <><strong>V{currentVersion.number}</strong><span>{<PluginOperationName operation={currentVersion.operation} fallback={currentVersion.operation && operationKeys[currentVersion.operation] ? t(operationKeys[currentVersion.operation]) : currentVersion.operation} />}</span></> : <span>{t('ws.projectCanvas')}</span>}</div>
-              <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label={t('common.zoomOut')}><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label={t('common.zoomIn')}><Icon name="plus" size={14} /></button><button disabled={!currentImage} onClick={openCompare}>{t('ws.compare')}</button><a className={!currentImage ? 'disabled' : ''} href={currentImage?.url} download>{t('common.download')}</a>{currentVersion && currentVersion.outputs.length > 1 && <button className="download-version-zip" title={t('ws.downloadZipTitle', { count: currentVersion.outputs.length })} onClick={() => api.downloadVersionImages(projectId, currentVersion.id)}><Icon name="download" size={13} /> ZIP</button>}</div>
+              <div className="canvas-actions"><button disabled={!currentImage} onClick={() => changeZoom(-0.25)} aria-label={t('common.zoomOut')}><Icon name="minus" size={14} /></button><button className="zoom-label" disabled={!currentImage} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><button disabled={!currentImage} onClick={() => changeZoom(0.25)} aria-label={t('common.zoomIn')}><Icon name="plus" size={14} /></button><button disabled={!currentImage} onClick={openCompare}>{t('ws.compare')}</button><a className={!currentImage ? 'disabled' : ''} href={currentImage ? fullUrl(currentImage) : undefined} download>{t('common.download')}</a>{currentVersion && currentVersion.outputs.length > 1 && <button className="download-version-zip" title={t('ws.downloadZipTitle', { count: currentVersion.outputs.length })} onClick={() => api.downloadVersionImages(projectId, currentVersion.id)}><Icon name="download" size={13} /> ZIP</button>}</div>
             </div>
             <ScrollableImageTools>
               <ImagePluginButton tool={workspacePlugins.local_edit.tool} active={localEditMode} exiting={localEditMode || Boolean(localEditRect)} disabled={!currentImage || generating || removingWatermark || removingBackground || enhancing} onClick={localEditMode || localEditRect ? closeLocalEdit : startLocalEdit} />
@@ -1893,7 +2015,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
             <div className="canvas-edit-body">
               <div className="canvas-stage-shell">
           <div className={`canvas-stage ${(localEditMode || (removeElementMode && cleanupType === 'selection') || extractMode) ? 'selection-mode' : ''}`} onPointerDown={onCanvasSelectionStart} onPointerMove={onCanvasSelectionMove} onPointerUp={onCanvasSelectionEnd} onPointerCancel={onCanvasSelectionCancel}>
-            {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(removeElementMode || removeElementRect) ? 'removing-element' : ''} ${removeElementMode && cleanupType === 'people' ? 'cleanup-clickable' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintPreviewSize ? 'outpaint-preview-wrap' : ''} ${fusionMode && fusionPoint && !generating ? 'fusion-drop-active' : ''}`} style={zoom !== 1 && !outpaintPreviewSize ? { width: `${zoom * 100}%` } : undefined} onContextMenu={(event) => openImageContextMenu(event, currentImage.id)} onDragOver={event => { if (fusionMode && fusionReady && !generating && event.dataTransfer.types.includes('application/x-layerive-fusion')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setFusionPoint(fusionDropPoint(event, event.currentTarget)); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setFusionPoint(null); }} onDrop={onFusionDrop} onClick={event => { markCleanupPerson(event); if (fusionMode && fusionSelectedId) { const point = fusionDropPoint(event, event.currentTarget); if (point) void submitFusion(fusionSelectedId, point); } }} tabIndex={fusionMode && fusionSelectedId ? 0 : undefined} role={fusionMode && fusionSelectedId ? 'button' : undefined} aria-label={fusionMode ? t('fusion.dropHint') : undefined} onKeyDown={event => { if (fusionMode && fusionSelectedId && ['Enter', ' '].includes(event.key)) { event.preventDefault(); if (event.currentTarget.querySelector<HTMLImageElement>(':scope > img')?.dataset.imagePending === 'true') return; void submitFusion(fusionSelectedId, { x: 50, y: 50 }); } }}>{fusionMode && fusionPoint && <span className="fusion-drop-marker" style={{ left: `${fusionPoint.x}%`, top: `${fusionPoint.y}%` }}><Icon name="plus" size={20} /></span>}{fusionMode && fusionFeedback?.imageId === currentImage.id && <span key={fusionFeedback.key} className="fusion-drop-ripple" style={{ left: `${fusionFeedback.point.x}%`, top: `${fusionFeedback.point.y}%` }} aria-hidden="true" />}{outpaintPreviewSize ? <OutpaintPreview key={currentImage.id} image={currentImage} size={outpaintPreviewSize} zoom={zoom} busy={canvasProcessing} effect={processingEffect} alt={t('ws.outpaintPreviewAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} label={t('ws.newCanvasArea')} /> : <ImageWithReveal src={currentImage.url} keepPrevious alt={t('ws.projectImageAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} />}{canvasProcessing && !outpaintPreviewSize && <ImageProcessingOverlay key={`${activeTask!.kind}:${currentImage.id}`} effect={processingEffect} region={activeTask!.target?.region} />}{(localEditMode || localEditRect) && <div className="local-edit-surface">{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>{t('ws.editArea')}</em></span>}</div>}{(removeElementMode || removeElementRect) && <div className="remove-element-surface">{removeElementRect && <span className="remove-element-rect" style={{ left: `${removeElementRect.x}%`, top: `${removeElementRect.y}%`, width: `${removeElementRect.width}%`, height: `${removeElementRect.height}%` }}><em>{t('ws.removeElementArea')}</em></span>}</div>}{(extractMode || extractRect) && <div className="extract-surface">{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>{t('ws.extractArea')}</em></span>}</div>}{removeElementMode && cleanupType === 'people' && cleanupKeepPoints.map((point, index) => <button key={index} className="cleanup-keep-marker" style={{ left: point.x + '%', top: point.y + '%' }} aria-label={t('cleanup.removePoint', { index: index + 1 })} title={t('cleanup.removePoint', { index: index + 1 })} disabled={generating || removeElementSubmitting} onClick={event => { event.stopPropagation(); setCleanupKeepPoints(points => points.filter((_, i) => i !== index)); }}>{index + 1}</button>)}<span className="image-chip">{outpaintPreviewSize ? t('ws.targetSize', { size: outpaintPreviewSize }) : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : generationPlaceholder ? (
+            {currentImage ? <div className={`canvas-image-wrap ${zoom !== 1 ? 'is-zoomed' : ''} ${localEditMode ? 'local-editing' : ''} ${(removeElementMode || removeElementRect) ? 'removing-element' : ''} ${removeElementMode && cleanupType === 'people' ? 'cleanup-clickable' : ''} ${(extractMode || extractRect) ? 'extracting' : ''} ${outpaintPreviewSize ? 'outpaint-preview-wrap' : ''} ${fusionMode && fusionPoint && !generating ? 'fusion-drop-active' : ''}`} style={zoom !== 1 && !outpaintPreviewSize ? { width: `${zoom * 100}%` } : undefined} onContextMenu={(event) => openImageContextMenu(event, currentImage.id)} onDragOver={event => { if (fusionMode && fusionReady && !generating && event.dataTransfer.types.includes('application/x-layerive-fusion')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setFusionPoint(fusionDropPoint(event, event.currentTarget)); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setFusionPoint(null); }} onDrop={onFusionDrop} onClick={event => { markCleanupPerson(event); if (fusionMode && fusionSelectedId) { const point = fusionDropPoint(event, event.currentTarget); if (point) void submitFusion(fusionSelectedId, point); } }} tabIndex={fusionMode && fusionSelectedId ? 0 : undefined} role={fusionMode && fusionSelectedId ? 'button' : undefined} aria-label={fusionMode ? t('fusion.dropHint') : undefined} onKeyDown={event => { if (fusionMode && fusionSelectedId && ['Enter', ' '].includes(event.key)) { event.preventDefault(); if (event.currentTarget.querySelector<HTMLImageElement>(':scope > img')?.dataset.imagePending === 'true') return; void submitFusion(fusionSelectedId, { x: 50, y: 50 }); } }}>{fusionMode && fusionPoint && <span className="fusion-drop-marker" style={{ left: `${fusionPoint.x}%`, top: `${fusionPoint.y}%` }}><Icon name="plus" size={20} /></span>}{fusionMode && fusionFeedback?.imageId === currentImage.id && <span key={fusionFeedback.key} className="fusion-drop-ripple" style={{ left: `${fusionFeedback.point.x}%`, top: `${fusionFeedback.point.y}%` }} aria-hidden="true" />}{outpaintPreviewSize ? <OutpaintPreview key={currentImage.id} image={currentImage} size={outpaintPreviewSize} zoom={zoom} busy={canvasProcessing} effect={processingEffect} alt={t('ws.outpaintPreviewAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} label={t('ws.newCanvasArea')} /> : <ImageWithReveal src={canvasUrl(currentImage)} keepPrevious alt={t('ws.projectImageAlt', { version: currentVersion ? ` V${currentVersion.number}` : '' })} />}{canvasProcessing && !outpaintPreviewSize && <ImageProcessingOverlay key={`${activeTask!.kind}:${currentImage.id}`} effect={processingEffect} region={activeTask!.target?.region} />}{(localEditMode || localEditRect) && <div className="local-edit-surface">{localEditRect && <span className="local-edit-rect" style={{ left: `${localEditRect.x}%`, top: `${localEditRect.y}%`, width: `${localEditRect.width}%`, height: `${localEditRect.height}%` }}><em>{t('ws.editArea')}</em></span>}</div>}{(removeElementMode || removeElementRect) && <div className="remove-element-surface">{removeElementRect && <span className="remove-element-rect" style={{ left: `${removeElementRect.x}%`, top: `${removeElementRect.y}%`, width: `${removeElementRect.width}%`, height: `${removeElementRect.height}%` }}><em>{t('ws.removeElementArea')}</em></span>}</div>}{(extractMode || extractRect) && <div className="extract-surface">{extractRect && <span className="extract-rect" style={{ left: `${extractRect.x}%`, top: `${extractRect.y}%`, width: `${extractRect.width}%`, height: `${extractRect.height}%` }}><em>{t('ws.extractArea')}</em></span>}</div>}{removeElementMode && cleanupType === 'people' && cleanupKeepPoints.map((point, index) => <button key={index} className="cleanup-keep-marker" style={{ left: point.x + '%', top: point.y + '%' }} aria-label={t('cleanup.removePoint', { index: index + 1 })} title={t('cleanup.removePoint', { index: index + 1 })} disabled={generating || removeElementSubmitting} onClick={event => { event.stopPropagation(); setCleanupKeepPoints(points => points.filter((_, i) => i !== index)); }}>{index + 1}</button>)}<span className="image-chip">{outpaintPreviewSize ? t('ws.targetSize', { size: outpaintPreviewSize }) : `${currentImage.width || '—'} × ${currentImage.height || '—'}`}</span></div> : generationPlaceholder ? (
               <div className="generation-placeholder" style={{ aspectRatio: generationRatio, width: `min(100%, 440px, calc(${100 * generationRatio}vh - ${300 * generationRatio}px))` }} aria-busy="true"><ImageProcessingOverlay effect={processingEffect} /><div className="generation-placeholder-content" role="status"><Icon name="sparkle" size={30} /><strong>{processingLabel}</strong><small>{t('motion.waiting')}</small>{activeTask?.id && <button className="cancel-task-button" onClick={() => void cancelActiveTask()}>{t('ws.cancelTask')}</button>}</div></div>
             ) : (
               <div className="canvas-empty"><div className="empty-visual"><span /><span /><span /></div><h2>{t('ws.startFirstTitle')}</h2><p>{t('ws.startFirstHint')}</p><button className="button secondary" onClick={() => fileRef.current?.click()}>{t('ws.uploadInitial')}</button></div>
@@ -1975,13 +2097,23 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
                 <button className="attach-button" onClick={() => fileRef.current?.click()} disabled={uploading} aria-label={t('ws.uploadImageAria')}>{uploading ? '…' : <Icon name="plus" size={16} />}</button>
                 <select value={operation} onChange={(event) => setOperation(event.target.value)}><option value="auto">{t('op.auto')}</option><option value="text_to_image">{t('op.text_to_image')}</option><option value="image_to_image">{t('op.image_to_image')}</option><option value="edit_prompt">{t('op.edit_prompt')}</option></select>
                 <select value={size} onChange={(event) => setSize(event.target.value)} title={t('ws.sizeTitle')}>
-                  {sizesForProvider(selectedModel).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}
-                  {!isValidSizeForProvider(selectedModel, size) && <option value={size}>{size}</option>}
+                  {inputImage && <option value={ORIGINAL_SIZE}>{t('ws.sizeOriginal')}</option>}
+                  <optgroup label={t('ws.sizePresets')}>
+                    {sizesForProvider(selectedModel).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}
+                  </optgroup>
+                  <optgroup label={t('ws.sizeRatios')}>
+                    {RATIO_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.label}</option>)}
+                  </optgroup>
+                  {!isKnownSizeToken(selectedModel, size) && <option value={size}>{size}</option>}
                 </select>
                 <select value={count} onChange={(event) => setCount(Number(event.target.value))} aria-label={t('ws.countAria')} title={t('ws.countTitle')} disabled={generating}>{Array.from({ length: maxImageCount }, (_, index) => <option key={index + 1} value={index + 1}>{t('common.countImages', { count: index + 1 })}</option>)}</select>
                 {(canChooseOutputFormat || canUseTransparentBackground) && <>
                   {canChooseOutputFormat && <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as OutputFormat)} title={t('ws.formatTitle')}>{availableOutputFormats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select>}
                   {canUseTransparentBackground && <button type="button" className={`bg-toggle ${transparentBg ? 'active' : ''}`} disabled={outputFormat === 'jpeg'} title={outputFormat === 'jpeg' ? t('ws.transparentJpeg') : t('ws.transparentTitle')} onClick={() => setTransparentBg((value) => !value)}>{t('ws.transparent')}</button>}
+                </>}
+                {isSenseNovaModel && <>
+                  <button type="button" className={`bg-toggle ${watermark ? 'active' : ''}`} title={watermark ? t('ws.watermarkOn') : t('ws.watermarkOff')} aria-pressed={watermark} onClick={() => setWatermark((value) => !value)}>{t('ws.watermark')}</button>
+                  <button type="button" className={`bg-toggle ${promptExtend ? 'active' : ''}`} title={promptExtend ? t('ws.promptExtendOn') : t('ws.promptExtendOff')} aria-pressed={promptExtend} onClick={() => setPromptExtend((value) => !value)}>{t('ws.promptExtend')}</button>
                 </>}
               </div>
               <button className="send-button" disabled={generating || (!prompt.trim() && !inputImageId)} onClick={() => void send()} aria-label={t('ws.sendAria')}><Icon name="up" size={17} /></button>
@@ -1999,7 +2131,7 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
                 ? <div className="batch-edit-source"><img src={thumbUrl(currentImage)} alt={t('ws.batchSourceAlt')} /><div><strong>{t('ws.unifiedReference')}</strong><span>{currentImage.width || '—'} × {currentImage.height || '—'} · {selectedModel?.name || t('ws.currentImageModel')}</span></div></div>
                 : <div className="batch-panel-hint">{t('ws.needCanvasImage')}</div>
               : <div className="batch-generate-params">
-                  <label className="batch-param"><span>{t('ws.sizeLabel')}</span><select value={size} onChange={(event) => setSize(event.target.value)} title={t('ws.batchSizeTitle')}>{sizesForProvider(selectedModel).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}{!isValidSizeForProvider(selectedModel, size) && <option value={size}>{size}</option>}</select></label>
+                  <label className="batch-param"><span>{t('ws.sizeLabel')}</span><select value={size} onChange={(event) => setSize(event.target.value)} title={t('ws.batchSizeTitle')}><optgroup label={t('ws.sizePresets')}>{sizesForProvider(selectedModel).map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.value}</option>)}</optgroup><optgroup label={t('ws.sizeRatios')}>{RATIO_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.ratio} · {option.label}</option>)}</optgroup>{!isKnownSizeToken(selectedModel, size) && <option value={size}>{size}</option>}</select></label>
                   {canChooseOutputFormat && <label className="batch-param"><span>{t('ws.formatLabel')}</span><select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as OutputFormat)} title={t('ws.formatTitle')}>{availableOutputFormats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label>}
                   {canUseTransparentBackground && <button type="button" className={`batch-transparent-toggle ${transparentBg ? 'active' : ''}`} disabled={outputFormat === 'jpeg'} title={outputFormat === 'jpeg' ? t('ws.transparentJpeg') : t('ws.transparentTitle')} onClick={() => setTransparentBg((value) => !value)}>{t('ws.transparent')}</button>}
                 </div>}
@@ -2064,14 +2196,14 @@ export function WorkspaceView({ projectId, models, activeModel, activeVisionMode
           <div className="compare-content">
           {compareMode === 'side' ? (
             <div className="compare-grid">
-              <article><div className="compare-image"><img src={currentImage.url} alt={t('ws.currentCanvasAlt')} /></div><div className="compare-caption"><strong>{t('ws.currentCanvas')}</strong><button className="button secondary" onClick={() => { useImage(currentImage); setCompareOpen(false); }}>{t('ws.useThis')}</button></div></article>
+              <article><div className="compare-image"><img src={canvasUrl(currentImage)} alt={t('ws.currentCanvasAlt')} /></div><div className="compare-caption"><strong>{t('ws.currentCanvas')}</strong><button className="button secondary" onClick={() => { useImage(currentImage); setCompareOpen(false); }}>{t('ws.useThis')}</button></div></article>
               <article><div className="compare-image"><img src={compareImage.url} alt={t('ws.compareImageAlt')} /></div><div className="compare-caption"><strong>{compareImage.versionId ? t('ws.historyImage') : t('ws.projectAsset')}</strong><button className="button primary" onClick={() => { useImage(compareImage); setCompareOpen(false); }}>{t('ws.useThis')}</button></div></article>
             </div>
           ) : (
             <div className="compare-slider-block">
               <div className="compare-slider">
                 <img src={compareImage.url} alt={t('ws.compareImageAlt')} />
-                <img src={currentImage.url} alt={t('ws.currentCanvasAlt')} style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }} />
+                <img src={canvasUrl(currentImage)} alt={t('ws.currentCanvasAlt')} style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }} />
                 <div
                   className="slider-divider"
                   style={{ left: `${sliderPosition}%` }}

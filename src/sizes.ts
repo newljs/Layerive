@@ -4,14 +4,20 @@ import { NATIVE_IMAGE_PRESETS } from './imageModelPresets';
 
 export type SizeOption = { value: string; ratio: string; label: string };
 
+// 日日新图片接口要求边长是 32 的倍数、512–4096 像素、比例不超过 3:1。
+// 官方推荐分辨率（2048x2048 / 2720x1536 / 1536x2720 / 1664x2496 /
+// 2496x1664 / 4096x4096）排在最前，其余是同样合法的补充比例。
 export const SENSENOVA_SIZES: SizeOption[] = [
+  { value: '2048x2048', ratio: '1:1', label: '方形' },
+  { value: '2720x1536', ratio: '16:9', label: '横版' },
+  { value: '1536x2720', ratio: '9:16', label: '竖版' },
   { value: '1664x2496', ratio: '2:3', label: '竖版' },
   { value: '2496x1664', ratio: '3:2', label: '横版' },
+  { value: '4096x4096', ratio: '1:1', label: '方形 4K' },
   { value: '1760x2368', ratio: '3:4', label: '竖版' },
   { value: '2368x1760', ratio: '4:3', label: '横版' },
   { value: '1824x2272', ratio: '4:5', label: '竖版' },
   { value: '2272x1824', ratio: '5:4', label: '横版' },
-  { value: '2048x2048', ratio: '1:1', label: '方形' },
   { value: '2752x1536', ratio: '16:9', label: '横版' },
   { value: '1536x2752', ratio: '9:16', label: '竖版' },
   { value: '3072x1376', ratio: '21:9', label: '超宽' },
@@ -60,6 +66,37 @@ export function defaultSizeForProvider(model: ModelSizing): string {
 
 export function isValidSizeForProvider(model: ModelSizing, size: string): boolean {
   return sizesForProvider(model).some((option) => option.value === size);
+}
+
+// The picker also accepts two token kinds that are resolved on the server:
+// `original` keeps the source image's own aspect ratio, and a ratio such as
+// `16:9` asks for a canvas in that shape fitted to the provider's pixel budget.
+export const ORIGINAL_SIZE = 'original';
+
+export const RATIO_OPTIONS: SizeOption[] = [
+  { value: '1:1', ratio: '1:1', label: '方形' },
+  { value: '4:3', ratio: '4:3', label: '横版' },
+  { value: '3:4', ratio: '3:4', label: '竖版' },
+  { value: '3:2', ratio: '3:2', label: '横版' },
+  { value: '2:3', ratio: '2:3', label: '竖版' },
+  { value: '16:9', ratio: '16:9', label: '宽屏' },
+  { value: '9:16', ratio: '9:16', label: '竖屏' },
+  { value: '21:9', ratio: '21:9', label: '超宽' },
+  { value: '9:21', ratio: '9:21', label: '超长' },
+];
+
+export function isOriginalSize(value: string): boolean {
+  return value === ORIGINAL_SIZE;
+}
+
+export function isRatioSize(value: string): boolean {
+  return RATIO_OPTIONS.some((option) => option.value === value);
+}
+
+// Anything the picker may legitimately hold: a declared size, a ratio token, or
+// the original-ratio token.
+export function isKnownSizeToken(model: ModelSizing, size: string): boolean {
+  return isOriginalSize(size) || isRatioSize(size) || isValidSizeForProvider(model, size);
 }
 
 // Providers accept a small set of canvas sizes. For uploaded source images,

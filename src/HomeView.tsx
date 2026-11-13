@@ -1,27 +1,33 @@
-import { useMemo, useRef, useState } from 'react';
-import { api } from './api';
+import { useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react';
+import { api, thumbUrl } from './api';
 import { Icon } from './Icon';
 import { useConfirm } from './ConfirmDialog';
 import { LanguageToggle, useLanguage, type Language } from './i18n';
 import { useTheme } from './theme';
-import type { Project } from './types';
+import type { LibraryImage, Project } from './types';
 
 type Props = {
   projects: Project[];
+  images: LibraryImage[];
   loading: boolean;
-  onOpen: (id: string) => void;
+  imagesLoading: boolean;
+  onOpen: (id: string, imageId?: string) => void;
   onCreate: (input: { name: string; description: string }) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onDuplicate: (id: string) => Promise<void>;
   onImport: (file: File) => Promise<void>;
+  onImportImage: (file: File) => Promise<void>;
+  onOpenLibraryImage: (id: string) => Promise<void>;
+  onDeleteLibraryImage: (id: string) => Promise<void>;
   onRefreshProjects: () => Promise<void>;
   onModels: () => void;
   notify: (message: string, kind?: 'success' | 'error') => void;
 };
 
 const localeFor = (language: Language) => (language === 'zh' ? 'zh-CN' : 'en-US');
+const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp';
 
-export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDuplicate, onImport, onRefreshProjects, onModels, notify }: Props) {
+export function HomeView({ projects, images, loading, imagesLoading, onOpen, onCreate, onDelete, onDuplicate, onImport, onImportImage, onOpenLibraryImage, onDeleteLibraryImage, onRefreshProjects, onModels, notify }: Props) {
   const { language, t } = useLanguage();
   const confirm = useConfirm();
   const { theme, toggleTheme } = useTheme();
@@ -34,8 +40,14 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [creating, setCreating] = useState(false);
+  const [tab, setTab] = useState<'projects' | 'images'>(() => (localStorage.getItem('layerive.home-tab') === 'images' ? 'images' : 'projects'));
+  const [imageQuery, setImageQuery] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
+  const importImageRef = useRef<HTMLInputElement>(null);
   const restoreRef = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
   const [renameTarget, setRenameTarget] = useState<Project | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [renaming, setRenaming] = useState(false);
@@ -53,6 +65,58 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
   function switchViewMode(mode: 'card' | 'list') {
     setViewMode(mode);
     localStorage.setItem('pixelflow.view-mode', mode);
+  }
+
+  function switchTab(next: 'projects' | 'images') {
+    setTab(next);
+    localStorage.setItem('layerive.home-tab', next);
+  }
+
+  const visibleImages = useMemo(() => {
+    const needle = imageQuery.trim().toLowerCase();
+    if (!needle) return images;
+    return images.filter((image) => image.name.toLowerCase().includes(needle));
+  }, [images, imageQuery]);
+
+  // Importing files the picture in the library and stays on this screen: the
+  // library is its own collection, so importing must not silently create a
+  // project that would then show up twice.
+  async function importImage(file: File) {
+    if (importing) return;
+    if (!IMAGE_ACCEPT.split(',').includes(file.type)) {
+      notify(t('home.importImageTypeError'), 'error');
+      return;
+    }
+    setImporting(true);
+    try { await onImportImage(file); }
+    finally { setImporting(false); }
+  }
+
+  function handleDragEnter(event: ReactDragEvent) {
+    if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+    event.preventDefault();
+    dragDepth.current += 1;
+    setDragActive(true);
+  }
+
+  function handleDragOver(event: ReactDragEvent) {
+    if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }
+
+  function handleDragLeave() {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragActive(false);
+  }
+
+  function handleDrop(event: ReactDragEvent) {
+    if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDragActive(false);
+    const file = event.dataTransfer.files?.[0];
+    if (file) void importImage(file);
   }
 
   async function toggleFavorite(project: Project) {
@@ -127,7 +191,14 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
   );
 
   return (
-    <main className="app-shell">
+    <main
+      className={`app-shell ${dragActive ? 'drop-active' : ''}`}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {dragActive && <div className="drop-overlay" aria-hidden="true"><span><Icon name="image" size={26} /></span><strong>{t('home.dropActive')}</strong></div>}
       <aside className="side-nav">
         <div className="brand-mark" aria-label="Layerive">
           <svg viewBox="0 0 512 512" width="24" height="24" aria-hidden="true">
@@ -156,26 +227,60 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
             <LanguageToggle />
             <button className="button secondary" onClick={() => importRef.current?.click()}>{t('home.import')}</button>
             <button className="button secondary" onClick={onModels}>{t('home.models')}</button>
+            <button className="button secondary" disabled={importing} onClick={() => importImageRef.current?.click()}><Icon name="image" size={15} /> {importing ? t('home.importing') : t('home.importImage')}</button>
             <button className="button primary" onClick={() => setCreateOpen(true)}><Icon name="plus" size={15} /> {t('home.newProject')}</button>
           </div>
         </header>
 
         <div className="home-toolbar">
           <div className="tabs" role="tablist" aria-label={t('home.filterAria')}>
-            <button className={`tab ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>{t('home.all')} <span>{projects.length}</span></button>
-            <button className={`tab ${filter === 'recent' ? 'active' : ''}`} onClick={() => setFilter('recent')}>{t('home.recent')}</button>
-            <button className={`tab ${filter === 'favorite' ? 'active' : ''}`} onClick={() => setFilter('favorite')}>{t('home.favorites')} <span>{projects.filter((project) => project.isFavorite).length}</span></button>
+            <button className={`tab ${tab === 'projects' ? 'active' : ''}`} role="tab" aria-selected={tab === 'projects'} onClick={() => switchTab('projects')}>{t('home.tabProjects')} <span>{projects.length}</span></button>
+            <button className={`tab ${tab === 'images' ? 'active' : ''}`} role="tab" aria-selected={tab === 'images'} onClick={() => switchTab('images')}>{t('home.tabImages')} <span>{images.length}</span></button>
           </div>
           <div className="toolbar-right">
-            <label className="search-box"><span><Icon name="search" size={15} /></span><input value={query} onChange={(event) => setQuery(event.target.value)} aria-label={t('home.search')} placeholder={t('home.search')} /></label>
-            <div className="view-switch" role="group" aria-label={t('home.viewSwitchAria')}>
-              <button className={viewMode === 'card' ? 'active' : ''} onClick={() => switchViewMode('card')} title={t('home.cardView')} aria-label={t('home.cardView')}><Icon name="grid" size={15} /></button>
-              <button className={viewMode === 'list' ? 'active' : ''} onClick={() => switchViewMode('list')} title={t('home.listView')} aria-label={t('home.listView')}><Icon name="list" size={15} /></button>
-            </div>
+            {tab === 'projects' ? (
+              <>
+                <div className="tabs tab-filters" role="group" aria-label={t('home.filterAria')}>
+                  <button className={`tab ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>{t('home.all')} <span>{projects.length}</span></button>
+                  <button className={`tab ${filter === 'recent' ? 'active' : ''}`} onClick={() => setFilter('recent')}>{t('home.recent')}</button>
+                  <button className={`tab ${filter === 'favorite' ? 'active' : ''}`} onClick={() => setFilter('favorite')}>{t('home.favorites')} <span>{projects.filter((project) => project.isFavorite).length}</span></button>
+                </div>
+                <label className="search-box"><span><Icon name="search" size={15} /></span><input value={query} onChange={(event) => setQuery(event.target.value)} aria-label={t('home.search')} placeholder={t('home.search')} /></label>
+                <div className="view-switch" role="group" aria-label={t('home.viewSwitchAria')}>
+                  <button className={viewMode === 'card' ? 'active' : ''} onClick={() => switchViewMode('card')} title={t('home.cardView')} aria-label={t('home.cardView')}><Icon name="grid" size={15} /></button>
+                  <button className={viewMode === 'list' ? 'active' : ''} onClick={() => switchViewMode('list')} title={t('home.listView')} aria-label={t('home.listView')}><Icon name="list" size={15} /></button>
+                </div>
+              </>
+            ) : (
+              <label className="search-box"><span><Icon name="search" size={15} /></span><input value={imageQuery} onChange={(event) => setImageQuery(event.target.value)} aria-label={t('home.imageSearch')} placeholder={t('home.imageSearch')} /></label>
+            )}
           </div>
         </div>
 
-        {loading ? <div className="loading-panel">{t('home.loading')}</div> : viewMode === 'card' ? (
+        {tab === 'images' ? (
+          imagesLoading ? <div className="loading-panel">{t('home.imagesLoading')}</div> : (
+            <section className="image-library" aria-label={t('home.imagesAria')}>
+              <button className="image-import-card" disabled={importing} onClick={() => importImageRef.current?.click()}>
+                <span className="new-project-plus"><Icon name="plus" size={22} /></span>
+                <strong>{importing ? t('home.importing') : t('home.importImage')}</strong>
+                <small>{t('home.dropHint')}</small>
+              </button>
+              {visibleImages.map((image) => (
+                <article className="library-image" key={image.id}>
+                  <button className="library-image-open" onClick={() => void onOpenLibraryImage(image.id)} title={t('home.openImage')}>
+                    <img src={thumbUrl(image)} alt="" loading="lazy" />
+                    <span className="library-image-meta">
+                      <strong>{image.name}</strong>
+                      <small>{`${image.width ?? '?'}×${image.height ?? '?'} · ${formatUpdated(image.createdAt)}`}</small>
+                    </span>
+                  </button>
+                  <button className="library-image-delete" onClick={() => void onDeleteLibraryImage(image.id)} title={t('home.deleteImage')} aria-label={t('home.deleteImage')}><Icon name="close" size={14} /></button>
+                </article>
+              ))}
+              {!visibleImages.length && <div className="empty-search">{images.length ? t('home.noMatch') : t('home.imagesEmpty')}</div>}
+            </section>
+          )
+        ) : loading ? <div className="loading-panel">{t('home.loading')}</div> : viewMode === 'card' ? (
           <section className="project-grid" aria-label={t('home.listAria')}>
             <button className="new-project-card" onClick={() => setCreateOpen(true)}>
               <span className="new-project-plus"><Icon name="plus" size={22} /></span><strong>{t('home.createTitle')}</strong><small>{t('home.createSubtitle')}</small>
@@ -229,6 +334,11 @@ export function HomeView({ projects, loading, onOpen, onCreate, onDelete, onDupl
       <input ref={importRef} hidden type="file" accept=".zip" onChange={(event) => {
         const file = event.target.files?.[0];
         if (file) void onImport(file);
+        event.target.value = '';
+      }} />
+      <input ref={importImageRef} hidden type="file" accept={IMAGE_ACCEPT} onChange={(event) => {
+        const file = event.target.files?.[0];
+        if (file) void importImage(file);
         event.target.value = '';
       }} />
       <input ref={restoreRef} hidden type="file" accept=".zip" onChange={(event) => {
