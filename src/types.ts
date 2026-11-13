@@ -26,15 +26,30 @@ export type ModelConfig = {
   imageApiFormat?: 'openai_images' | 'gemini_interactions' | 'grok_images' | 'seedream_images' | 'qwen_images' | 'bfl_flux';
   apiFormat?: 'anthropic_messages' | 'chat_completions' | 'responses';
   baseUrl: string;
+  /** Masked on the wire; real credentials never leave the server. */
   apiKey: string;
+  /** One entry per pooled credential, each masked unless just revealed. */
+  apiKeys?: string[];
+  apiKeyCount?: number;
   model: string;
   capabilities: string[];
-  defaultParams: { size?: string; count?: number; quality?: string };
+  defaultParams: { size?: string; count?: number; quality?: string; watermark?: boolean; promptExtend?: boolean };
   /** Per-model workspace options. Older saved models receive preset defaults. */
   sizeOptions?: string[];
   outputFormats?: Array<'png' | 'jpeg' | 'webp'>;
   transparentBackground?: boolean;
   maxCount?: number;
+};
+
+export type KeyPoolEntry = {
+  index: number;
+  label: string;
+  failures: number;
+  successCount: number;
+  failureCount: number;
+  cooling: boolean;
+  cooldownMs: number;
+  lastUsedAt: number | null;
 };
 
 export type Project = {
@@ -114,7 +129,46 @@ export type ProjectBundle = {
   images: ProjectImage[];
 };
 
-export type ModelsPayload = { activeModel: string; activeVisionModel: string; models: ModelConfig[] };
+/** A picture from any live project, as shown on the home library grid. */
+/**
+ * A picture in the home-screen library. Library pictures are their own store,
+ * never a flattened view of project pictures: `projectId` records the project a
+ * picture was opened into, so reopening it returns to that project.
+ */
+export type ProjectRevision = {
+  revision: string;
+  updatedAt: string;
+  versionCount: number;
+  imageCount: number;
+  messageCount: number;
+  runningCount: number;
+  currentImageId: string | null;
+  currentVersionId: string | null;
+};
+
+export type LibraryImage = {
+  id: string;
+  name: string;
+  url: string;
+  mimeType: string;
+  width: number | null;
+  height: number | null;
+  fileSize: number;
+  projectId: string | null;
+  createdAt: string;
+};
+
+/** A model the upstream provider advertises, used to fill the picker. */
+export type UpstreamModel = {
+  id: string;
+  label: string;
+  description: string;
+  inputModalities: string[] | null;
+  outputModalities: string[] | null;
+};
+
+/** `cutout.enabled` tells the workspace that background removal can run locally. */
+export type ModelsPayload = { activeModel: string; activeVisionModel: string; models: ModelConfig[]; cutout?: { enabled: boolean } };
 
 export type TextSegment = {
   id: string;

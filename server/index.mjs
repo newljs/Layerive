@@ -6,14 +6,17 @@ import { callSeedream, callQwen, callFlux, testNativeImageConnection } from './i
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, createReadStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { renameWithRetry } from './file-ops.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import sharp from 'sharp';
-import { APP_ROOT, CONFIG_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, GALLERY_ROOT, imageDto, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
-import { makeDemoPng, makeThumbnailPng, readImageDimensions } from './png.mjs';
-import { hasModelCredentials, bearerHeaders, imageApiFormat, isSenseNovaLegacyVisionEndpoint, isSenseNovaTokenChatEndpoint, normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, visionApiFormat, visionEndpoint, writeModels } from './models.mjs';
+import { APP_ROOT, CONFIG_ROOT, DATA_ROOT, db, closeDatabase, ensureProjectDirs, GALLERY_ROOT, imageDto, LIBRARY_ROOT, now, parseJson, PROJECTS_ROOT, projectDto, uid } from './db.mjs';
+import { makeDemoPng, readImageDimensions } from './png.mjs';
+import { hasModelCredentials, bearerHeaders, imageApiFormat, isSenseNovaLegacyVisionEndpoint, isSenseNovaTokenChatEndpoint, modelApiKeys, MASKED_API_KEY, normalizeBaseUrl, publicModel, readModels, removeModel, upsertModel, visionApiFormat, visionEndpoint, writeModels } from './models.mjs';
+import { keyPoolStatus, modelKeys, resetKeyPool, withKeyPool } from './key-pool.mjs';
+import { RATIO_PRESETS, isOriginalSizeToken, isRatioToken, originalSizeFor, ratioOf, ratioToken, sizeForRatio } from './size-options.mjs';
+import { cutoutEnabled } from './cutout.mjs';
 import { createZip, readZip } from './zip.mjs';
 import { normalizeLocalImage, normalizeSenseNovaInput, preserveOutsideRegion, preserveOutsideRegions, referenceBytes, validateRect } from './local-edit.mjs';
 
@@ -139,6 +142,13 @@ function boundedLogText(value) {
 function logJson(value, fallback = {}) {
   try { return boundedLogText(JSON.stringify(value ?? fallback)); }
   catch { return JSON.stringify(fallback); }
+}
+
+// Task rows keep the model configuration for reproducibility, but credentials
+// must never be written to the database: strip every key field, single or pool.
+function modelSnapshot(model) {
+  const { apiKey, apiKeys, ...rest } = model || {};
+  return rest;
 }
 
 function beginModelExecutionLog(context, model, input = {}) {
@@ -327,6 +337,9 @@ function projectOrThrow(projectId) {
   return row;
 }
 
+// A project can mark itself as scratch work in its draft (`draft.scratch`). Tools
+// that drive this API headlessly need somewhere to park their intermediate
+// pictures; that workspace must not show up as one of the user's projects.
 function listProjects() {
   const rows = db.prepare(`
     SELECT p.*, i.file_path AS cover_file_path, i.width AS cover_width, i.height AS cover_height,
@@ -334,9 +347,128 @@ function listProjects() {
     FROM projects p
     LEFT JOIN images i ON i.id = p.cover_image_id
     WHERE p.deleted_at IS NULL
+      AND COALESCE(json_extract(p.draft_json, '$.scratch'), 0) <> 1
     ORDER BY p.updated_at DESC
   `).all();
   return rows.map(projectDto);
+}
+
+// A scratch workspace keeps every intermediate picture it ever drew, so its
+// folder grows without bound. Soft-deleting it (the normal project delete) keeps
+// the bytes on disk, which is right for a user's work and wrong for scratch.
+// This removes one scratch project outright: its rows and its folder. It refuses
+// anything the user could see, so it can never be pointed at real work.
+function purgeScratchProject(projectId) {
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+  if (!row) throw httpError(404, 'project.notFound', '项目不存在');
+  if (parseJson(row.draft_json, {}).scratch !== true) {
+    throw httpError(400, 'project.notScratch', '只有临时工作区可以被彻底清除');
+  }
+  const tables = ['version_inputs', 'text_recognitions', 'images', 'image_versions', 'model_execution_logs', 'generation_tasks', 'messages'];
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM version_inputs WHERE version_id IN (SELECT id FROM image_versions WHERE project_id = ?)').run(projectId);
+    db.prepare('DELETE FROM version_inputs WHERE image_id IN (SELECT id FROM images WHERE project_id = ?)').run(projectId);
+    db.prepare('DELETE FROM text_recognitions WHERE image_id IN (SELECT id FROM images WHERE project_id = ?)').run(projectId);
+    for (const table of tables.slice(2)) db.prepare(`DELETE FROM ${table} WHERE project_id = ?`).run(projectId);
+    db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  rmSync(path.join(PROJECTS_ROOT, projectId), { recursive: true, force: true });
+  return { ok: true };
+}
+
+// The picture library is its own store, not a flattened view of every project.
+// A project's pictures belong to that project and must never surface here, and a
+// library picture stays a library picture until the user opens it in a project.
+// `project_id` records the project a library picture was opened into, so the
+// same picture reopens that project instead of spawning a new one each time.
+function libraryDto(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    url: `/library-files/${row.file_path.replaceAll('\\', '/')}`,
+    mimeType: row.mime_type,
+    width: row.width,
+    height: row.height,
+    fileSize: row.file_size,
+    projectId: row.project_id || null,
+    createdAt: row.created_at,
+  };
+}
+
+function listLibraryImages({ limit = 200 } = {}) {
+  return db.prepare('SELECT * FROM library_images ORDER BY created_at DESC LIMIT ?')
+    .all(limit)
+    .map(libraryDto);
+}
+
+function libraryImageOrThrow(id) {
+  const row = db.prepare('SELECT * FROM library_images WHERE id = ?').get(id);
+  if (!row) throw httpError(404, 'library.notFound', '图片不存在');
+  return row;
+}
+
+async function saveLibraryImage(input) {
+  const mime = String(input.mimeType || '');
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(mime)) throw httpError(400, 'image.unsupported', '仅支持 PNG、JPG 和 WebP');
+  const encoded = String(input.data || '').replace(/^data:[^;]+;base64,/, '');
+  const bytes = Buffer.from(encoded, 'base64');
+  if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw httpError(400, 'image.tooLarge', '图片不能为空且不能超过 10MB');
+  const dimensions = readImageDimensions(bytes, mime);
+  if (!dimensions) throw httpError(400, 'image.unreadable', '无法读取图片尺寸，请重新选择有效的 PNG、JPG 或 WebP 图片');
+  const id = uid();
+  const extension = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
+  const relative = `${id}.${extension}`;
+  await writeFile(path.join(LIBRARY_ROOT, relative), bytes);
+  const name = String(input.name || '').replace(/\.[^.]+$/, '').trim().slice(0, 120) || '未命名图片';
+  db.prepare(`INSERT INTO library_images (id, name, file_path, mime_type, width, height, file_size, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, name, relative, mime, dimensions.width, dimensions.height, bytes.length, now());
+  return libraryDto(db.prepare('SELECT * FROM library_images WHERE id = ?').get(id));
+}
+
+// Opening a library picture seeds a project with it: the bytes are copied into
+// the project's own uploads folder, so deleting the library entry never breaks
+// the project and vice versa.
+async function openLibraryImage(id) {
+  const row = libraryImageOrThrow(id);
+  if (row.project_id) {
+    const existing = db.prepare('SELECT id FROM projects WHERE id = ? AND deleted_at IS NULL').get(row.project_id);
+    if (existing) {
+      const images = db.prepare('SELECT * FROM images WHERE project_id = ? ORDER BY created_at DESC').all(row.project_id);
+      return { ...bundle(row.project_id), importedImageId: images[0]?.id ?? null };
+    }
+  }
+  const timestamp = now();
+  const projectId = uid();
+  db.prepare('INSERT INTO projects (id, name, description, default_model_id, draft_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(projectId, row.name.slice(0, 80) || '未命名项目', '', readModels().active_model || null, '{}', timestamp, timestamp);
+  ensureProjectDirs(projectId);
+  db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)')
+    .run(uid(), projectId, 'system', 'project_created', JSON.stringify({ text: '项目已创建，可以开始第一轮创作。', code: 'msg.projectCreated' }), timestamp);
+  const bytes = await readFile(path.join(LIBRARY_ROOT, row.file_path));
+  const imageId = uid();
+  const extension = row.mime_type === 'image/jpeg' ? 'jpg' : row.mime_type === 'image/webp' ? 'webp' : 'png';
+  const relative = path.join('uploads', `${imageId}.${extension}`);
+  await writeFile(path.join(PROJECTS_ROOT, projectId, relative), bytes);
+  db.prepare(`INSERT INTO images (id, project_id, source_type, file_path, mime_type, width, height, file_size, created_at)
+    VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, ?)`)
+    .run(imageId, projectId, relative, row.mime_type, row.width, row.height, bytes.length, timestamp);
+  db.prepare('UPDATE projects SET current_image_id = ?, cover_image_id = ?, updated_at = ? WHERE id = ?')
+    .run(imageId, imageId, timestamp, projectId);
+  db.prepare('UPDATE library_images SET project_id = ? WHERE id = ?').run(projectId, id);
+  return { ...bundle(projectId), importedImageId: imageId };
+}
+
+function removeLibraryImage(id) {
+  const row = libraryImageOrThrow(id);
+  const absolute = path.resolve(LIBRARY_ROOT, row.file_path);
+  if (absolute.startsWith(LIBRARY_ROOT + path.sep)) rmSync(absolute, { force: true });
+  db.prepare('DELETE FROM library_images WHERE id = ?').run(id);
 }
 
 function bundle(projectId) {
@@ -418,21 +550,80 @@ function requestedImageCount(params) {
 }
 
 function imageOptions(model) {
+  // 日日新：官方推荐分辨率在前，其余为同样合法的比例补充。
   const fallbackSizes = model.provider === 'sensenova'
-    ? ['1664x2496', '2496x1664', '1760x2368', '2368x1760', '1824x2272', '2272x1824', '2048x2048', '2752x1536', '1536x2752', '3072x1376', '1344x3136']
+    ? ['2048x2048', '2720x1536', '1536x2720', '1664x2496', '2496x1664', '4096x4096', '1760x2368', '2368x1760', '1824x2272', '2272x1824', '2752x1536', '1536x2752', '3072x1376', '1344x3136']
     : ['1024x1024', '1536x1024', '1024x1536'];
   const sizes = Array.isArray(model.sizeOptions) ? model.sizeOptions.filter((item) => /^\d{2,4}x\d{2,4}$/.test(String(item))) : [];
   const formats = Array.isArray(model.outputFormats) ? model.outputFormats.filter((item) => ['png', 'jpeg', 'webp'].includes(item)) : [];
   return { sizes: sizes.length ? sizes : fallbackSizes, formats: formats.length ? formats : ['png'], transparent: Boolean(model.transparentBackground), maxCount: Math.max(1, Math.min(4, Number(model.maxCount) || 1)) };
 }
 
-function normalizeGenerationParams(model, input) {
+// Size resolution order, from most to least specific:
+//   1. an explicit `WxH` that the model offers (or any well-formed WxH the
+//      caller insists on, so legacy drafts keep working),
+//   2. `original` / `source` — keep the input image's own aspect ratio and pick
+//      the closest size the provider accepts,
+//   3. a ratio token such as `16:9` — synthesise a size for that ratio,
+//   4. otherwise the model's first configured size.
+// `params.size` always ends up as a concrete `WxH` string because every
+// provider adapter needs real pixel dimensions.
+function resolveSize(model, requested, inputImage) {
+  const options = imageOptions(model);
+  const protocol = imageApiFormat(model);
+  const raw = String(requested ?? '').trim();
+  if (options.sizes.includes(raw)) return raw;
+  if (isOriginalSizeToken(raw) || raw === '') {
+    const sourceWidth = Number(inputImage?.width) || 0;
+    const sourceHeight = Number(inputImage?.height) || 0;
+    if (sourceWidth > 0 && sourceHeight > 0) {
+      const matched = closestSize(model, sourceWidth, sourceHeight);
+      if (matched) return matched;
+    }
+  }
+  if (isRatioToken(raw)) {
+    const synthesised = sizeForRatio(raw, protocol);
+    if (synthesised) return synthesised;
+  }
+  if (/^\d{2,4}x\d{2,4}$/.test(raw)) return raw;
+  return options.sizes[0];
+}
+
+// Nearest offered size by aspect ratio, ignoring absolute scale: an edit that
+// keeps the source ratio matters more than the source pixel count.
+function closestSize(model, width, height) {
+  const options = imageOptions(model);
+  if (!(width > 0 && height > 0)) return null;
+  const target = Math.log(width / height);
+  let best = null;
+  let bestDelta = Infinity;
+  for (const value of options.sizes) {
+    const parsed = value.match(/^(\d{2,4})x(\d{2,4})$/);
+    if (!parsed) continue;
+    const delta = Math.abs(Math.log(Number(parsed[1]) / Number(parsed[2])) - target);
+    if (delta < bestDelta) { bestDelta = delta; best = value; }
+  }
+  return best;
+}
+
+function normalizeGenerationParams(model, input, inputImage = null) {
   const options = imageOptions(model);
   const params = { ...model.defaultParams, ...(input || {}) };
-  params.size = options.sizes.includes(String(params.size)) ? String(params.size) : options.sizes[0];
+  params.size = resolveSize(model, params.size, inputImage);
   params.count = Math.min(options.maxCount, requestedImageCount(params));
   params.outputFormat = options.formats.includes(String(params.outputFormat)) ? String(params.outputFormat) : options.formats[0];
   params.transparent = options.transparent && params.outputFormat !== 'jpeg' && Boolean(params.transparent);
+  // 日日新的 watermark / promptExtend 必须逐次显式下发：官方文档说明不传会
+  // 跟随（可能变化的）默认值，生产环境要自己钉住。这里统一收敛成布尔值，
+  // 模型配置里的 defaultParams 作为默认、单次请求可覆盖；其它协议不写这两个
+  // 键，免得把无关字段塞进任务参数和日志。
+  if (isSenseNovaImageModel(model)) {
+    params.watermark = Boolean(params.watermark);
+    params.promptExtend = params.promptExtend === undefined ? true : Boolean(params.promptExtend);
+  } else {
+    delete params.watermark;
+    delete params.promptExtend;
+  }
   return params;
 }
 
@@ -465,7 +656,19 @@ async function callOpenAi(model, prompt, params, inputImage, signal) {
       return { image_url: `data:${normalized.mime_type};base64,${normalized.buffer.toString('base64')}` };
     }));
     headers['Content-Type'] = 'application/json';
-    requestBody = JSON.stringify({ model: model.model, prompt, n: 1, size: 'auto', images, response_format: 'b64_json', output_format: 'png', prompt_extend: true, watermark: false });
+    // 编辑沿用官方默认的 `size: 'auto'`：输出尺寸跟随主图（images[0]），
+    // 这样“保持原图比例”的语义由平台保证，不必由我们猜一个尺寸。
+    requestBody = JSON.stringify({
+      model: model.model,
+      prompt,
+      n: 1,
+      size: 'auto',
+      images,
+      response_format: 'b64_json',
+      output_format: senseNovaOutputFormat(outputFormat),
+      prompt_extend: params.promptExtend !== false,
+      watermark: Boolean(params.watermark),
+    });
   } else if (inputImage) {
     const form = new FormData();
     form.append('model', model.model);
@@ -480,9 +683,18 @@ async function callOpenAi(model, prompt, params, inputImage, signal) {
     requestBody = form;
   } else if (isSenseNova) {
     headers['Content-Type'] = 'application/json';
-    // SenseNova exposes no-watermark output explicitly. It also supports one
-    // image per request for this model, regardless of the workspace count.
-    requestBody = JSON.stringify({ model: model.model, prompt, n: 1, size, watermark: false, response_format: 'b64_json', output_format: 'png', prompt_extend: true });
+    // 日日新：watermark / prompt_extend 每次请求都要显式下发（官方文档明确
+    // 要求，避免默认值变化影响线上）；U 系列每次只出 1 张，多张由上层扇出。
+    requestBody = JSON.stringify({
+      model: model.model,
+      prompt,
+      n: 1,
+      size,
+      watermark: Boolean(params.watermark),
+      response_format: 'b64_json',
+      output_format: senseNovaOutputFormat(outputFormat),
+      prompt_extend: params.promptExtend !== false,
+    });
   } else {
     headers['Content-Type'] = 'application/json';
     requestBody = JSON.stringify({ model: model.model, prompt, n: count, size, quality: normalizeImageQuality(params.quality), response_format: 'b64_json', output_format: outputFormat, background });
@@ -491,9 +703,14 @@ async function callOpenAi(model, prompt, params, inputImage, signal) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw providerHttpError(response, payload?.error?.message || `模型请求失败（${response.status}）`);
   const outputs = [];
-  const outputMime = outputFormat === 'jpeg' ? 'image/jpeg' : outputFormat === 'webp' ? 'image/webp' : 'image/png';
+  // 日日新会在响应里回显实际 output_format；以平台返回的为准，避免我们按
+  // 请求值给字节贴错 MIME（例如平台把 webp 请求降级成 png）。
+  const actualFormat = ['png', 'jpeg', 'jpg', 'webp'].includes(String(payload.output_format))
+    ? String(payload.output_format).replace('jpg', 'jpeg')
+    : outputFormat;
+  const outputMime = outputMimeType(actualFormat);
   for (const item of payload.data || []) {
-    if (item.b64_json) outputs.push({ bytes: Buffer.from(item.b64_json, 'base64'), mimeType: isSenseNova ? 'image/png' : outputMime });
+    if (item.b64_json) outputs.push({ bytes: Buffer.from(item.b64_json, 'base64'), mimeType: outputMime });
     else if (item.url) {
       const remote = await fetch(item.url, { signal });
       if (!remote.ok) throw new Error('模型已返回图片地址，但图片下载失败');
@@ -513,6 +730,12 @@ function aspectRatioForSize(size) {
 
 function outputMimeType(outputFormat) {
   return outputFormat === 'jpeg' ? 'image/jpeg' : outputFormat === 'webp' ? 'image/webp' : 'image/png';
+}
+
+// 日日新的 output_format 接受 png / jpg / jpeg / webp；工作台内部统一用
+// png|jpeg|webp，这里只做白名单收敛，避免把未知值发给平台。
+function senseNovaOutputFormat(outputFormat) {
+  return ['png', 'jpeg', 'webp'].includes(String(outputFormat)) ? String(outputFormat) : 'png';
 }
 
 async function callGemini(model, prompt, params, inputImage, signal) {
@@ -579,23 +802,45 @@ async function callGrok(model, prompt, params, inputImage, signal) {
   return outputs;
 }
 
-async function callImageProvider(model, prompt, params, inputImage, signal) {
+// Every provider call goes through the key pool: it picks the next healthy
+// credential, parks whichever key the platform rejected or rate-limited, and
+// retries on a different key. Provider code only ever sees a single-key model,
+// so the existing single-key adapters stay unchanged.
+async function callImageProvider(model, prompt, params, inputImage, signal, onRotate = null) {
   const protocol = imageApiFormat(model);
   const native = { seedream_images: callSeedream, qwen_images: callQwen, bfl_flux: callFlux }[protocol];
-  if (native) {
-    const inputs = await Promise.all(providerInputs(inputImage).map(async image => ({ bytes: await providerInputBytes(image), mimeType: image.mime_type })));
-    return native({ ...model, baseUrl: normalizeBaseUrl(model.baseUrl) }, prompt, params, inputs, signal);
-  }
-  return imageApiFormat(model) === 'gemini_interactions'
-    ? callGemini(model, prompt, params, inputImage, signal)
-    : imageApiFormat(model) === 'grok_images'
-      ? callGrok(model, prompt, params, inputImage, signal)
-      : callOpenAi(model, prompt, params, inputImage, signal);
+  return withKeyPool(model, {
+    signal,
+    delay: abortableDelay,
+    log: onRotate,
+    attempt: async (keyedModel) => {
+      if (native) {
+        const inputs = await Promise.all(providerInputs(inputImage).map(async image => ({ bytes: await providerInputBytes(image), mimeType: image.mime_type })));
+        return native({ ...keyedModel, baseUrl: normalizeBaseUrl(model.baseUrl) }, prompt, params, inputs, signal);
+      }
+      return protocol === 'gemini_interactions'
+        ? callGemini(keyedModel, prompt, params, inputImage, signal)
+        : protocol === 'grok_images'
+          ? callGrok(keyedModel, prompt, params, inputImage, signal)
+          : callOpenAi(keyedModel, prompt, params, inputImage, signal);
+    },
+  });
 }
 
 // Rate-limited platforms answer with HTTP 429 or terse English strings; keep
 // the status (and Retry-After when present) on the error so the batch layer
 // can back off and retry instead of failing the whole task.
+// The connection test reports through Layerive, so a provider fault is a 502
+// gateway error — except for the statuses that mean "this credential is the
+// problem". Those must survive verbatim, otherwise the key pool cannot tell a
+// revoked or rate-limited key from a platform outage and refuses to rotate.
+const ROTATABLE_STATUSES = new Set([401, 403, 429]);
+function providerTestError(response, message) {
+  return ROTATABLE_STATUSES.has(response.status)
+    ? providerHttpError(response, message)
+    : Object.assign(new Error(message), { status: 502 });
+}
+
 function providerHttpError(response, message) {
   const retryAfterSeconds = Number(response.headers.get('retry-after'));
   return Object.assign(new Error(message), {
@@ -630,7 +875,9 @@ function abortableDelay(ms, signal) {
 }
 
 // Two retries with a short backoff absorb transient RPS limits without
-// pushing a 4-image task past its count-scaled total timeout.
+// pushing a 4-image task past its count-scaled total timeout. Key rotation
+// happens one layer down in callImageProvider, so an outer retry here only runs
+// once every key in the pool has already been tried for this request.
 async function callImageWithRetry(model, prompt, params, inputImage, signal, logContext = null) {
   const log = beginModelExecutionLog(logContext, model, {
     prompt,
@@ -638,20 +885,24 @@ async function callImageWithRetry(model, prompt, params, inputImage, signal, log
       provider: model.provider,
       model: model.model,
       params,
+      apiKeyCount: modelKeys(model).length,
       hasInputImage: Boolean(inputImage),
       inputImageCount: providerInputs(inputImage).length,
       inputDimensions: inputImage?.width && inputImage?.height ? { width: inputImage.width, height: inputImage.height } : null,
     },
   });
   let attempts = 0;
+  const keyNotes = [];
+  const onRotate = (note) => { if (keyNotes.length < 20) keyNotes.push(note); };
   try {
     for (let attempt = 0; ; attempt += 1) {
       attempts = attempt + 1;
       try {
-        const outputs = await callImageProvider(model, prompt, params, inputImage, signal);
+        const outputs = await callImageProvider(model, prompt, params, inputImage, signal, onRotate);
         finishModelExecutionLog(log, {
           outputCount: outputs.length,
           attempts,
+          keyRotations: keyNotes,
           outputs: outputs.map((output) => ({ mimeType: output.mimeType, width: output.width || null, height: output.height || null, byteLength: output.bytes?.length || null })),
         });
         return outputs;
@@ -814,11 +1065,11 @@ async function callVision(model, image, instruction, signal, logContext = null, 
       timeoutMs,
     },
   });
-  const headers = apiFormat === 'anthropic_messages'
+  const authHeadersFor = (key) => apiFormat === 'anthropic_messages'
     ? isDots
-      ? { 'api-key': model.apiKey, 'Content-Type': 'application/json' }
-      : { 'x-api-key': model.apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
-    : { ...bearerHeaders(model), 'Content-Type': 'application/json' };
+      ? { 'api-key': key, 'Content-Type': 'application/json' }
+      : { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
+    : { ...bearerHeaders(model, key), 'Content-Type': 'application/json' };
   const requestBody = apiFormat === 'anthropic_messages'
     ? {
       model: model.model,
@@ -838,11 +1089,26 @@ async function callVision(model, image, instruction, signal, logContext = null, 
     }
     : isSenseNovaLegacyVision
     ? { model: model.model, messages: [{ role: 'user', content: [...images.map((item) => ({ type: 'image_url', image_url: item.dataUrl })), { type: 'text', text: instruction }] }], max_new_tokens: images.length > 1 ? 2200 : 1600, temperature: 0.1, stream: false }
+    // 日日新 6.8 Flash 始终开启思考，而官方文档明确不建议同时打开
+    // thinking 与 response_format=json_object，因此 token 端点不加该字段；
+    // 提示词本身已经要求只返回 JSON，其余 OpenAI 兼容端点保持原行为。
     : { model: model.model, messages: [{ role: 'system', content: '你是严谨的图像文字识别与编辑规划助手。必须只返回用户要求的 JSON，不要使用 Markdown。' }, { role: 'user', content: [{ type: 'text', text: instruction }, ...images.map((item) => ({ type: 'image_url', image_url: { url: item.dataUrl } }))] }], ...(!isSenseNovaTokenChat ? { response_format: { type: 'json_object' } } : {}), temperature: 0.1 };
   if (options.maxOutputTokens) requestBody[apiFormat === 'responses' ? 'max_output_tokens' : apiFormat !== 'anthropic_messages' && isSenseNovaLegacyVision ? 'max_new_tokens' : 'max_tokens'] = options.maxOutputTokens;
   try {
-    const { response, payload } = await fetchVisionJson(visionEndpoint(model), { method: 'POST', headers, body: JSON.stringify(requestBody), signal }, timeoutMs);
-    if (!response.ok) throw new Error(payload?.error?.message || payload?.message || `视觉识别请求失败（${response.status}）`);
+    // Vision calls share the same multi-key pool as image generation, so a
+    // revoked or rate-limited credential rotates instead of failing the task.
+    const { response, payload } = await withKeyPool(model, {
+      signal,
+      delay: abortableDelay,
+      attempt: (keyedModel) => fetchVisionJson(visionEndpoint(model), { method: 'POST', headers: authHeadersFor(keyedModel.apiKey), body: JSON.stringify(requestBody), signal }, timeoutMs)
+        .then((result) => {
+          if (!result.response.ok) {
+            const message = result.payload?.error?.message || result.payload?.message || `视觉识别请求失败（${result.response.status}）`;
+            throw providerHttpError(result.response, message);
+          }
+          return result;
+        }),
+    });
     const responseOutput = Array.isArray(payload?.output)
       ? payload.output.flatMap((item) => Array.isArray(item?.content) ? item.content : []).map((item) => item?.text || '').join('')
       : '';
@@ -890,6 +1156,26 @@ function imageOrThrow(projectId, imageId) {
   `).get(imageId, projectId);
   if (!image) throw httpError(404, 'image.notFound', '图片不存在或不属于当前项目');
   return image;
+}
+
+// 编辑请求可以额外携带参考图（日日新 /v1/images/edits 的 images 数组：
+// 第一张是主图，官方支持再追加最多 5 张参考图）。主图仍由 `inputImageId`
+// 指定，这里只做去重、去自身与数量上限校验，避免把任意 id 塞进请求。
+const MAX_REFERENCE_IMAGES = 5;
+
+function resolveReferenceImages(projectId, requested, inputImage) {
+  if (!Array.isArray(requested) || !requested.length) return [];
+  if (!inputImage) throw httpError(400, 'generate.referenceNeedsInput', '参考图必须与一张主图一起提交');
+  const seen = new Set([inputImage.id]);
+  const references = [];
+  for (const value of requested) {
+    const id = String(value ?? '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    references.push(imageOrThrow(projectId, id));
+    if (references.length >= MAX_REFERENCE_IMAGES) break;
+  }
+  return references;
 }
 
 function validateParentVersion(projectId, versionId) {
@@ -1011,7 +1297,6 @@ async function saveLocalEditMaterial(projectId, taskId, image, sourceType) {
 // selected scene, then the image model extracts it using that scene's rules.
 // ---- Prompt gallery: user-created entries stored in SQLite ------------------
 
-const GALLERY_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
 
 function galleryDto(row) {
   return {
@@ -1166,12 +1451,17 @@ function startGeneration(projectId, input, { plugin = null } = {}) {
   // An uploaded source picture being edited for the first time gets an
   // initial version so the original image is kept in the version history.
   if (inputImage) inputImage = ensureUploadVersion(projectId, inputImage);
+  // 日日新等平台的编辑接口支持“主图 + 最多 5 张参考图”。主图仍是
+  // `inputImageId`，参考图通过 `referenceImageIds` 追加；只对多图编辑的
+  // 协议生效，其余协议保持原有的单图行为。
+  const referenceImages = resolveReferenceImages(projectId, input.referenceImageIds, inputImage);
+  if (referenceImages.length) inputImage = { ...inputImage, referenceImages };
   const operation = input.operation === 'auto' ? (inputImage ? 'edit_prompt' : 'text_to_image') : input.operation || (inputImage ? 'edit_prompt' : 'text_to_image');
   const operationPlugin = imagePlugins.forOperation(operation);
   if (operationPlugin ? !pluginSupportsModel(operationPlugin, model) : !model.capabilities.includes(operation) && !(['image_to_image'].includes(operation) && model.capabilities.includes('edit_prompt'))) {
     throw httpError(400, 'model.unsupportedOperation', '当前模型不支持这个操作');
   }
-  const params = normalizeGenerationParams(model, input.params);
+  const params = normalizeGenerationParams(model, input.params, inputImage);
   // Only the general /generate route opts into automatic multi-image intent
   // planning. Specialized edit operations keep their existing batch meaning.
   const autoPromptMode = Boolean(input.autoPromptMode) && params.count > 1 && Boolean(prompt);
@@ -1187,7 +1477,7 @@ function startGeneration(projectId, input, { plugin = null } = {}) {
   };
   db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, started_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generating', ?, ?)`)
-    .run(taskId, projectId, userMessageId, operation, model.id, JSON.stringify({ ...model, apiKey: undefined }), JSON.stringify(params), JSON.stringify(taskInput), createdAt, createdAt);
+    .run(taskId, projectId, userMessageId, operation, model.id, JSON.stringify(modelSnapshot(model)), JSON.stringify(params), JSON.stringify(taskInput), createdAt, createdAt);
 
   const controller = new AbortController();
   // Batches fan out under a concurrency cap and may absorb rate-limit backoff,
@@ -1209,7 +1499,9 @@ async function runGenerationTask(projectId, taskId, context) {
     const pluginHost = context.plugin?.host.forTask(taskId, controller.signal);
     if (context.plugin) {
       preparedPlugin = await preparePlugin(context.plugin.definition, pluginHost, inputImage, context.plugin.state);
-      effectivePrompt = preparedPlugin.prompt;
+      // A local plugin returns finished bytes and no prompt; keep the original
+      // request text so the recorded message still says what was asked.
+      effectivePrompt = preparedPlugin.prompt || prompt;
       providerImage = preparedPlugin.image;
     }
     if (!inputImage) {
@@ -1239,7 +1531,22 @@ async function runGenerationTask(projectId, taskId, context) {
     // `width`/`height` from the actual bytes for the demo path.
     let outputWidth = width;
     let outputHeight = height;
-    if (model.provider === 'mock') {
+    // A plugin that finished the picture on this machine (local matting, for
+    // instance) hands over bytes instead of a prompt: no model is called and no
+    // API key is needed, but the result still flows through processPluginOutput
+    // and the normal version bookkeeping below.
+    const localOutput = preparedPlugin?.local;
+    if (localOutput?.bytes?.length) {
+      outputWidth = localOutput.width || width;
+      outputHeight = localOutput.height || height;
+      generated = [{
+        bytes: localOutput.bytes,
+        mimeType: localOutput.mimeType || 'image/png',
+        width: outputWidth,
+        height: outputHeight,
+        promptIndex: 0,
+      }];
+    } else if (model.provider === 'mock') {
       const count = requestedImageCount(params);
       const scale = Math.min(1, 1024 / Math.max(width, height));
       outputWidth = Math.round(width * scale);
@@ -1289,6 +1596,9 @@ async function runGenerationTask(projectId, taskId, context) {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(versionId, projectId, taskId, parentVersionId, versionNumber, operation, outputIds[0], status, finishedAt);
       if (inputImage) db.prepare('INSERT OR IGNORE INTO version_inputs VALUES (?, ?, ?)').run(versionId, inputImage.id, 'source');
+      for (const reference of inputImage?.referenceImages || []) {
+        db.prepare('INSERT OR IGNORE INTO version_inputs VALUES (?, ?, ?)').run(versionId, reference.id, 'reference');
+      }
       for (const input of preparedPlugin?.inputs || []) {
         imageOrThrow(projectId, input.imageId);
         db.prepare('INSERT OR IGNORE INTO version_inputs VALUES (?, ?, ?)').run(versionId, input.imageId, input.role);
@@ -1475,7 +1785,7 @@ function startBatchEdit(projectId, input) {
   if (!model.capabilities.includes('edit_prompt')) throw httpError(400, 'model.noEditPrompt', '当前模型不支持提示词改图');
   const source = ensureUploadVersion(projectId, imageOrThrow(projectId, input.imageId));
   const validated = validateBatchEditInput(input);
-  const params = { ...normalizeGenerationParams(model, input.params), count: 1 };
+  const params = { ...normalizeGenerationParams(model, input.params, source), count: 1 };
   const taskId = uid();
   const userMessageId = uid();
   const versionId = uid();
@@ -1488,7 +1798,7 @@ function startBatchEdit(projectId, input) {
     db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(userMessageId, projectId, 'user', 'prompt', JSON.stringify({ prompt: batchPromptSummary(validated), operation: 'batch_edit', inputImageId: source.id, params: { ...params, quantity: validated.quantity }, modelName: model.name, batch: batchMessageBatch(validated, {}) }), createdAt);
     db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, started_at, created_at)
       VALUES (?, ?, ?, 'batch_edit', ?, ?, ?, ?, 'generating', ?, ?)`)
-      .run(taskId, projectId, userMessageId, model.id, JSON.stringify({ ...model, apiKey: undefined }), JSON.stringify(params), JSON.stringify(taskInput), createdAt, createdAt);
+      .run(taskId, projectId, userMessageId, model.id, JSON.stringify(modelSnapshot(model)), JSON.stringify(params), JSON.stringify(taskInput), createdAt, createdAt);
     db.prepare(`INSERT INTO image_versions (id, project_id, task_id, parent_version_id, version_number, operation_type, selected_image_id, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'batch_edit', NULL, 'generating', ?)`)
       .run(versionId, projectId, taskId, input.parentVersionId || source.version_id || null, versionNumber, createdAt);
@@ -1661,7 +1971,7 @@ function startBatchGenerate(projectId, input) {
     db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(userMessageId, projectId, 'user', 'prompt', JSON.stringify({ prompt: promptSummary, operation: 'batch_generate', params: { ...params, quantity: validated.quantity }, modelName: model.name, batch: batchMessageBatch(validated, {}) }), createdAt);
     db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, started_at, created_at)
       VALUES (?, ?, ?, 'batch_generate', ?, ?, ?, ?, 'generating', ?, ?)`)
-      .run(taskId, projectId, userMessageId, model.id, JSON.stringify({ ...model, apiKey: undefined }), JSON.stringify(params), JSON.stringify(taskInput()), createdAt, createdAt);
+      .run(taskId, projectId, userMessageId, model.id, JSON.stringify(modelSnapshot(model)), JSON.stringify(params), JSON.stringify(taskInput()), createdAt, createdAt);
     db.prepare(`INSERT INTO image_versions (id, project_id, task_id, parent_version_id, version_number, operation_type, selected_image_id, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'batch_generate', NULL, 'generating', ?)`)
       .run(versionId, projectId, taskId, input.parentVersionId || null, versionNumber, createdAt);
@@ -1821,7 +2131,7 @@ function startLocalEditBatch(projectId, input) {
   if (!model || model.type === 'vision') throw httpError(400, 'model.imageRequired', '请选择有效的图片生成模型');
   if (!model.capabilities.includes('edit_prompt')) throw httpError(400, 'model.noEditPrompt', '当前模型不支持提示词改图');
   const source = ensureUploadVersion(projectId, imageOrThrow(projectId, input.imageId));
-  const params = { ...normalizeGenerationParams(model, input.params), count: 1 };
+  const params = { ...normalizeGenerationParams(model, input.params, source), count: 1 };
   if (reference) { params.outputFormat = 'png'; params.transparent = false; }
   const taskId = uid();
   const userMessageId = uid();
@@ -1838,7 +2148,7 @@ function startLocalEditBatch(projectId, input) {
     db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)').run(userMessageId, projectId, 'user', 'prompt', JSON.stringify({ prompt: promptSummary, operation: 'local_edit', inputImageId: source.id, params: { ...params, quantity: instructions.length }, modelName: model.name, batch: { local: true, prompts: instructions } }), createdAt);
     db.prepare(`INSERT INTO generation_tasks (id, project_id, user_message_id, operation_type, model_id, model_snapshot_json, params_json, input_json, status, started_at, created_at)
       VALUES (?, ?, ?, 'batch_edit', ?, ?, ?, ?, 'generating', ?, ?)`)
-      .run(taskId, projectId, userMessageId, model.id, JSON.stringify({ ...model, apiKey: undefined }), JSON.stringify(params), JSON.stringify(taskInput), createdAt, createdAt);
+      .run(taskId, projectId, userMessageId, model.id, JSON.stringify(modelSnapshot(model)), JSON.stringify(params), JSON.stringify(taskInput), createdAt, createdAt);
     db.prepare(`INSERT INTO image_versions (id, project_id, task_id, parent_version_id, version_number, operation_type, selected_image_id, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'local_edit', NULL, 'generating', ?)`)
       .run(versionId, projectId, taskId, input.parentVersionId || source.version_id || null, versionNumber, createdAt);
@@ -2041,6 +2351,34 @@ function listGeneratingTasks(projectId) {
     createdAt: task.created_at,
     startedAt: task.started_at,
   }));
+}
+
+// A cheap fingerprint of everything that changes a project's visible state.
+// The workspace polls this instead of the whole bundle, so work started outside
+// the browser — an MCP call, another tab — shows up without a manual refresh.
+function projectRevision(projectId) {
+  const row = db.prepare(`
+    SELECT p.updated_at, p.current_image_id, p.current_version_id,
+      (SELECT COUNT(*) FROM image_versions v WHERE v.project_id = p.id AND v.deleted_at IS NULL) AS version_count,
+      (SELECT COUNT(*) FROM images i WHERE i.project_id = p.id) AS image_count,
+      (SELECT COUNT(*) FROM messages m WHERE m.project_id = p.id) AS message_count,
+      (SELECT COUNT(*) FROM generation_tasks t WHERE t.project_id = p.id AND t.status = 'generating') AS running_count
+    FROM projects p WHERE p.id = ? AND p.deleted_at IS NULL
+  `).get(projectId);
+  if (!row) throw httpError(404, 'project.notFound', '项目不存在');
+  const revision = [
+    row.updated_at, row.version_count, row.image_count, row.message_count, row.current_image_id || '', row.current_version_id || '',
+  ].join('|');
+  return {
+    revision,
+    updatedAt: row.updated_at,
+    versionCount: Number(row.version_count),
+    imageCount: Number(row.image_count),
+    messageCount: Number(row.message_count),
+    runningCount: Number(row.running_count),
+    currentImageId: row.current_image_id,
+    currentVersionId: row.current_version_id,
+  };
 }
 
 // ---- Project duplicate ------------------------------------------------------
@@ -2425,41 +2763,119 @@ async function restoreBackup(buffer) {
 }
 
 // ---- Static files with on-demand thumbnails ---------------------------------
+//
+// Every picture under /files/ and /library-files/ is content addressed: the
+// filename is a fresh uuid and the bytes are never rewritten in place, so a
+// strong validator plus a year-long immutable cache is safe and is what makes
+// the canvas instant on a second visit. Without it the browser re-downloaded a
+// multi-megabyte PNG (and re-decoded it) on every canvas switch, which was the
+// single largest cost of loading a project.
 
-async function serveFile(req, res, pathname, searchParams) {
-  const relative = decodeURIComponent(pathname.slice('/files/'.length));
-  const absolute = path.resolve(PROJECTS_ROOT, relative);
-  if (!absolute.startsWith(PROJECTS_ROOT + path.sep) || !existsSync(absolute)) return json(res, 404, { error: '图片不存在' });
-  const extension = path.extname(absolute).toLowerCase();
-  const mime = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : extension === '.webp' ? 'image/webp' : 'image/png';
-  let payloadPath = absolute;
-  const width = Math.min(2048, Math.max(0, Number(searchParams.get('w')) || 0));
-  if (width >= 64 && extension === '.png') {
-    try {
-      const projectSegment = relative.split(/[\\/]/)[0];
-      const cachePath = path.join(PROJECTS_ROOT, projectSegment, 'thumbnails', `${path.basename(absolute, '.png')}_w${width}.png`);
-      if (!existsSync(cachePath)) {
-        const thumbnail = makeThumbnailPng(await readFile(absolute), width);
-        if (thumbnail) {
-          mkdirSync(path.dirname(cachePath), { recursive: true });
-          await writeFile(cachePath, thumbnail);
-        }
-      }
-      if (existsSync(cachePath)) payloadPath = cachePath;
-    } catch { /* fall back to the original file */ }
-  }
-  res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
-  res.end(await readFile(payloadPath));
+const IMAGE_MIME = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.png': 'image/png' };
+
+function imageMime(filePath) {
+  return IMAGE_MIME[path.extname(filePath).toLowerCase()] || 'image/png';
 }
 
-async function serveGalleryFile(res, pathname) {
+// Sharp decodes far more than the hand-written PNG path did (JPEG and WebP
+// included) and is several times faster, so thumbnails are no longer limited
+// to 8-bit non-interlaced PNGs.
+async function makeCachedVariant(source, cachePath, width, format) {
+  try {
+    let pipeline = sharp(source).rotate();
+    if (width) pipeline = pipeline.resize({ width, withoutEnlargement: true });
+    const buffer = format === 'webp'
+      ? await pipeline.webp({ quality: 90, effort: 4 }).toBuffer()
+      : await pipeline.png({ compressionLevel: 9 }).toBuffer();
+    if (!buffer?.length) return null;
+    mkdirSync(path.dirname(cachePath), { recursive: true });
+    await writeFile(cachePath, buffer);
+    return buffer;
+  } catch {
+    return null;
+  }
+}
+
+function sendStatic(req, res, absolute, { immutable }) {
+  let stats;
+  try {
+    stats = statSync(absolute);
+  } catch {
+    return json(res, 404, { error: '图片不存在' });
+  }
+  const etag = `"${stats.size.toString(16)}-${Math.trunc(stats.mtimeMs).toString(16)}"`;
+  const lastModified = new Date(stats.mtimeMs).toUTCString();
+  const headers = {
+    'Content-Type': imageMime(absolute),
+    'Content-Length': stats.size,
+    'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'public, max-age=0, must-revalidate',
+    ETag: etag,
+    'Last-Modified': lastModified,
+  };
+  const ifNoneMatch = req.headers['if-none-match'];
+  const ifModifiedSince = req.headers['if-modified-since'];
+  const fresh = ifNoneMatch
+    ? ifNoneMatch.split(',').map(value => value.trim()).includes(etag)
+    : Boolean(ifModifiedSince) && Date.parse(ifModifiedSince) >= Math.trunc(stats.mtimeMs / 1000) * 1000;
+  if (fresh) {
+    // 304 没有消息体：不带 Content-Length，避免客户端等一段永远不会来的字节。
+    const { 'Content-Length': _ignored, ...validationHeaders } = headers;
+    res.writeHead(304, validationHeaders);
+    return res.end();
+  }
+  res.writeHead(200, headers);
+  createReadStream(absolute).pipe(res);
+}
+
+// `?w=` asks for a bounded variant and `fmt=webp` asks for a display copy.
+// A PNG at generation size is several megabytes while the same picture as WebP
+// is a few hundred kilobytes, which is the difference between a canvas that
+// appears at once and one that visibly waits; the original stays available for
+// download because the stored file never changes.
+// Anything at or above the source width, or a width below the smallest useful
+// size, is answered with the original so the cache never holds an upscale.
+async function servePicture(req, res, pathname, searchParams, { prefix, root }) {
+  const relative = decodeURIComponent(pathname.slice(prefix.length));
+  const absolute = path.resolve(root, relative);
+  if (!absolute.startsWith(root + path.sep) || !existsSync(absolute)) return json(res, 404, { error: '图片不存在' });
+  const width = Math.min(2048, Math.max(0, Number(searchParams.get('w')) || 0));
+  const format = String(searchParams.get('fmt') || '').toLowerCase() === 'webp' ? 'webp' : 'png';
+  if (width < 64 && format === 'png') return sendStatic(req, res, absolute, { immutable: true });
+  try {
+    const stem = path.basename(absolute, path.extname(absolute));
+    const cacheDirectory = prefix === '/files/'
+      ? path.join(root, relative.split(/[\\/]/)[0], 'thumbnails')
+      : path.join(root, 'thumbnails');
+    const cachePath = path.join(cacheDirectory, `${stem}_w${width || 'full'}.${format}`);
+    if (!existsSync(cachePath)) {
+      const source = await sharp(absolute).metadata();
+      if (!source.width || (width && width >= source.width)) {
+        // Nothing to shrink; a WebP copy is still worth it for a large original.
+        if (format === 'webp' && source.width) await makeCachedVariant(absolute, cachePath, null, 'webp');
+      } else {
+        await makeCachedVariant(absolute, cachePath, width, format);
+      }
+    }
+    if (existsSync(cachePath)) return sendStatic(req, res, cachePath, { immutable: true });
+  } catch { /* fall through to the original file */ }
+  return sendStatic(req, res, absolute, { immutable: true });
+}
+
+async function serveFile(req, res, pathname, searchParams) {
+  return servePicture(req, res, pathname, searchParams, { prefix: '/files/', root: PROJECTS_ROOT });
+}
+
+async function serveLibraryFile(req, res, pathname, searchParams) {
+  return servePicture(req, res, pathname, searchParams, { prefix: '/library-files/', root: LIBRARY_ROOT });
+}
+
+async function serveGalleryFile(req, res, pathname) {
   const relative = decodeURIComponent(pathname.slice('/gallery-files/'.length));
   const absolute = path.resolve(GALLERY_ROOT, relative);
   if (!absolute.startsWith(GALLERY_ROOT + path.sep) || !existsSync(absolute)) return json(res, 404, { error: '图片不存在' });
-  const extension = path.extname(absolute).toLowerCase();
-  const mime = GALLERY_MIME[extension.slice(1)] || 'application/octet-stream';
-  res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
-  res.end(await readFile(absolute));
+  // Gallery pictures are also written once under a uuid name, so the same
+  // immutable caching applies as for project files.
+  return sendStatic(req, res, absolute, { immutable: true });
 }
 
 async function serveApp(res, pathname) {
@@ -2473,7 +2889,75 @@ async function serveApp(res, pathname) {
   res.end(await readFile(absolute));
 }
 
-async function testModelConnection(model) {
+// Model names belong to the provider, not to the operator: asking the upstream
+// catalogue keeps the picker honest and stops typos from becoming 404s at
+// generation time. Every protocol is probed with its own auth header, and a
+// provider that answers with an unexpected shape degrades to "no list" rather
+// than a fabricated one.
+const IMAGE_MODEL_HINT = /image|dall-?e|flux|seedream|imagen|banana|kandinsky|sdxl|stable-diffusion|qwen-image|wanx|kolors|ideogram|recraft|nano/i;
+const VISION_MODEL_HINT = /(?:^|[-_.])(?:vl|vision|multimodal|omni)(?:$|[-_.])|gpt-4o|gpt-4\.1|claude|gemini|6\.8-flash|qwen-vl|glm-4v|internvl|llava/i;
+
+function modelEntries(payload) {
+  const rows = Array.isArray(payload) ? payload
+    : Array.isArray(payload?.data) ? payload.data
+    : Array.isArray(payload?.models) ? payload.models
+    : Array.isArray(payload?.result) ? payload.result
+    : [];
+  return rows.flatMap((row) => {
+    if (!row) return [];
+    const raw = typeof row === 'string' ? row : row.id || row.name || row.model || '';
+    const id = String(raw).replace(/^models\//, '').trim();
+    if (!id) return [];
+    const input = row?.input_modalities || row?.architecture?.input_modalities || null;
+    const output = row?.output_modalities || row?.architecture?.output_modalities || null;
+    return [{
+      id,
+      label: String(row?.display_name || row?.displayName || row?.name && row.name !== id ? row.name : id),
+      description: String(row?.description || '').slice(0, 240),
+      inputModalities: Array.isArray(input) ? input : null,
+      outputModalities: Array.isArray(output) ? output : null,
+    }];
+  });
+}
+
+async function listUpstreamModels(model, includeAll = false) {
+  const baseUrl = normalizeBaseUrl(model.baseUrl);
+  if (!baseUrl) throw httpError(400, 'model.missingBaseUrl', '请先填写 API Base URL');
+  if (!hasModelCredentials(model)) throw httpError(400, 'model.missingApiKey', '请先填写 API Key');
+  const key = modelKeys(model)[0] || '';
+  const protocol = model.type === 'image' ? imageApiFormat(model) : visionApiFormat(model);
+  const isGemini = model.type === 'image' ? protocol === 'gemini_interactions' : /generativelanguage\.googleapis\.com/i.test(baseUrl);
+  const headers = isGemini
+    ? { 'x-goog-api-key': key }
+    : protocol === 'anthropic_messages'
+    ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+    : { Authorization: `Bearer ${key}` };
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(15000) });
+  } catch (error) {
+    throw httpError(502, 'model.upstreamUnreachable', `无法连接上游模型列表：${error?.message || '网络错误'}`);
+  }
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw httpError(502, 'model.upstreamRejected', payload?.error?.message || payload?.message || `上游拒绝列出模型（${response.status}）`);
+  }
+  const all = modelEntries(payload);
+  if (!all.length) throw httpError(502, 'model.upstreamEmpty', '上游没有返回可识别的模型列表');
+  // Modality metadata is authoritative when present; name patterns are only a
+  // fallback for catalogues that omit it. A filter that removes everything is
+  // discarded so the operator still gets a usable picker.
+  const wanted = model.type === 'vision' ? 'image-input' : 'image-output';
+  const hinted = all.filter((entry) => (wanted === 'image-output'
+    ? (entry.outputModalities ? entry.outputModalities.includes('image') : IMAGE_MODEL_HINT.test(entry.id))
+    : (entry.inputModalities ? entry.inputModalities.includes('image') : VISION_MODEL_HINT.test(entry.id))));
+  // includeAll keeps the modality filter from hiding a model the operator knows
+  // is usable, which happens when a provider omits modality metadata.
+  const models = includeAll || !hinted.length ? all : hinted;
+  return { models, total: all.length, filtered: !includeAll && hinted.length > 0 && hinted.length < all.length };
+}
+
+async function testModelConnectionOnce(model) {
   const started = Date.now();
   if (model.provider === 'mock') return { ok: true, latency: Date.now() - started, message: '本地演示模型可用', code: 'msg.testMockOk' };
   if (!hasModelCredentials(model)) throw httpError(400, 'model.missingApiKey', '请先填写 API Key');
@@ -2488,7 +2972,7 @@ async function testModelConnection(model) {
       signal: AbortSignal.timeout(15000),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(payload?.error?.message || payload?.message || `连接失败（${response.status}）`), { status: 502 });
+    if (!response.ok) throw providerTestError(response, payload?.error?.message || payload?.message || `连接失败（${response.status}）`);
     return { ok: true, latency: Date.now() - started, message: 'Gemini Nano Banana 模型已识别', code: 'msg.testGeminiOk' };
   }
   if (model.type === 'vision') {
@@ -2511,13 +2995,13 @@ async function testModelConnection(model) {
       signal: AbortSignal.timeout(15000),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(payload?.error?.message || payload?.message || `连接失败（${response.status}）`), { status: 502 });
+    if (!response.ok) throw providerTestError(response, payload?.error?.message || payload?.message || `连接失败（${response.status}）`);
     return { ok: true, latency: Date.now() - started, message: `视觉识别端点连接成功（${apiFormat === 'anthropic_messages' ? 'Anthropic Messages' : apiFormat === 'responses' ? 'Responses' : 'Chat Completions'}）` };
   }
   if (model.provider === 'local') {
     const response = await fetch(`${baseUrl}/models`, { headers: bearerHeaders(model), signal: AbortSignal.timeout(15000) });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(payload?.error?.message || `连接失败（${response.status}）`), { status: 502 });
+    if (!response.ok) throw providerTestError(response, payload?.error?.message || `连接失败（${response.status}）`);
     if (!Array.isArray(payload.data) || !payload.data.some(item => item.id === model.model)) throw httpError(502, 'model.localModelNotFound', '本地服务未返回该模型，请核对已加载的模型名称');
     return { ok: true, latency: Date.now() - started, message: '本地服务已连接，模型名称已确认；生成与改图能力以服务实际支持为准', code: 'msg.testLocalOk' };
   }
@@ -2528,11 +3012,37 @@ async function testModelConnection(model) {
     const imageEndpoint = `${baseUrl}/images/generations`;
     response = await fetch(imageEndpoint, { method: 'OPTIONS', headers: bearerHeaders(model), signal: AbortSignal.timeout(15000) });
     if (response.ok || response.status === 405) return { ok: true, latency: Date.now() - started, message: '图片生成端点可达（该服务不提供通用模型查询）', code: 'msg.testEndpointOk' };
-    if (response.status === 401 || response.status === 403) throw httpError(502, 'model.unauthorized', '连接失败：API Key 未获授权');
+    if (response.status === 401 || response.status === 403) throw providerTestError(response, '连接失败：API Key 未获授权');
     if (isSenseNova && response.status === 404) return { ok: true, latency: Date.now() - started, message: 'SenseNova 图片模型配置已识别；请通过一次生成验证权限', code: 'msg.testSenseNovaOk' };
   }
-  if (!response.ok) throw Object.assign(new Error(`连接失败（${response.status}）`), { status: 502 });
+  if (!response.ok) throw providerTestError(response, `连接失败（${response.status}）`);
   return { ok: true, latency: Date.now() - started, message: '连接成功', code: 'msg.testOk' };
+}
+
+// The connection test walks the key pool the same way a real call does, so a
+// pool with one dead credential still reports the healthy one instead of a
+// blanket failure, and the UI can say which key answered.
+async function testModelConnection(model) {
+  const started = Date.now();
+  if (model.provider === 'mock') return { ok: true, latency: 0, message: '本地演示模型可用', code: 'msg.testMockOk' };
+  if (!hasModelCredentials(model)) throw httpError(400, 'model.missingApiKey', '请先填写 API Key');
+  const keys = modelKeys(model);
+  let usedKey = '';
+  const result = await withKeyPool(model, {
+    delay: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5000))),
+    attempt: async (keyedModel) => {
+      usedKey = keyedModel.apiKey;
+      return testModelConnectionOnce(keyedModel);
+    },
+  });
+  const index = Math.max(0, keys.indexOf(usedKey));
+  return {
+    ...result,
+    latency: Date.now() - started,
+    apiKeyCount: keys.length,
+    apiKeyIndex: index,
+    apiKeyLabel: usedKey ? `${usedKey.slice(0, 4)}…${usedKey.slice(-4)}` : '',
+  };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -2541,11 +3051,12 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname;
   const requestToken = pathname !== '/api/backup/restore' && pathname !== '/api/health' ? Symbol(pathname) : null;
   try {
-    if (pathname.startsWith('/api/') || pathname.startsWith('/files/') || pathname.startsWith('/gallery-files/')) assertLocalUiRequest(req);
+    if (pathname.startsWith('/api/') || pathname.startsWith('/files/') || pathname.startsWith('/gallery-files/') || pathname.startsWith('/library-files/')) assertLocalUiRequest(req);
     if (restoreInProgress && pathname !== '/api/backup/restore' && pathname !== '/api/health') throw restoringError();
     if (requestToken) activeServiceRequests.add(requestToken);
     if (pathname.startsWith('/files/') && req.method === 'GET') return await serveFile(req, res, pathname, url.searchParams);
-    if (pathname.startsWith('/gallery-files/') && req.method === 'GET') return await serveGalleryFile(res, pathname);
+    if (pathname.startsWith('/gallery-files/') && req.method === 'GET') return await serveGalleryFile(req, res, pathname);
+    if (pathname.startsWith('/library-files/') && req.method === 'GET') return await serveLibraryFile(req, res, pathname, url.searchParams);
     if (pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, storage: 'local-sqlite' });
 
     if (pathname === '/api/projects' && req.method === 'GET') return json(res, 200, { projects: listProjects() });
@@ -2566,6 +3077,33 @@ const server = http.createServer(async (req, res) => {
       const encoded = String(input.data || '').replace(/^data:[^;]+;base64,/, '');
       if (!encoded) throw httpError(400, 'import.requireData', '请提供导入文件内容');
       return json(res, 201, await importProjectZip(Buffer.from(encoded, 'base64')));
+    }
+
+    // Dropping a picture on the home screen creates a project for it and makes
+    // it the current image, so the workspace opens ready to work on that
+    // picture. Pass projectId to file it into an existing project instead.
+    // Importing from the home screen files the picture in the library only. It
+    // deliberately does not touch any project: the two collections stay apart,
+    // and a picture joins a project only when the user opens it from there.
+    if (pathname === '/api/library/images' && req.method === 'POST') {
+      const input = await body(req);
+      return json(res, 201, { image: await saveLibraryImage(input) });
+    }
+
+    if (pathname === '/api/library/images' && req.method === 'GET') {
+      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 200));
+      return json(res, 200, { images: listLibraryImages({ limit }) });
+    }
+
+    if (pathname === '/api/library/images/open' && req.method === 'POST') {
+      const input = await body(req);
+      return json(res, 201, await openLibraryImage(String(input.id || '')));
+    }
+
+    const libraryMatch = pathname.match(/^\/api\/library\/images\/([^/]+)$/);
+    if (libraryMatch && req.method === 'DELETE') {
+      removeLibraryImage(libraryMatch[1]);
+      return json(res, 200, { ok: true });
     }
 
     if (pathname === '/api/backup' && req.method === 'GET') return zipResponse(res, await buildBackupZip(), 'pixelflow-backup.zip');
@@ -2607,6 +3145,11 @@ const server = http.createServer(async (req, res) => {
       db.prepare('UPDATE projects SET deleted_at = ?, updated_at = ? WHERE id = ?').run(now(), now(), projectMatch[1]);
       return json(res, 200, { ok: true });
     }
+
+    // Only a scratch workspace can be removed for real; user projects are always
+    // soft-deleted so their pictures survive a mistake.
+    const purgeMatch = pathname.match(/^\/api\/projects\/([^/]+)\/purge$/);
+    if (purgeMatch && req.method === 'POST') return json(res, 200, purgeScratchProject(purgeMatch[1]));
 
     const duplicateMatch = pathname.match(/^\/api\/projects\/([^/]+)\/duplicate$/);
     if (duplicateMatch && req.method === 'POST') return json(res, 201, await duplicateProject(duplicateMatch[1]));
@@ -2674,6 +3217,8 @@ const server = http.createServer(async (req, res) => {
     const localEditBatchMatch = pathname.match(/^\/api\/projects\/([^/]+)\/local-edit-batch$/);
     if (localEditBatchMatch && req.method === 'POST') return json(res, 202, startLocalEditBatch(localEditBatchMatch[1], await body(req)));
 
+    const revisionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/revision$/);
+    if (revisionMatch && req.method === 'GET') return json(res, 200, projectRevision(revisionMatch[1]));
     const tasksMatch = pathname.match(/^\/api\/projects\/([^/]+)\/tasks$/);
     if (tasksMatch && req.method === 'GET') return json(res, 200, { tasks: listGeneratingTasks(tasksMatch[1]) });
     const modelLogsMatch = pathname.match(/^\/api\/projects\/([^/]+)\/model-logs$/);
@@ -2708,7 +3253,9 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/models' && req.method === 'GET') {
       const config = readModels();
-      return json(res, 200, { activeModel: config.active_model, activeVisionModel: config.active_vision_model, models: config.models.map(publicModel) });
+      // The browser needs to know whether background removal can run locally:
+      // that path does not require a model with transparent PNG output.
+      return json(res, 200, { activeModel: config.active_model, activeVisionModel: config.active_vision_model, models: config.models.map(publicModel), cutout: { enabled: cutoutEnabled() } });
     }
     if (pathname === '/api/gallery' && req.method === 'GET') return json(res, 200, { entries: listGalleryEntries() });
     if (pathname === '/api/gallery' && req.method === 'POST') return json(res, 201, { entry: galleryDto(await upsertGalleryEntry(await body(req, 32 * 1024 * 1024))) });
@@ -2720,21 +3267,66 @@ const server = http.createServer(async (req, res) => {
     const galleryIdMatch = pathname.match(/^\/api\/gallery\/([^/]+)$/);
     if (galleryIdMatch && req.method === 'PATCH') return json(res, 200, { entry: galleryDto(await upsertGalleryEntry(await body(req, 32 * 1024 * 1024), galleryIdMatch[1])) });
     if (galleryIdMatch && req.method === 'DELETE') return json(res, 200, deleteGalleryEntry(galleryIdMatch[1]));
+    if (pathname === '/api/models/upstream-models' && req.method === 'POST') {
+      const candidate = await body(req);
+      // Same mask substitution as the connection test: the browser never holds
+      // a credential, only its position.
+      const saved = candidate.id ? readModels().models.find((model) => model.id === candidate.id) : null;
+      if (saved) {
+        const savedKeys = modelApiKeys(saved);
+        if (Array.isArray(candidate.apiKeys)) {
+          candidate.apiKeys = candidate.apiKeys.map((value, index) => (value === MASKED_API_KEY ? savedKeys[index] || '' : String(value || ''))).filter(Boolean);
+          candidate.apiKey = candidate.apiKeys[0] || '';
+        } else if (candidate.apiKey === MASKED_API_KEY) {
+          candidate.apiKey = savedKeys[0] || '';
+          candidate.apiKeys = savedKeys;
+        }
+        // The picker only needs the connection coordinates; anything the form
+        // did not send comes from the stored model so a bare { id } works.
+        for (const field of ['provider', 'type', 'baseUrl', 'imageApiFormat', 'apiFormat', 'model']) {
+          if (candidate[field] === undefined || candidate[field] === '') candidate[field] = saved[field];
+        }
+        if (!candidate.apiKey && !(candidate.apiKeys || []).length) {
+          candidate.apiKey = savedKeys[0] || '';
+          candidate.apiKeys = savedKeys;
+        }
+      }
+      return json(res, 200, await listUpstreamModels(candidate, Boolean(candidate.includeAll)));
+    }
     if (pathname === '/api/models' && req.method === 'POST') return json(res, 201, { model: upsertModel(await body(req)) });
     if (pathname === '/api/models/test-config' && req.method === 'POST') {
       const candidate = await body(req);
-      if (candidate.apiKey === '••••••••' && candidate.id) {
-        const saved = readModels().models.find((model) => model.id === candidate.id);
-        if (saved) candidate.apiKey = saved.apiKey;
+      // The form never holds real keys, only masks: substitute each masked slot
+      // with the credential stored on the server at the same position.
+      const saved = candidate.id ? readModels().models.find((model) => model.id === candidate.id) : null;
+      if (saved) {
+        const savedKeys = modelApiKeys(saved);
+        if (Array.isArray(candidate.apiKeys)) {
+          candidate.apiKeys = candidate.apiKeys.map((value, index) => (value === MASKED_API_KEY ? savedKeys[index] || '' : String(value || ''))).filter(Boolean);
+          candidate.apiKey = candidate.apiKeys[0] || '';
+        } else if (candidate.apiKey === MASKED_API_KEY) {
+          candidate.apiKey = savedKeys[0] || '';
+          candidate.apiKeys = savedKeys;
+        }
       }
       return json(res, 200, await testModelConnection(candidate));
+    }
+    const keyPoolMatch = pathname.match(/^\/api\/models\/([^/]+)\/key-pool$/);
+    if (keyPoolMatch && req.method === 'GET') {
+      const model = readModels().models.find((item) => item.id === keyPoolMatch[1]);
+      if (!model) throw httpError(404, 'model.notFound', '模型不存在');
+      res.setHeader('Cache-Control', 'no-store');
+      return json(res, 200, { keys: keyPoolStatus(model), count: modelApiKeys(model).length });
     }
     const modelApiKeyMatch = pathname.match(/^\/api\/models\/([^/]+)\/api-key$/);
     if (modelApiKeyMatch && req.method === 'POST') {
       const model = readModels().models.find((item) => item.id === modelApiKeyMatch[1]);
       if (!model) throw httpError(404, 'model.notFound', '模型不存在');
       res.setHeader('Cache-Control', 'no-store');
-      return json(res, 200, { apiKey: String(model.apiKey || '') });
+      // Credentials live only in config/models.json on this host; this endpoint
+      // is the single place the owner can read them back for editing.
+      const keys = modelApiKeys(model);
+      return json(res, 200, { apiKey: keys[0] || '', apiKeys: keys, apiKeyCount: keys.length });
     }
     const modelMatch = pathname.match(/^\/api\/models\/([^/]+)$/);
     if (modelMatch && req.method === 'PATCH') return json(res, 200, { model: upsertModel(await body(req), modelMatch[1]) });
@@ -2770,7 +3362,10 @@ const server = http.createServer(async (req, res) => {
     if (status >= 500) console.error(error);
     else console.error(`${req.method} ${pathname} → ${status}: ${error.message}`);
     let payload;
-    if (error.status === 502) {
+    // Upstream failures keep their real status so the key pool can tell a
+    // revoked credential from a rate limit from a platform outage; the friendly
+    // wording still applies to both the 502 family and a raw 429.
+    if (error.status === 502 || error.status === 429) {
       const friendly = friendlyModelMessage(error.message);
       payload = { error: friendly.text };
       if (friendly.code) { payload.code = friendly.code; payload.params = friendly.params || {}; }

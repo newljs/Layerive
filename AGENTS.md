@@ -3,7 +3,7 @@
 > **维护契约（必须遵守）**：只要改动了项目的功能、架构、数据结构、API、模型适配、运行方式、文件位置或重要约束，必须在同一次改动中更新本文件。先核对相关实现，再更新受影响章节；不要仅凭 README 推断。纯格式调整且不改变行为时可不更新。  
 > 更新时请同步修改本文的“最后核对”日期和相应内容；若现有描述不再可信，优先修正文档而不是保留过期说明。
 
-**最后核对**：2026-10-29（核对上色与线稿三模式及通用插件弹窗改版，48 项服务端测试与生产构建通过；上色与线稿插件扩展三模式并按模式显隐及过滤参数，插件版本更新为 1.1.0；合入 PR #9，补齐中英文 README 的 Docker 首次启动、日志、停止/重启、升级、端口冲突、数据迁移和宿主机模型联网说明；新增基于 library/node:24-alpine 的 Docker 多阶段构建与 Compose 本机部署、非 root 运行、数据/配置命名卷和健康检查；容器监听地址可配置，恢复后退出由 Docker 重启；全图文字清理改为仅调用图片编辑模型，无需视觉配置；使用明确的文字/数字/水印/logo 清理及其他内容保留提示词，完整结果按原尺寸 PNG 保存，支持取消和失败不发布版本，双语界面说明不保证逐像素保留；删除插件版本更新为 1.1.0；新增 Seedream 5.0 Pro/Flash、Qwen-Image 3.0 Pro/3.0 与 2.1 Pro/Turbo、FLUX.2 Pro 原生协议与推荐型号，验证有序双图、候选/批量、透明能力边界、异步轮询取消及只读连接检查；整图清理视觉分析时限由 120 秒延长为 240 秒，保留 300 秒任务总预算与取消；超时覆盖完整响应接收并提供双语稳定错误码；提示词画廊添加/编辑弹窗改为内容自适应的紧凑双栏，配图点击上传、标题分类并排、提示词分组和固定保存提示，适配窄屏/矮窗口/暗色及双语；浏览器原生确认框统一替换为应用内弹窗，提交锁定、错误重试、键盘焦点及暗色双语适配；删除版本仅引用冲突允许再次强制确认；弹窗和画布浮窗统一固定标题/关闭及操作区，仅中间内容滚动，适配矮窗口与窄画布；对比弹窗固定顶部与历史条、图片自适应高度，历史图以箭头/渐隐浏览，弹窗滚动条统一细圆角并适配暗色；前后对比分隔线和手柄支持鼠标/触屏拖动，与底部滑块同步并支持键盘调节；发行版本更新到 0.1.9，GitHub 标签必须与 package.json 版本一致，CI 在打包前校验；macOS arm64 使用 macos-15，Intel x64 使用 macos-15-intel；此前桌面图标以 SVG 母版生成透明 PNG 和七尺寸 Windows ICO，去除白底与烘焙阴影并放大标志，Windows 安装包和窗口统一使用 ICO，构建前自动刷新图标；工作台横向功能栏新增溢出时左右滚动按钮、边缘渐隐、鼠标滚轮及键盘浏览，兼容动态插件、中英文、暗色与减少动态效果；工具栏将黑白照片上色入口移动到融合模式按钮之后；此前宣传视频目录整体取消 Git 跟踪并加入忽略规则，仅保留本地；新增文字识别扫描、图片任务阶段动效、局部选区动效与解码后结果淡入；任务动效绑定提交图片和选区，兼容暗色模式与减少动态效果；文字识别弹窗隔离过期请求；扩图目标画布过渡与新增区域流光、融合落点反馈、新版本历史高亮和版本树淡入）
+**最后核对**：2026-11-13（本轮含三项：① 可选本地抠图后端 —— 新增 `server/cutout.mjs`（`LAYERIVE_CUTOUT_URL`、`cutoutLocal()` 调 `POST {base}/cutout` 取 Alpha PNG、`alphaStats()` 要求透明/可见像素各 ≥0.005），去除背景新增 `strategy`（`auto`/`local`/`ai`）与 `rect`/`feather`，`local` 不依赖图片模型透明能力也不需要视觉模型，失败以 `backgroundRemoval.invalidOutput` 终止而非降级，`preparePlugin()` 允许插件直接交成品字节并把任务阶段置为 `cutting`；`GET /api/models` 增返 `cutout.enabled`；新增 `server/cutout.test.mjs`。② 修复画布载图慢与历史版本不自动上画布：`/files/`、`/library-files/` 静态服务从 `Cache-Control: no-cache` + 无校验头 + 整文件 `readFile` 改为 `Content-Length` / `ETag` / `Last-Modified` + `304` + `createReadStream` 流式返回，图片文件名是 uuid 且从不覆盖，因此给 `public, max-age=31536000, immutable`；缩略图/画布变体统一改由 Sharp 生成（`makeCachedVariant()`，替换原来的纯 JS `makeThumbnailPng()`，后者不再被服务端引用），并支持 `?fmt=webp`：画布改为请求 `canvasUrl()`（`?w=1600&fmt=webp`），实测同一张 5.09 MB 原图 5,091,917 B → 189,834 B（约 27 倍），重复访问命中浏览器缓存、二次进入 2.3 ms；下载链接改用 `fullUrl()` 保持原图。修掉 `304` 误带 `Content-Length` 会让客户端等 body 的问题，并修正 `serveGalleryFile` 签名与调用不一致。历史版本不自动上画布的原因在客户端：轮询终态与 3 秒 revision 监听都会无条件把 `project.currentImageId` 写回画布，覆盖手动选择；现在用 `manualPickRef` 区分「用户手选」与「跟随服务端」，仅当没有手选（或出现新版本）时才跟随，`startPolling()` 开始时清空该标记；`chooseVersion()` 同时设置 `inputImageId`（否则「改图」用的是上一张）；新增兜底 effect：`currentImageId` 指向已软删除版本时回退到服务端指针 / 最新版本 / 最后一张图，不再出现空白画布；`.version-item-actions` 从 hover 才显示改为常显（低透明度，hover/focus 提亮），触屏与快速点击不再点不到「改图」；`ImageWithReveal` 增加 `loadedRef` 缓存与 1.5 秒兜底切换，请求卡住时不会一直停在旧图。③ 将 `mcp/` 与上述全部改动提交并推送到远程仓库。79 项服务端测试、`npm run lint`、`npm run build` 均通过）。以下为上一轮：按官方文档完善日日新适配：
 **项目定位**：Layerive 是一个仅本地运行的、以“项目 + 图片版本树”为中心的 AI 图片创作工作台。它将文生图、基于图片的编辑、融合、文字编辑、局部编辑、删除元素、去除背景、扩图、去水印、对话记录和项目备份统一保存到本机。
 
 ## 1. 运行与边界
@@ -30,7 +30,9 @@
 
 - 操作确认：删除项目、图片版本、模型配置、提示词画廊收藏及恢复完整备份均使用 `src/ConfirmDialog.tsx` 的统一应用内确认弹窗，不调用浏览器 `alert` / `confirm` / `prompt`。由 `main.tsx` 中的 ConfirmProvider 提供异步 `useConfirm()`；使用自定义样式的 HTML dialog 顶层模态展示，阻止底层交互与图片粘贴，默认聚焦取消、Tab 限定在弹窗内、Escape/关闭按钮取消，关闭后恢复原焦点。提交期间锁定按钮且不能关闭，失败保留弹窗并显示错误以便重试，成功关闭；标题与操作区固定、中间内容滚动，支持窄窗口、暗色与中英文。恢复确认展示选中文件名，取消后可再次选择同一备份。Electron 启动/服务异常的系统错误弹窗及系统文件选择器仍由宿主提供。
 - 项目库：卡片 / 列表切换、搜索、最近更新时间排序、收藏、创建、重命名、复制与软删除项目。重命名有两个入口：项目库卡片 / 列表行的铅笔按钮弹出重命名对话框，工作台顶栏的项目名输入框失焦即保存（输入框右侧的铅笔图标提示其可编辑）。两者都只改名称，不影响图片、对话与版本。
+- 主页分栏与图片库：主页顶部用「项目 / 图片」两个 tab 区分两类内容，选择记在 `localStorage` 的 `layerive.home-tab`。**项目与图片是两个互不相通的集合**：图片 tab 只列图片库（`library_images` 表 + `data/library/`），项目里的图片（无论 `generated` 还是 `upload`）永远不出现在这里。图片卡显示缩略图、图片名、宽高与时间，搜索框按图片名过滤，右上角按钮可从图片库删除；点开图片才会把它复制一份进项目（`POST /api/library/images/open`），之后重复打开回到同一个项目。项目 tab 保留原有全部 / 最近 / 收藏筛选、搜索与卡片 / 列表切换。
 - 项目持久化：保存项目描述、封面、当前图片/版本、默认图片模型和工作台草稿。工作台草稿每次变更先写入 `localStorage` 的 `layerive-draft:<projectId>` 恢复副本，服务端保存成功后删除；网络失败时阻止内部离开工作台，刷新 / 关窗后可从该副本恢复。当前标签页的顶层视图与工作台 `projectId` 另存于 `sessionStorage` 的 `layerive-current-view`，浏览器后台丢弃标签页并重载后会恢复原工作台；若项目已不存在则回退项目库。
+- 直接导入图片：主页顶栏「导入图片」按钮、图片 tab 的虚线导入卡片、以及把图片文件拖到主页任意位置三种方式都走 `POST /api/library/images`，只把图片存进图片库——不建项目、不动任何项目，导入后留在主页。要开始编辑，再在图片 tab 点开该图（`POST /api/library/images/open`）：首次会新建以图片名命名的项目、把图片字节复制进项目 `uploads/`、设为当前图与封面；之后重复打开直接回到该项目。拖拽用 `dragDepth` 计数避免子元素抖动，拖入时显示整页 `.drop-overlay`；非 PNG/JPEG/WebP 在客户端即被拒绝。
 - 素材上传：无论项目是否已有图片，均可继续上传 PNG、JPEG、WebP（单文件最大 10MB）；服务端会解析并保存原图宽高。新上传图片会立即成为当前画布和下一次编辑的输入素材，并自动匹配当前模型最接近的支持比例。也支持在工作台任意位置（含画布）直接 Ctrl+V 粘贴剪贴板图片，走同一上传流程；文本框内的粘贴始终以文本优先，上传进行中会忽略重复粘贴。
 - 项目导出 / 导入：导出单项目 ZIP，导入时生成新的项目及关联 ID。
 - 完整备份 / 恢复：备份 SQLite、项目图片、画廊配图和模型配置；导出与导入统一限制 ZIP 至 10,000 个条目、单条 512MB、总解压后 2GB。恢复会进入维护状态，取消并等待在途任务完成，再在隔离目录校验 ZIP 路径、数据库完整性、外键、必要表及字段；随后 checkpoint 并创建含同样内容的安全备份，最后替换数据并重启服务。服务启动时会为全部未删除项目重建标准素材目录，因此空项目也可在恢复后继续上传和生成。
@@ -41,7 +43,7 @@
 
 - 画布功能栏：保留单行横向排列和原功能顺序；内容超出实际画布宽度时，两端显示固定滚动箭头，可继续浏览的一侧显示边缘渐隐，到达边界的箭头禁用，全部放得下时隐藏箭头和渐隐。点击箭头平滑移动约四分之三可视宽度，鼠标纵向/横向滚轮及触控板可浏览，Ctrl/Command + 滚轮保留原缩放行为；到达边界后不拦截页面滚动。Tab 聚焦自动露出完整工具，工具内支持左右方向键及 Home/End，跳过禁用项。ResizeObserver 同步响应画布宽度、中英文文案和动态插件变更；兼容暗色，减少动态效果时箭头立即滚动。
 
-- 处理动效：文字编辑弹窗在识别请求持续超过 200ms 后，于实际图片范围内上下扫描，识别完成/失败或关闭弹窗时移除；只展示真实返回的文字与坐标，文字列表和识别框淡入，关闭后旧请求不能覆盖新一次识别。主画布按现有任务阶段显示 planning 扫描、generating/未知运行阶段柔和流光、preserving/compositing/validating 呼吸效果及中英文状态提示，不模拟百分比或中间结果；动效层不接收鼠标事件。局部修改、框选删除、提取及批量局部修改使用提交时的选区快照，绑定输入图片 ID：查看其他历史图片隐藏动效，返回输入图恢复原区域，失败/取消/结束移除。无图片的文生图按提交尺寸比例显示等待画布；批量候选只有正在处理项显示流光，已完成项正常展示。主画布换图保留上一张，待新图加载/解码完成后切换并以 220ms 淡入，期间不允许在旧图上框选或设置融合/保留人物落点；候选条、对话结果和批量缩略图加载后淡入。动效支持暗色和 `prefers-reduced-motion`（静态提示），不引入动画依赖或修改模型协议。输入图/选区快照仅属于当前工作台会话，刷新恢复的任务继续显示原任务进度，不猜测画布处理区域。
+- 处理动效：文字编辑弹窗在识别请求持续超过 200ms 后，于实际图片范围内上下扫描，识别完成/失败或关闭弹窗时移除；只展示真实返回的文字与坐标，文字列表和识别框淡入，关闭后旧请求不能覆盖新一次识别。主画布按现有任务阶段显示 planning 扫描、generating/未知运行阶段柔和流光、preserving/compositing/validating 呼吸效果及中英文状态提示，不模拟百分比或中间结果；动效层不接收鼠标事件。局部修改、框选删除、提取及批量局部修改使用提交时的选区快照，绑定输入图片 ID：查看其他历史图片隐藏动效，返回输入图恢复原区域，失败/取消/结束移除。无图片的文生图按提交尺寸比例显示等待画布；批量候选只有正在处理项显示流光，已完成项正常展示。主画布换图保留上一张，待新图加载/解码完成后切换并以 220ms 淡入（最多等 1.5 秒，超时即切换，避免请求卡住时画布一直停在旧图），期间不允许在旧图上框选或设置融合/保留人物落点；候选条、对话结果和批量缩略图加载后淡入。动效支持暗色和 `prefers-reduced-motion`（静态提示），不引入动画依赖或修改模型协议。输入图/选区快照仅属于当前工作台会话，刷新恢复的任务继续显示原任务进度，不猜测画布处理区域。
 
 - 操作反馈动效：扩图预览按目标尺寸和原图尺寸居中展示参考范围，进入和切换比例时以 240ms 过渡；提交后保留目标尺寸快照，任务期间仅在周围新增区域显示阶段动效，原图保持清晰。预览是比例示意，不承诺模型逐像素保留或精确放置；切换到其他图片、失败、取消或完成后隐藏任务预览，刷新恢复不猜测目标区域。融合拖入有效主图范围时加强边框和落点标记；接收拖放、点击或键盘落点后播放一次 600ms 扩散圆环及参考图轻弹，表示输入已接收，不能代表模型成功，创建失败清除反馈。历史版本在首次出现实际输出时高亮约 2.4 秒，空生成节点和同一批次后续追加图片不重复触发；本会话新保存版本在版本树中首次展示时节点与连线淡入，关闭后不重播，初始化加载已有版本不播放。全部新增动效支持减少动态效果，扩散/弹跳/淡入/尺寸过渡关闭，保留静态提示。
 
@@ -65,7 +67,7 @@
 - 图片变清晰：对当前图片调用图片模型的改图能力，提升细节和清晰度，同时约束模型保持原图的主体、文字、构图、比例、颜色和风格不变。
 - 扩图：选择目标尺寸，以原图为核心自然补全新增画布区域。
 - 去水印：输入校验后即返回任务 ID，视觉模型在可取消任务内判断 / 定位水印；确认存在后调用图片编辑模型修复遮挡区域，无水印时任务以 watermark.notFound 失败且不出图。
-- 去除背景：一键对当前整图进行语义抠图。视觉模型按主体面积、位置、清晰度、前景层级和互动关系判断最可能应保留的主要人物 / 动物 / 物体组，保留构成同一主要事件的对象及必要附件，排除远处、微小、模糊或无互动的陪衬元素，再由图片编辑模型只保留该主体并输出透明背景。该操作强制单图 PNG、`transparent=true`，只允许声明支持透明背景且支持 PNG 的 `edit_prompt` 图片模型；服务端在落库前用 Sharp 检查结果同时包含足量透明像素和可见主体，白底、纯色底、无透明通道或空透明图会以 `backgroundRemoval.*` 稳定错误码终止且不创建版本。
+- 去除背景：一键对当前整图进行语义抠图，请求可带 `strategy` 选择路径（`auto` 默认 / `local` / `ai`），并可用 `rect`（百分比）与 `feather` 把抠图限制在单个主体上。`auto` 在配置了本地抠图服务时先本地、失败或结果不可用再退回模型；未配置服务时等价于 `ai`。`local` 路径把原图交给本地抠图服务（`LAYERIVE_CUTOUT_URL`，`POST {base}/cutout`，multipart 上传 `image` 及可选 `rect` / `feather`）取回带真实 Alpha 的 PNG，用 `alphaStats()` 检查透明与可见像素比例（各 ≥0.005）都达标才采用，因此**不要求图片模型具备透明能力，也不需要视觉模型**；`local` 明确失败时以 `backgroundRemoval.invalidOutput` 终止而不是偷偷换路径。`ai` 路径由视觉模型按主体面积、位置、清晰度、前景层级和互动关系判断最可能应保留的主要人物 / 动物 / 物体组，保留构成同一主要事件的对象及必要附件，排除远处、微小、模糊或无互动的陪衬元素，再由图片编辑模型只保留该主体并输出透明背景；该路径强制单图 PNG、`transparent=true`，只允许声明支持透明背景且支持 PNG 的 `edit_prompt` 图片模型。两条路径都在落库前用 Sharp 检查结果同时包含足量透明像素和可见主体，白底、纯色底、无透明通道或空透明图会以 `backgroundRemoval.*` 稳定错误码终止且不创建版本。插件可在准备阶段直接交出成品字节（`prepare()` 返回 `local.bytes`），此时任务阶段为 `cutting` 而非 `generating`，不经过图片模型；`preparePlugin()` 允许「有本地结果」与「有提示词」二者之一。
 - 提取素材：点击后进入类似融合的画布右侧工具栏，收起项目对话；提供「框选提取（默认）/ 服装提取 / 饰品提取 / 表面图案 / 背景提取」五种快捷场景，每次进入默认框选提取。顶部退出入口与底部补充说明（≤1000 字符）/ 提取按钮固定，中间场景与截图预览独立滚动；支持框选或显式选择整图。用户可从图片内外起拖并越界框选，最终取与图片相交的有效区域。canvas 截图维持上限 2048px、最小边 256px、比例超 2:1 边缘补边、超大转 JPEG 的输入规范。视觉模型结合场景、框选内容和说明识别意图：默认模式保留主体原样；服装和饰品分离穿戴者及杂物，整理为居中、适度留白、浅色背景、柔和光影的商品展示，保留设计/材质/颜色/标识，仅对少量遮挡保守补全；表面图案去除载体并校正为平面素材；背景模式保留选区环境、移除前景主体并补全遮挡。没有合适目标、意图不明或无法可靠还原时停止，不调用图片模型。截图存为 extract 素材，视觉规划与图片编辑在同一可取消任务中完成（planning / generating）；失败或取消保留选区和说明，退出面板不取消任务，成功回到对话展示输出。输出关联原图和截图，上传原图首次提取补建起始版本。
 - 提示词画廊：入口在工作台顶栏（模型选择旁带中文文案的「提示词画廊」胶囊按钮，窄屏自动收起副标题），对话与批量模式都可用。按分类浏览内置模板：对话模式把完整提示词填入对话框、风格提示词设为项目风格；批量模式把完整提示词追加为批量提示词列表的一行（自动切到列表页，满 50 条时拒绝追加），风格提示词在批量文生图时写入「统一风格提示词」、其余场景写项目风格。支持手动添加 / 编辑 / 删除“我的收藏”条目（可上传配图，纯文本亦可）。添加/编辑时弹窗宽度上限 960px、高度随内容收紧并受视口约束，左侧为可直接点击上传的配图预览及视觉提炼区，右侧标题与分类并排、完整提示词和风格提示词分组说明；窄屏改为单栏、配图区横向紧凑排列，标题/关闭和底部保存提示及按钮固定，仅中间内容滚动，兼容暗色与中英文；完整提示词或风格提示词至少填写一项才能保存。上传图片后可调用视觉模型提炼完整提示词与风格描述；在工作台对画布主图、候选条、消息画廊中的图片点击右键，可一键收藏到画廊（视觉模型自动提炼提示词，失败时仅收图、提示词留空）。用户画廊数据存于 SQLite `gallery_entries` 表与 `data/gallery/` 目录，随完整备份 / 恢复。
 - 暗色模式：`src/theme.tsx` 的 ThemeProvider 以 `data-theme` 属性切换 `html` 主题，偏好存于 localStorage（`layerive-theme`），暗色样式统一写在 `styles.css` 末尾的 `html[data-theme='dark']` 覆盖块；首页、工作台、模型配置三处顶栏均有切换按钮。
@@ -74,7 +76,7 @@
 ### 版本、对话与任务
 
 - 版本树：所有普通/插件/批量生成入口在写入任务或调用模型前，校验显式 parentVersionId 属于当前项目且未删除，否则返回 404 version.notFound；上传图首次编辑时补建起始版本；每次成功生成 / 编辑均产生可分支的版本节点与输出图片。
-- 历史操作：选择历史版本查看、从历史版本继续创作、查看可缩放 / 可平移的完整版本树。历史列表中的多图版本以候选缩略图拼图、数量角标和“多图 · N 张”标签区分；可从版本卡片或当前画布工具栏把该版本全部输出图下载为 ZIP，包内按 `V<版本号>-<两位序号>.<扩展名>` 命名。
+- 历史操作：选择历史版本查看、从历史版本继续创作、查看可缩放 / 可平移的完整版本树。点击版本卡片会同时切换画布与「改图」的输入图（`chooseVersion()` 设置 `currentImageId` 和 `inputImageId`），并置 `manualPickRef` 标记：此后 3 秒 revision 监听与任务轮询不再用服务端 `currentImageId` 覆盖手选（仅出现新版本时才跟随），避免「点了历史版本又被自动切回」。版本卡片上的改图 / 下载 / 删除按钮常显（低透明度，hover 或 focus 提亮），不再依赖 hover 才出现，触屏与快速点击也能命中。若 `currentImageId` 指向已软删除版本（`bundle()` 不返回该图片），兜底 effect 会依次回退到服务端指针、最新版本选中图、最后一张图，画布不会停在空白。历史列表中的多图版本以候选缩略图拼图、数量角标和“多图 · N 张”标签区分；可从版本卡片或当前画布工具栏把该版本全部输出图下载为 ZIP，包内按 `V<版本号>-<两位序号>.<扩展名>` 命名。
 - 对比：提供并排和滑块式前后图片对比。前后对比支持直接拖动中间分隔线或圆形手柄（32px 横向命中范围，鼠标/触屏 Pointer Events），与底部滑块同步；指针捕获保证移出图片后仍可拖动，松开/取消/捕获丢失时结束，位置限制为 0–100%。分隔栏可通过 Tab 聚焦，方向键微调、Shift + 方向键或 PageUp/PageDown 调整 10%，Home/End 移至两端；沿用双语无障碍标签，支持暗色焦点提示。
 - 对比弹窗布局：顶部标题/模式/关闭按钮和底部历史图片条固定，图片区域按剩余高度缩放并保留完整比例；常规窗口无需整窗滚动，窄屏并排模式上下排列，极低高度仅中间内容区滚动。历史条由 `CompareImagePicker.tsx` 提供，隐藏原生横向滚动条，仅溢出时展示左右箭头/边缘渐隐，边界禁用对应箭头；支持滚轮/触控板、Tab/左右方向键/Home/End 浏览，选中项和焦点自动露出，ResizeObserver 响应尺寸变化，减少动态效果时箭头立即滚动。所有 `.modal-backdrop` 内的滚动区域统一为透明轨道、圆角细滚动条（Chromium 6px、无两端箭头，其他浏览器使用 thin），悬停滑块加深，暗色使用独立颜色；历史条仍隐藏滚动条。
 - 版本删除：软删除版本；有子版本时需确认强制删除，后代会连接至被删节点的父节点；正在增量写入的批量版本必须先取消或等待结束，不能删除。
@@ -85,7 +87,7 @@
 
 - 本地模型：模型配置页提供「添加图片生成模型 / 添加视觉识别模型 / 添加本地模型」独立图标文字入口；表单以「接入方式」切换在线与本地，`provider: local` 同时适用于图片与视觉模型。本地图片默认 OpenAI Images、`http://127.0.0.1:8000/v1`、1024×1024、PNG、单张、仅文生图、不声明透明能力；视觉默认 Chat Completions、`http://127.0.0.1:1234/v1`，也可选择 Responses。地址/端口可修改，模型名必须填写服务实际加载的名称。仅连接已启动的兼容服务，不安装/加载模型文件，不适配原生 ComfyUI 工作流。API Key 可留空，空 Key 请求不发送 Authorization，填写后正常发送 Bearer；在线模型仍要求 Key。切换在线/本地时清空原 Key，避免误带到另一个服务。本地图片连接测试查询 `/models` 并校验名称，视觉测试使用所选协议发起简短文本请求；连接成功不保证该模型具备图片生成/理解/编辑能力。
 
-- 图片模型：新增、编辑、删除、连接测试、设置默认模型，并按能力控制工作台可用操作。图片预设（日日新、OpenAI、Gemini、Grok、豆包 Seedream、Qwen-Image、FLUX.2、自定义）只填充推荐初值；图片 API 协议独立选择 OpenAI Images、Gemini Interactions、Grok Images、Seedream Images、Qwen Images 或 BFL FLUX。每个模型保存可选尺寸、输出格式、透明背景和单次最大图片数，工作台和服务端均据此约束参数。新增预设提供推荐型号选择并保留可编辑的模型 ID / 接入点，分别包含 Seedream 5.0 Pro / Flash、Qwen-Image 3.0 Pro / 3.0 / 2.1 Pro / 2.1 Turbo 与固定版本 FLUX.2 Pro；三家默认优先使用 Pro。Seedream 支持 PNG/JPEG，Qwen 固定 PNG，FLUX 支持 PNG/JPEG/WebP；质量选项对这三种原生协议禁用且不传给平台。透明背景仅对 Qwen 2.1 的两个官方名称开放，并沿用去背景的 Alpha 校验；Seedream 和 FLUX 暂不提供透明生成或去背景。配置步骤、限制和官方依据见 `docs/model-providers.md`。
+- 图片模型：新增、编辑、删除、连接测试、设置默认模型，并按能力控制工作台可用操作。图片预设（日日新、OpenAI、Gemini、Grok、豆包 Seedream、Qwen-Image、FLUX.2、自定义）只填充推荐初值；图片 API 协议独立选择 OpenAI Images、Gemini Interactions、Grok Images、Seedream Images、Qwen Images 或 BFL FLUX。每个模型保存可选尺寸、输出格式、透明背景和单次最大图片数，工作台和服务端均据此约束参数。新增预设提供推荐型号选择并保留可编辑的模型 ID / 接入点，分别包含 Seedream 5.0 Pro / Flash、Qwen-Image 3.0 Pro / 3.0 / 2.1 Pro / 2.1 Turbo 与固定版本 FLUX.2 Pro；三家默认优先使用 Pro。Seedream 支持 PNG/JPEG，Qwen 固定 PNG，FLUX 支持 PNG/JPEG/WebP，日日新支持 PNG/JPEG/WebP；质量选项对这三种原生协议与日日新都禁用且不传给平台。日日新另有「日日新专用参数」：`watermark`（默认关，关掉即无水印输出）与 `promptExtend`（默认开），保存进模型 `defaultParams`，工作台逐次可切换；非日日新模型的 `normalizeImageModel()` 会删除这两个键，避免无关参数流向其它协议。透明背景仅对 Qwen 2.1 的两个官方名称开放，并沿用去背景的 Alpha 校验；Seedream 和 FLUX 暂不提供透明生成或去背景。配置步骤、限制和官方依据见 `docs/model-providers.md`。
 - 视觉识别模型：新增、编辑、删除、连接测试、设置默认识别模型；可选择 Anthropic Messages、Chat Completions 或 Responses API 格式（新建默认 Chat Completions），供改字、局部编辑、去水印、去除背景、提取素材规划使用。工作台顶部可为当前项目切换视觉识别模型，选择保存在项目 `draft.visionModelId` 中；旧项目或已删除的选择回退到全局识别默认模型。API Key 输入框可切换显示 / 隐藏。
 - 模型日志：工作台右上角、模型配置按钮旁有项目级「模型日志」入口。弹窗展示最近 100 次视觉理解与图片模型调用的阶段、模型、状态、请求摘要、视觉模型返回的独立思考 / 推理字段（供应商未返回时明确标示）、结构化产出、生成提示词、耗时和错误；执行中每 2.5 秒刷新。日志只保存文本和元数据，禁止保存 API Key、请求图片 Base64 或模型返回的图片字节。
 - 已适配图像提供商：OpenAI 兼容、SenseNova、Gemini、Grok；另有仅服务端兼容的本地 `mock` 演示路径。
@@ -102,7 +104,7 @@ src/                        React 单页应用
   i18n/zh-CN.ts             简体中文字典（全部 UI 文案 key 的唯一来源）
   i18n/en-US.ts             英文字典（Record<TranslationKey, DictValue>，编译期强制与中文 key 一致）
   i18n/index.tsx            LanguageProvider、useLanguage/t/tf 与顶栏 LanguageToggle
-  HomeView.tsx              项目库、创建、导入、备份恢复入口
+  HomeView.tsx              主页：项目 / 图片双 tab、项目库、图片库与拖拽导入、创建、备份恢复入口
   WorkspaceView.tsx         三栏工作台、共享画布/互斥状态/草稿、任务轮询、版本树/对比
   CompareImagePicker.tsx     对比历史图横向浏览、溢出箭头/渐隐、键盘与选中项露出
   ImageProcessingOverlay.tsx 共用扫描/流光/呼吸动效层及会话内任务输入图/选区快照类型
@@ -137,7 +139,9 @@ server/
   plugin-api.test.mjs        新旧九操作入口等价、插件记录、规划取消/拒绝、失败与复制导入回归
   db.mjs                    SQLite 初始化、目录常量、DTO 转换
   models.mjs                config/models.json 的读写、脱敏与模型规范化
-  png.mjs                   演示图和缩略图的 PNG 工具
+  png.mjs                   演示图 PNG 生成与图片尺寸读取（缩略图改由 Sharp 负责，纯 JS 缩略图路径已移除）
+  cutout.mjs                可选本地抠图后端：`LAYERIVE_CUTOUT_URL`、`cutoutLocal()` 调服务取 Alpha PNG、`alphaStats()` 校验透明/可见像素比例
+  cutout.test.mjs           本地抠图隔离回归：服务不可达/不可用回退、`local` 失败不降级、比例校验与任务阶段
   local-edit.mjs            Sharp 图片规范化（含日日新请求副本）、坐标校验、选区细节裁剪、单区/多区域并集回填与保护区像素保留
   cleanup.mjs               整图删除场景、保留人物点位校验、视觉规划/多目标保护校验与直接文字清理提示词
   cleanup.test.mjs          整图删除隔离回归：三视觉场景/直接文字清理、四图片/三视觉协议、无视觉配置、像素保护、失败/取消与版本关联
@@ -169,11 +173,15 @@ scripts/
   build-gallery-images.py   构建画廊图片素材
   make-icons.mjs            从 SVG 母版生成透明 PNG 与 Windows 多尺寸 ICO
 public/                     静态图标、PWA manifest、画廊缩略图
-data/                       浏览器本地版的运行时 SQLite、项目图片、画廊配图（data/gallery）、恢复安全备份（被 Git 忽略）
+data/                       浏览器本地版的运行时 SQLite、项目图片、画廊配图（data/gallery）、图片库原图与缩略图（data/library）、恢复安全备份（被 Git 忽略）
 config/models.json          浏览器本地版的运行时模型配置，可能含 API Key（被 Git 忽略）
 Dockerfile                  Node 24 Alpine 多阶段构建与非 root 生产运行
 docker-compose.yml          本机端口、独立数据/配置卷及容器重启
 .dockerignore               仅允许必要构建输入，排除运行数据与模型凭据
+mcp/
+  server.mjs                对外的 MCP 服务：把工作台 HTTP API 包成工具，供对话式客户端调用
+  package.json              独立依赖（@modelcontextprotocol/server、zod），不参与前端构建
+  README.md                 工具清单、启动方式与 LAYERIVE_URL 说明
 dist/                       构建产物（被 Git 忽略）
 release/                    Electron 构建产物（被 Git 忽略）
 work/                       临时工作目录（被 Git 忽略）
@@ -190,8 +198,8 @@ work/                       临时工作目录（被 Git 忽略）
 
 `App.tsx` 用组件状态在以下视图切换，不使用前端路由库；每次切换把当前视图写入当前标签页的 `sessionStorage`，启动时恢复并用项目列表校验其中的 `projectId`，从而在刷新或浏览器后台标签页回收后回到原工作台：
 
-1. `home`：项目列表、导入/导出/完整备份、模型设置入口。
-2. `workspace`：指定 `projectId` 的创作工作台。
+1. `home`：项目 / 图片双 tab 的主页、导入/导出/完整备份、模型设置入口。视图参数可带 `focusImageId`，由图片库点击传入。
+2. `workspace`：指定 `projectId` 的创作工作台；`focusImageId` 存在且属于该项目时，画布优先显示这张图（否则回退到缓存、项目当前图、最近版本输出或最后一张图）。
 3. `models`：图片模型和视觉识别模型的增删改、测试、设为默认。
 
 全局语言状态由 `src/i18n/index.tsx` 的 `LanguageProvider` 提供（挂载于 `main.tsx`），context 暴露 `{ language, setLanguage, t, tf }`；组件渲染内一律用 `t()`（受 `TranslationKey` 类型约束），动态码（服务端 `err.*` / `msg.*`）与非 React 模块用 `tf(key, fallback, params)`，查不到 key 时回退 fallback（通常是服务端中文原文或用户内容）。新增 UI 文案时必须在 `zh-CN.ts` 加 key 并同步补齐 `en-US.ts`，类型检查会拦截遗漏；日期时间统一用 `localeFor(language)`（`zh-CN` / `en-US`）构造 `Intl.DateTimeFormat`，不要再硬编码 locale。
@@ -234,10 +242,14 @@ work/                       临时工作目录（被 Git 忽略）
 | `version_inputs` | 版本输入图片关系 | 关联编辑/生成版本和源图片 |
 | `text_recognitions` | 图片文字识别缓存 | 以图片、视觉模型 ID 和模型配置指纹缓存成功的文字分段；同一配置直接复用，切换或修改视觉模型则重新识别 |
 | `gallery_entries` | 用户自建提示词画廊条目 | 配图存于 `data/gallery/`；source 为 manual / project；删除条目时同步删除配图 |
+| `library_images` | 主页图片库的独立图片条目 | 文件存于 `data/library/`，与项目图片互不相通；`project_id` 记录该图被打开成的项目，重复打开回到同一项目 |
 
 重要不变量：
 
 - 上传图片先作为未版本化素材保存；服务端用 `readImageDimensions()` 读取 PNG/JPEG/WebP 的宽高并写入 `images.width` / `images.height`。第一次拿它编辑时，`ensureUploadVersion()` 会补建 `upload` 起始版本。
+- **项目图片与图片库是两套存储，不得互相镜像**：图片库只读 `library_images` + `data/library/`，任何查询都不得把 `images` 表里的项目图片平铺进库；图片库的图只有 `openLibraryImage()` 主动打开时才把字节复制一份进项目，此后两侧独立删除互不影响。新增图片库能力时不要退回「按项目图片生成视图」的实现。
+- **`draft.scratch` 标记的项目不出现在项目列表**：`listProjects()` 用 `COALESCE(json_extract(p.draft_json, '$.scratch'), 0) <> 1` 过滤。这是给无头调用方（如 `/home/image-bridge`）停放中间图片的工作区准备的 —— 它按 id 仍可访问、历史仍真实，但不该占据用户的主页。新增项目列表查询时必须带上同样的过滤条件，否则外部工具的工作区会漏进界面。
+- **临时工作区只能通过 `/purge` 彻底删除**：普通 `DELETE /api/projects/:id` 一律软删除、图片文件保留（这是保护用户误删的设计）。临时工作区每画一张图就多几 MB，必须能被真正回收，所以 `purgeScratchProject()` 只对 `draft.scratch === true` 生效，删掉该项目所有表行与整个目录；对可见项目返回 400 `project.notScratch`。不要把这条放宽成「任何项目都能 purge」—— 那会让用户的一次误操作毁掉全部图片。
 - 局部替换参考图保存在项目 `local-edits/`，`images.source_type` 为 `local_reference`，保持未版本化并带所属 `task_id`；新任务不再创建 `local_composite`。成功版本的 `version_inputs` 关联原图与参考图，父节点始终来自原图；参考素材不成为画布当前版本。历史 `local_composite` 素材与输入关系继续兼容保留。它们作为普通项目图片随复制、导出导入及备份保留，失败任务已保存的参考素材也会留存。`generation_tasks.input_json` 可附加 `stage`、`localEdit`（选区、意图、双图百分比坐标、规范化尺寸及视觉模型 ID；整图删除额外保存 cleanupMode / instruction / keepPoints，视觉规划模式还保存 targets / keepRects / keepSubjects / confidence；text 不存视觉模型 ID 或虚构定位结果，不存图片字节）、`backgroundRemoval`（视觉模型 ID、保留主体、排除内容、判断依据和置信度）、`effectivePrompt`，或 `extraction`（mode、选区、说明、视觉模型 ID、识别主体；不存截图字节），或批量任务（`batch_edit` / `batch_generate`）的 `versionId` / `versionNumber` / `batch`（变量模式存模板与变量名数组，提示词列表模式存 `prompts` 数组；批量文生图任务额外带 `textBatch: true` 且无输入图；批量局部修改的 `batch` 额外带 `local: true` 且 `prompts` 为指令数组、逐项映射为 `{ 指令: 行内容 }`，任务同时带 `localEdit` 选区字段；均含总数、当前序号，以及逐项的变量值映射、状态、图片 ID、耗时和错误）；不存 API Key，不新增表或列，读取进度时兼容旧任务的单变量结构。
 - 每个成功生成任务都会创建一个版本、写入所有输出图片、选第一张作为 `selected_image_id`，并更新项目的当前图片/版本/封面。前端点击候选条或消息画廊中的任意候选图时，同时更新 `currentImageId` 和 `inputImageId`，确保画布所见候选就是下一次继续创作的输入。
 - 所有图片生成和编辑任务都把 `params.count` 规范为 1–4，并再限制为模型配置的 `maxCount`；服务端会把尺寸、输出格式和透明背景收敛为该模型声明的合法值。`callImageProviderBatch()` 以提示词数组为输入：单提示词时支持原生批量的协议优先使用 `n` 请求，兼容接口若忽略或拒绝 `n`，会按缺口补发单图请求（首波全部为限流错误时不再补发）；多提示词（拆分模式）一律逐条发 `count=1` 请求，输出顺序与提示词一一对应。所有扇出经 `mapWithConcurrency()` 限制为并发 2，单个请求对 429 / 限流类错误最多退避重试 2 次（约 1.5s / 4s，优先响应 `Retry-After`）。成功返回的图片统一写入同一版本，前端候选条与对话画廊展示全部结果；单图接口的多张生成意味着多次计费请求。
@@ -270,7 +282,8 @@ work/                       临时工作目录（被 Git 忽略）
 - `operation: auto`：有输入图时为 `edit_prompt`，否则为 `text_to_image`。
 - `/fusion` 校验项目内两张不同图片、四种子模式、0–100% 落点、补充要求与模型能力后立即返回 202；融合插件的 `prepare()` 在共用任务内规范化两张静态图片（EXIF 转正、sRGB、最多 4000 万像素，参考图最长边 ≤4096），调用视觉模型返回严格 `applicable` / `intent` / `edit_prompt` JSON，再把原主图和参考图按顺序送入图片模型。任务总超时 300 秒，两阶段共用 AbortController；任务 JSON `fusion` 保存 mode / point / instruction / referenceImageId / visionModelId / intent，不存图片字节或 API Key。成功事务写入两条 `version_inputs`（source / fusion_reference），旧 SQLite 表结构无需迁移。融合参考上传素材的 `images.source_type='fusion_reference'`，文件保存在项目 `uploads/`，不自动建立上传版本；从列表移出只改草稿，不删除项目素材。任务取消、重启、备份恢复与普通生成共用生命周期。
 - 选择上传图片作为改图输入时，前端通过 `closestSizeForDimensions()` 把生成尺寸切换为当前图片模型声明的最接近宽高比；固定尺寸模型只能保证比例尽量一致，不能保证输出像素值与原图完全相同。
-- 日日新 U1.5 Lite 的所有带图编辑在发往平台前会由 Sharp 生成临时请求副本：按 EXIF 方向转正并转为 sRGB，以工作台选中的合法尺寸作为画布（无合法尺寸时自动限制到 512–4096px、32px 整倍数及最大 3:1），等比缩放并用边缘像素补边，不改写项目原图；PNG 超过 10MB 时回退高质量 JPEG。`/images/edits` 固定传 `size: "auto"`，由规范化参考图决定输出比例。平台仍拒绝输入时，任务错误会保留经过截断与空白清理的原始平台信息，不能再用旧的统一尺寸文案覆盖具体原因。
+- 日日新 U1.5 Lite 的所有带图编辑在发往平台前会由 Sharp 生成临时请求副本：按 EXIF 方向转正并转为 sRGB，以工作台选中的合法尺寸作为画布（无合法尺寸时自动限制到 512–4096px、32px 整倍数及最大 3:1），等比缩放并用边缘像素补边，不改写项目原图；PNG 超过 10MB 时回退高质量 JPEG。`/images/edits` 固定传 `size: "auto"`，由规范化主图决定输出比例。平台仍拒绝输入时，任务错误会保留经过截断与空白清理的原始平台信息，不能再用旧的统一尺寸文案覆盖具体原因。
+- 日日新编辑的 `images` 数组第一位是被编辑的主图，其后最多 5 张参考图（官方文档明确「The first image is used as the primary image to edit. Up to five reference images are supported」）。`/generate` 用 `inputImageId` 传主图、`referenceImageIds` 传参考图；服务端 `resolveReferenceImages()` 校验项目归属、剔除主图自身、去重并截断到 `MAX_REFERENCE_IMAGES = 5`，没有主图时返回 400 `generate.referenceNeedsInput`。版本关联里主图记 `source`、参考图记 `reference`。融合、局部编辑、声明式插件走同一 `providerInputs()`，因此都自动获得多参考图能力。
 - 项目风格提示词只追加到无输入图的文生图，避免重绘已有图片的风格。
 - `/generate` 的多图意图判断在 `runGenerationTask()` 内使用工作台所选视觉模型（`visionModelId`，缺省回退全局识别默认模型）：数量大于 1 且提示词非空时把任务 `stage` 置为 `planning`，要求模型返回 `different` 与恰好 N 条可选子提示词。仅当 `different=true`、条数正确且互不重复时进入 `different` 模式并逐条生成；普通候选、含糊判断、条数不足或重复提示词均保守回退 `same` 模式，继续按原提示词生成 N 张。判断结果写入 `generation_tasks.input_json.promptMode`；不同提示词模式会为每个成功输出保留原始提示词索引，若部分请求失败则任务与版本为 `partial`，消息中的 `prompts` 只和实际输出图片一一对应。单张或空提示词不调用视觉模型；多图请求提交时即校验视觉模型存在，视觉请求硬失败则任务失败。旧消息的 `splitPrompts` 仅为历史展示兼容，新请求忽略该字段。
 - `/batch-edit` 不走 `/generate` 的多图意图判断，也不使用图片接口原生 `n`：`startBatchEdit()` 校验模板中的全部变量及其等长值列表，先创建一个 `generating` 批量版本和主任务；`runBatchEditTask()` 再按图片行同时替换多个变量，形成完整提示词，并以 `count=1` 串行调用同一模型和同一参考图。旧调用方仅传一个变量的 `values` 数组时仍兼容。每张输出文件写完后用独立 SQLite 事务追加 `images`、更新任务 JSON；第一张同时设置版本选中图和项目指针。全部完成后写一条结果消息；混合成功/失败为 `partial`，全失败时软删除空版本，取消时保留已有输出。
@@ -291,11 +304,21 @@ work/                       临时工作目录（被 Git 忽略）
 
 `provider: local` 表示用户配置的本地兼容服务，复用现有图片/视觉协议，不走 `mock`。`hasModelCredentials()` 在单张、批量、局部编辑及视觉规划入口统一处理本地可选 Key；`bearerHeaders()` 在 OpenAI 兼容请求与连接测试中省略空认证头。其他提供商的 Key 校验与本机 UI 访问限制保持不变。模型配置表单的专用样式位于 `styles.css` 的 `Model setup` 段，控件统一 42px 高，网格字段顶端对齐，避免说明文字拉伸同排控件。
 
+**多 API Key 与退避轮询**：一个模型可保存多个 Key（`config/models.json` 的 `apiKeys[]`，`apiKey` 仅镜像第一个以兼容旧读取方）。所有 Key 只存在服务端，常规模型响应只返回等长掩码数组与 `apiKeyCount`；只有本机配置页点击显隐时才通过 `POST /api/models/:id/api-key` 取得真实值（`no-store`），该响应同时返回 `apiKeys`。任务快照用 `modelSnapshot()` 剥离 `apiKey` / `apiKeys`，`generation_tasks` 与模型日志都不得出现明文。
+
+轮询由 `server/key-pool.mjs` 的 `withKeyPool()` 承担，`callImageProvider()`、`callVision()` 和连接测试都经它注入单个 Key，适配器本身仍只读 `model.apiKey`，不知道池的存在。**`bearerHeaders(model)` 必须优先读 `model.apiKey`（池写入的选中 Key），其次才回退 `apiKeys[0]`**：反过来会让每个请求都钉在第一个 Key 上，池看起来在轮换实际只烧一个 Key，且该 Key 一旦限流就整池报错。规则：按 round-robin 取 Key；401/403 冷却 5 分钟（坏凭证），429 冷却取 `Retry-After` 或指数退避（上限 60 秒），5xx 属平台整体故障，**不轮换**（换 Key 无效，只会耗尽每个 Key 的冷却）；非轮换错误立即抛出，不耗尽池；只有 1 个 Key 时直接透传，不参与冷却，以免放大调用方自身的重试预算。连接测试经 `providerTestError()` 区分状态：401/403/429 原样透出（凭证问题，可轮换），其余非 2xx 一律归为 502（Layerive 是网关，上游故障不是本服务的 4xx），否则池会把限流当成平台故障而拒绝轮换。全部 Key 冷却时等待最短剩余时间（不超过 60 秒），任务取消可中断等待。冷却只存进程内存，重启即清零。每个 Key 的可用性、冷却剩余和成功/失败次数见 `GET /api/models/:id/key-pool` 与配置页列表。
+
+**密钥与模型名的录入方式**：配置页一个 Key 一个输入框（`#1`、`#2`… 按轮询顺序编号），可随时「添加密钥」或删除某一行；最后一行不可删除，保证总有位置可填。密钥永远不回填到表单，只有点眼睛图标才通过 `POST /api/models/:id/api-key` 取一次明文；保存时提交的是掩码数组，服务端按位置还原（`mergeApiKeys()`），因此保存不会丢 Key。
+
+模型名不再手输：点「从上游获取模型」调用 `POST /api/models/upstream-models`，服务端用该模型已保存的 `baseUrl` / `apiKey` / 协议去请求上游 `/models`（Gemini 用 `x-goog-api-key`、Anthropic 用 `x-api-key`，其余 Bearer），把结果填进下拉。清单按类型筛选：图片模型优先取 `output_modalities` 含 `image` 的条目（无模态元数据时退回名字模式匹配），视觉模型优先取 `input_modalities` 含 `image` 的条目；「显示全部模型」传 `includeAll` 可跳过筛选。筛选后为空则退回全量，避免上游不报模态时选不到东西。切换模型、预设、协议或类型都会清空已取到的清单，避免拿旧上游的名字发新请求。
+
+**可选尺寸与比例**：`server/size-options.mjs` 提供 9 个比例预设（1:1、4:3、3:4、3:2、2:3、16:9、9:16、21:9、9:21）与各协议的像素/步进/边长/比例上限。尺寸解析在 `resolveSize()`，顺序为：模型声明的 `sizeOptions` → `original`（或空值且有输入图）按源图比例取最近声明尺寸 → 比例 token 用 `sizeForRatio()` 合成为该协议可接受的画布 → 任意合法 `宽x高` 原样保留 → 兜底首个声明尺寸。`original` 必须尊重源图比例：3:2 的源图不得被吸附成 1:1；同时必须满足协议硬限制（如 Seedream 最低 921600 像素、Qwen 最大 2048×2048 与比例 ≤8），必要时等比缩放或收缩长边，不能把越界尺寸交给平台再让它拒绝。前端下拉分三组（有输入图时才出现「使用原图比例」），切换模型时比例 token 与 `original` 保持有效，固定尺寸越界才回退默认值。
+
 **本机访问限制（不要放宽）**：服务只监听 `127.0.0.1`，这挡得住局域网，挡不住浏览器——用户打开的任意网页都能请求 `127.0.0.1`。因此 `/api/`、`/files/`、`/gallery-files/` 一律先过 `assertLocalUiRequest()`：`Sec-Fetch-Site` 为 `cross-site` 的请求、Origin 主机名不是 `127.0.0.1` / `localhost` / `[::1]` 的请求，以及 Host 不是本机名的请求（DNS rebinding）都返回 403；不带浏览器 fetch 元数据的调用（curl、测试、Electron 健康检查）没有环境凭据，继续放行。所有响应都不再发送 `Access-Control-Allow-Origin`，跨源页面即使发出请求也读不到响应体。前端全部使用同源相对路径，`npm run dev` 经 Vite 代理到达，桌面版由本机页面发起，三种运行方式都不需要 CORS 授权。放宽任何一条都会让外部网页能够下载 `/api/backup`——那个 ZIP 里带着 `config/models.json` 和其中的 API Key。前端应用外壳（非 `/api/` 的 GET）不受此限制，以免从别处点链接打开应用时被拦。
 
 | 图片 API 协议 | 图像适配实现 | 备注 |
 | --- | --- | --- |
-| `openai_images` | Images `generations` / `edits` | 编辑走 multipart；文生图走 JSON；日日新预设使用该协议时走专用 JSON 分支，生成默认 `watermark: false`、`prompt_extend: true`，编辑输入自动规范化并使用 `size: auto` |
+| `openai_images` | Images `generations` / `edits` | 编辑走 multipart；文生图走 JSON；日日新预设使用该协议时走专用 JSON 分支，`watermark` / `prompt_extend` 按请求值显式下发（默认取模型配置），`output_format` 支持 png/jpeg/webp，编辑输入自动规范化并使用 `size: auto` |
 | `gemini_interactions` | `/interactions` | 尺寸映射为 aspect ratio，返回图片块 |
 | `grok_images` | Images `generations` / `edits` | 输入图以 data URL 放入 JSON |
 | `seedream_images` | JSON `/images/generations` | 文生图省略 image，编辑用单个 data URL / 有序数组；固定无水印，每请求单图，不传 n / 组图 / 图层拆分参数 |
@@ -307,6 +330,9 @@ work/                       临时工作目录（被 Git 忽略）
 - 三家新增原生协议位于 `server/image-providers.mjs`，由 `index.mjs` 的统一图片调用分派，复用模型日志、限流重试、插件、版本事务与同一个 AbortSignal。Seedream/FLUX 不支持原生 n，由现有并发上限 2 的候选调度完成 1–4 张；Qwen 原生 n 继续共用候选补发规则。Seedream/Qwen 有序 image 数组及 FLUX 有序 input_image 字段不允许丢弃参考图。输入上限 Seedream=10、Qwen 3.0=3 / 2.1=10、FLUX Pro=8；调用前验证尺寸像素与比例限制（FLUX 额外为 16px 倍数、最多 4×1024×1024 像素），不以修改用户输入或降级单图绕过拒绝。
 - FLUX 使用平台返回的 polling_url（支持官方区域路由），带 Key 的请求拒绝跳转，轮询地址只能为配置的同源或 HTTPS 官方 bfl.ai 子域；输出下载不携带模型凭据。轮询 429 在原任务地址退避重试，不能重新提交收费生图任务；任务取消/超时停止轮询和下载，版本事务仍再次检查取消。平台未提供远端取消契约，本地取消不能承诺远端任务停止或不计费。普通生成使用既有任务总时限，专项插件仍使用其 300 秒预算。
 - 新增原生协议的连接测试不生图：Seedream/Qwen 查询 `/models` 并核对 ID；FLUX 查询 `/credits` 验证账号。查询不可用时仅 OPTIONS 探测实际端点，明确提示只验证可达、未验证 Key / 模型权限 / 编辑能力；401/403/5xx、未列出模型或无效响应不能报告认证成功。连接结果保持双语消息码，前端不重复添加 msg. 前缀。百炼默认北京旧域名仍可用，也支持同地域工作空间专属域名；Seedream 模型 ID 可换为方舟已开通接入点。
+- `key-pool.test.mjs` 覆盖多 Key 去重与掩码过滤、轮换错误分类（含 5xx 不轮换）、`bearerHeaders` 优先取池选中的 `model.apiKey` 而非 `apiKeys[0]`、坏 Key 轮换、429 后跳过、成功清零、单 Key 直通只调一次、非轮换错误不耗尽池、全失败抛错、冷却到期复用与取消中断等待；`size-options.test.mjs` 覆盖尺寸解析、比例约分、9 个预设在各协议下的步进/边长/像素/比例约束、比例拟合漂移上限、`original` 保持源图比例（含 Seedream 像素下限放大与 Qwen 极端比例收敛）。两者均为纯单元测试，不联网、不调用真实模型。`upstream-models.test.mjs` 用本地 stub 上游覆盖模型清单解析、按 `output_modalities` / `input_modalities` 筛选、`includeAll` 跳筛选、草稿模型用表单坐标、掩码占位替换为已存 Key、缺 Key / 缺地址 / 上游不可达的报错；`request-guard.test.mjs` 的跨站拒绝清单包含 `POST /api/models/upstream-models`，新增 `/api/*` 路由时必须同步加入该清单。
+- `scratch-project.test.mjs` 覆盖 `draft.scratch` 的可见性语义：打了该标记的项目不出现在 `GET /api/projects`，但仍可按 id 读取（历史与图片都真实存在），取消标记后重新出现在列表 —— 该标记是唯一让它隐藏的原因，不能顺手过滤掉别的项目。
+- `image-library.test.mjs` 覆盖图片库与项目的隔离语义（`/api/library/images`、`/api/library/images/open`）：空库返回空数组且不建项目、导入只进图片库不产生项目、`/library-files/` 可访问、按时间倒序且 `limit` 被钳制、打开时新建项目并复制字节（当前图与封面都指向副本）、重复打开回到同一项目、项目自己的图片不出现在库中、删除库图不影响项目副本、删除项目不影响库、GIF 与不可解析内容被拒且不落库、未知 id 404。
 - `image-providers.test.mjs` 覆盖原生请求、单/多图顺序、格式/透明/输入和尺寸边界、错误与限流元数据、FLUX 轮询/取消/安全地址及只读连接检查；`native-image-api.test.mjs` 在隔离数据目录和本地 HTTP stub 下验证七型号预设/保存、生成候选、单图编辑、融合、局部编辑框外像素与输入关系、两种批量、Qwen 2.1 透明校验、失败不发布版本及取消/日志凭据隔离，均由 `npm test` 执行，不使用真实账号或模型。
 - 视觉模型以独立的 `apiFormat` 字段选择 `anthropic_messages`、`chat_completions` 或 `responses`。该字段缺失的旧配置不会被重写：`askdiandian.com` 自动沿用 Anthropic Messages，其余配置沿用 Chat Completions；旧 `provider` 字段继续原样保留，视觉请求根据 Base URL 识别 SenseNova 专用端点，避免隐藏的旧提供商值干扰用户修改后的地址。
 - 项目工作台发起的视觉请求可携带 `visionModelId`。`visionModelOrThrow()` 优先严格解析该 ID；未携带时才沿用全局 `active_vision_model`，以兼容旧前端和其他调用方。请求的模型已删除时返回 400，不得静默切换到另一个模型。
@@ -315,7 +341,8 @@ work/                       临时工作目录（被 Git 忽略）
 - `callVision()` 可按调用传入 `maxOutputTokens`，分别映射到各视觉协议的输出上限字段；三种整图清理使用 8192，以容纳多目标及保护区规划，其余调用保持原有默认值。`options.timeoutMs` 为服务端内部的每次视觉请求时限（有效整数 1–300000 毫秒，无效时回退默认 120000）；三种整图清理传入 240000，所有阶段仍受插件的 300 秒总预算约束。`server/vision-request.mjs` 将超时信号覆盖请求和完整 JSON 响应读取，保留先触发的任务取消；请求超时返回稳定码 `vision.timeout` 与 `params.seconds`（同步请求 HTTP 504、异步任务 failed），工作台按中英文显示重试/更换视觉模型/分区域清理建议。模型日志的请求元数据含 `timeoutMs`，响应体读取超时不再吞成“没有返回内容”。
 - 图片适配器通过内部 `referenceImages` 保留有序多图输入，融合和参考图局部修改（含批量）固定传原图+参考图：OpenAI Images 多图用 multipart `image[]`（原单图仍为 `image`），SenseNova JSON 用 `images` 并逐张生成规范化请求副本，Gemini Interactions 追加有序 image 块，Grok 多图用 `images` 数组（原单图仍用 `image`）。日志只额外记录 `inputImageCount`，不得存二进制或 Base64。自定义兼容网关/模型不一定支持多图，不得丢弃参考图静默降级。
 - `callVision()` 会从 Chat Completions 的 `reasoning_content` / `reasoning`、Anthropic 的 thinking / reasoning 内容块和 Responses 的 reasoning 输出中提取供应商显式返回的推理文本写入模型日志；不得把普通结构化结果伪装成隐藏思维链。图片模型日志在 `callImageWithRetry()` 层记录一次逻辑调用（含限流重试总耗时与尝试次数），仅记录输出数量、格式、尺寸和字节数等元数据。
-- SenseNova 视觉模型有两条不同的兼容路径：旧融合模态服务 `api.sensenova.cn/v1` 使用 `/llm/chat-completions` 和 `max_new_tokens`；Token Plan 的 `sensenova-6.8-flash-lite` 等模型使用 `token.sensenova.cn/v1/chat/completions`、标准 `max_tokens` 与 OpenAI Vision 图片块。不得仅按 `sensenova.cn` 域名笼统选择旧路径。
+- SenseNova 视觉模型有两条不同的兼容路径：旧融合模态服务 `api.sensenova.cn/v1` 使用 `/llm/chat-completions` 和 `max_new_tokens`；Token Plan 的 `sensenova-6.8-flash` / `sensenova-6.8-flash-lite` 使用 `token.sensenova.cn/v1/chat/completions`、标准 `max_tokens` 与 OpenAI Vision 图片块。不得仅按 `sensenova.cn` 域名笼统选择旧路径。新建日日新视觉模型的默认 Base URL 与默认型号已是 `https://token.sensenova.cn/v1` + `sensenova-6.8-flash`。
+- Token Plan 端点不发送 `response_format: { type: 'json_object' }`：6.8 Flash 始终开启思考，官方文档明确不建议同时启用 `thinking` 与 `json_object`，视觉提示词本身已要求只返回 JSON；旧融合端点与其它 OpenAI 兼容端点仍发送 `json_object`。`temperature` 固定 0.1，处于 6.8 Flash 的 `[0, 1]` 合法区间内。
 - `normalizeBaseUrl()` 会移除末尾的 `images/generations` 或 `images/edits`，避免重复拼接路径。
 - 不要读取、输出、提交或写入示例真实 API Key；`config/` 和 `data/` 已被 Git 忽略。
 - 新增供应商或参数时，必须同时检查：`types.ts`、`ModelConfigView.tsx`、`sizes.ts`、`models.mjs`、`index.mjs` 的调用适配和模型测试逻辑。
@@ -332,6 +359,7 @@ work/                       临时工作目录（被 Git 忽略）
 | `/api/projects/:id/plugins/:pluginId/run`（声明式） | POST | imageId/modelId/visionModelId?/fields/params?/parentVersionId?；图片字段为同项目图片 ID；返回原 202 任务结构，参数错误同步 4xx，规划/输出错误记录在任务中；也支持声明中的 recipe-* 路由 |
 | `/api/projects` | GET / POST | 项目列表、创建 |
 | `/api/projects/:id` | GET / PATCH / DELETE | Bundle 查询、项目/草稿更新、项目软删除 |
+| `/api/projects/:id/purge` | POST | 彻底删除一个**临时工作区**（`draft.scratch === true`）：删除该项目全部行与整个 `data/projects/<id>` 目录。用于无头调用方（如 `image-bridge`）轮换工作区 —— 普通 DELETE 只是软删除、文件仍占磁盘。对可见项目返回 400 `project.notScratch`，用户项目永远走软删除 |
 | `/api/projects/:id/images` | POST | 上传 PNG/JPEG/WebP（最大 10MB）；可传 `referenceOnly: true` 保存静态融合参考素材并保持主图/封面不变 |
 | `/api/projects/:id/fusion` | POST | `imageId`、`referenceImageId`（同项目且不同）、`modelId`、`visionModelId?`、`mode: basic / outfit / pose / group`（默认 basic）、`point: {x,y}`（主图百分比落点）、`instruction?`（≤1000 字符）、`params?`；202 单图融合任务，阶段 planning / generating，成功为 fusion 版本 |
 | `/api/projects/:id/generate` | POST | 文生图、图生图、提示词改图；数量大于 1 且提示词非空时可传 `visionModelId`，服务端自动判断普通候选或分别生成；明确传入已注册专项 operation 时转入对应插件，不能绕过插件校验 |
@@ -344,22 +372,48 @@ work/                       临时工作目录（被 Git 忽略）
 | `/api/projects/:id/remove-element` | POST | imageId、modelId、visionModelId?、mode?: selection / people / clutter / text / room（默认 selection）；selection 要求百分比 rect，people / clutter / room 整图视觉分析，text 直接图片编辑、忽略 visionModelId；整图模式可传 instruction（≤1000 字符），people 可传 keepPoints: [{x,y}]（≤20 个整图百分比点位）；可选 parentVersionId / params；202 可取消任务，非 text 阶段 planning / generating / preserving，text 为 generating / validating；单张原尺寸 PNG，非 text 只回填删除区域，text 使用完整结果、不保证其他区域像素一致 |
 | `/api/projects/:id/local-edit-batch` | POST | 批量局部修改：`imageId`、`modelId`、`visionModelId?`、百分比 `rect`、`instructions: string[]`（2–50 条、单条 ≤1000 字符）、可选 `reference` / `parentVersionId` / `params`；每个子项独立运行局部修改流水线（含各自视觉规划；有参考图时传有序完整双图并保存参考素材），逐张追加到同一 `local_edit` 版本，返回任务和预建版本 ID，进度走 `/batch-edits/:taskId` |
 | `/api/projects/:id/tasks`、`/tasks/:taskId`、`/tasks/:taskId/cancel` | GET / GET / POST | 查询和取消生成任务；运行中任务列表附带实际 stage，刷新恢复时避免把无视觉的文字清理显示为 planning |
+| `/api/projects/:id/revision` | GET | 轻量变更戳：`{ revision, updatedAt, versionCount, imageCount, messageCount, runningCount, currentImageId, currentVersionId }`。工作台每 3 秒比对 `revision`，变化时才拉整包，使 MCP、其他标签页等**页面外部**产生的版本自动出现；自己发起的任务运行期间跳过轮询 |
 | `/api/projects/:id/tasks/:taskId` | GET | 单任务响应含可空 `plugin: {id, version, apiVersion}`（旧任务为 null）与可选 `stage: planning / generating / preserving / validating`（兼容历史 compositing；旧任务可为 null）与 `errorCode` / `errorParams`（错误码及插值参数，配合 `msg.*` 字典本地化） |
 | `/api/projects/:id/model-logs?limit=100` | GET | 查询当前项目最近模型调用日志，`limit` 范围 1–200；返回脱敏请求摘要、结构化产出、供应商显式推理字段、最终提示词、耗时与错误 |
 | `/api/projects/:id/versions/:versionId` | DELETE | 软删除版本，可加 `?force=1` |
 | `/api/projects/:id/versions/:versionId/download` | GET | 将未软删除的多图版本全部现存输出图片打包为 ZIP；单图版本返回 400 |
 | `/api/projects/:id/duplicate`、`/export` | POST / GET | 深复制项目、导出项目 ZIP |
 | `/api/projects/import` | POST | 导入项目 ZIP（base64 请求体） |
+| `/api/library/images` | POST | 把图片存进图片库（不建项目、不动任何项目）：`data`（base64）、`mimeType`（png/jpeg/webp）、`name?`；返回 201 `{image}`；非支持格式 400 `image.unsupported`、空或超 10MB 400 `image.tooLarge`、无法解析 400 `image.unreadable` |
+| `/api/library/images?limit=N` | GET | 图片库列表：只查 `library_images`（`limit` 1–500，默认 200），按创建时间倒序；项目图片永远不出现 |
+| `/api/library/images/open` | POST | 把图片库图片打开成项目：`{id}`；首次新建项目并把图片字节复制进项目 `uploads/`、设为当前图与封面，之后重复打开回到同一项目；返回 201 `{...bundle, importedImageId}`；不存在 404 `library.notFound` |
+| `/api/library/images/:id` | DELETE | 从图片库删除图片（删文件与记录）；已打开成项目的副本不受影响 |
+| `/library-files/<path>` | GET | 图片库原图/缩略图（`?w=` / `?fmt=webp` 生成并缓存到 `data/library/thumbnails/`），受本机请求校验保护；缓存头与 `/files/` 一致 |
 | `/api/backup`、`/api/backup/restore` | GET / POST | 完整备份、恢复并重启服务 |
-| `/api/models...` | GET / POST / PATCH / DELETE | 模型管理、默认设置、连接测试；`POST /api/models/:id/api-key` 仅供本机配置页按需回显已保存密钥 |
+| `/api/models...` | GET / POST / PATCH / DELETE | 模型管理、默认设置、连接测试（`GET /api/models` 另带 `cutout.enabled` 告知前端能否本地抠图）；`POST /api/models/:id/api-key` 仅供本机配置页按需回显已保存密钥（同时返回 `apiKeys`）；`GET /api/models/:id/key-pool` 返回每个 Key 的冷却状态与成功/失败次数（不含 Key 值）；`POST /api/models/upstream-models` 用已保存的连接坐标向该模型的上游 `/models` 取模型清单（只返回 id/标签/模态，不返回 Key） |
 | `/api/gallery` | GET / POST | 用户画廊条目列表、新增（可附 base64 配图） |
 | `/api/gallery/analyze` | POST | 视觉模型从 base64 图片提炼标题 / 提示词 / 风格提示词，可传 `visionModelId` |
 | `/api/gallery/from-image` | POST | 把项目内图片（projectId + imageId）收藏进画廊并自动提炼提示词，可传 `visionModelId` |
 | `/api/gallery/:id` | PATCH / DELETE | 编辑（可替换 / 移除配图）、删除画廊条目 |
-| `/gallery-files/<file>` | GET | 画廊配图访问（存于 `data/gallery/`） |
-| `/files/<projectId>/<path>` | GET | 本地图片及按需缩略图访问 |
+| `/gallery-files/<file>` | GET | 画廊配图访问（存于 `data/gallery/`），一次性写入故按 immutable 缓存 |
+| `/files/<projectId>/<path>` | GET | 本地图片及按需变体：`?w=<64-2048>` 生成并缓存到 `<project>/thumbnails/`，`?fmt=webp` 生成画布显示副本；响应带 `Content-Length` / `ETag` / `Last-Modified`，未改动时 `304` |
 
 新增或改变 API 时，必须同步更新 `src/api.ts`、前端调用处、`src/types.ts`（需要时）、此表及 README 中受影响说明。
+
+### MCP 服务（`mcp/`）
+
+`mcp/server.mjs` 把上面的 HTTP API 包成对话式客户端可调用的工具，本身不复制业务逻辑：项目、版本、图片与模型都仍是同一份数据，网页与 MCP 共用。
+
+- 启动：`node mcp/server.mjs`（stdio 传输）；`LAYERIVE_URL` 指定后端，默认 `http://127.0.0.1:8788`。
+- 依赖独立安装（`cd mcp && npm install`），不参与前端构建，`mcp/node_modules` 被 Git 忽略。
+- 请求固定带 `Host: 127.0.0.1:<port>`：`assertLocalUiRequest` 要求回环 Host，MCP 进程在本机运行，因此既满足校验又不放宽它。
+- 工具（25 个）：`list_projects`、`create_project`、`project_status`、`list_models`、`key_pool_status`、`test_model`、`generate_image`、`task_status`、`upload_image`、`import_image`、`open_library_image`、`delete_library_image`、`list_library`、`list_images`、`size_options`，以及插件工具 `list_plugins`、`outpaint_image`、`enhance_image`、`remove_watermark`、`remove_element`、`edit_text`、`recognize_text`、`local_edit`、`fusion_image`、`extract_asset`。`import_image` 只把图片存进图片库，`open_library_image` 才打开成项目；`list_library` 列的是图片库，`list_images` 列的是单个项目。
+- 插件工具是服务端内置插件（`POST /api/projects/:id/plugins/:id/run`）的薄包装，网页与对话走同一套校验与后处理；矩形一律用 0–100 的图片百分比。`remove_background` 未暴露：当前模型 `transparentBackground: false`，插件必然报 `backgroundRemoval.requiresTransparentModel`。
+- `producedImages()` 不能依赖 `task.versionId`（任务详情不返回该字段）：按任务 `finishedAt` 匹配版本 `createdAt`，无果时回退最新版本。
+- 插件工具默认按**源图比例**挑最近的声明尺寸（`sizeForEdit()` + `closestDeclaredSize()`）再提交：不传 `params.size` 时服务端会退回 `model.defaultParams.size`（固定画布），把 16:9 的图输出成方形；网页一直显式传这个尺寸，MCP 必须保持一致。`extract_asset` 用裁剪结果的尺寸。
+- `generate_image` 会等到任务落地才返回（默认 300 秒预算，`timeout_seconds` 可调）；超时返回仍可用的任务 ID，继续用 `task_status` 查。
+- 改图必须传 `input_image_id`（对应 HTTP 的 `inputImageId`）；`size` 支持固定尺寸、比例 token 与 `original`，语义与工作台完全一致。
+- `generate_image` 另有 `reference_image_ids`（≤5 张，对应 HTTP 的 `referenceImageIds`，用于日日新「主图 + 参考图」编辑）、`watermark` 与 `prompt_extend`（对应 `params.watermark` / `params.promptExtend`，仅日日新生效，其它协议由 `normalizeGenerationParams()` 删除）。`transparent_background` 必须映射到 `params.transparent` —— 服务端的键是 `transparent`，`transparentBackground` 是模型能力字段，写错会被静默丢弃。
+- **MCP 不接收也不返回 API Key**：Key 只存在服务端 `config/models.json`，由 `withKeyPool` 在服务端轮换。
+- **MCP 与网页共用同一份数据，网页会自动跟上**：工作台每 3 秒比对 `GET /api/projects/:id/revision`，`revision` 变化才拉整包并切换画布，因此 MCP 或另一个标签页产出的版本不需要手动刷新；自己发起的任务运行期间跳过轮询（`activeTaskRef`）。不要改成「只在出现新版本时更新」——外部上传只新增图片、不新增版本，那样会漏掉。
+- 主页同理：`view.name === 'home'` 时监听 `focus` / `visibilitychange` 并每 5 秒刷新项目与图片库列表。
+
+新增工具或改变其参数时，必须同步更新本节与 `mcp/README.md`。
 
 ## 9. 导入、导出、删除与恢复
 

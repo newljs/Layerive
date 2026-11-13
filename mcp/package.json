@@ -1,0 +1,11 @@
+{
+  "name": "layerive-mcp",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MCP server exposing the Layerive image workbench: generate images with pooled API keys and explicit sizes/ratios",
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.2.0",
+    "zod": "^4.2.0"
+  }
+}

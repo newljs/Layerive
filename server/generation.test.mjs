@@ -61,8 +61,16 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
           }
           // The gateway ignores `n`: exactly one image per request, so the
           // native batch path must fill the shortfall with count=1 requests.
+          // It echoes the requested output_format, like SenseNova does.
+          const requested = req.headers['content-type']?.includes('application/json')
+            ? JSON.parse(bytes.toString('utf8') || '{}').output_format
+            : null;
+          const format = ['png', 'jpeg', 'webp'].includes(String(requested)) ? String(requested) : 'png';
+          const body = format === 'webp' ? await sharp(imageResponse).webp().toBuffer()
+            : format === 'jpeg' ? await sharp(imageResponse).jpeg().toBuffer()
+              : imageResponse;
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ data: [{ b64_json: imageResponse.toString('base64') }] }));
+          res.end(JSON.stringify({ data: [{ b64_json: body.toString('base64') }], output_format: format }));
           return;
         } finally {
           inFlight -= 1;
@@ -92,10 +100,12 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
   const stubUrl = `http://127.0.0.1:${stub.address().port}`;
   await writeFile(path.join(configRoot, 'models.json'), JSON.stringify({ active_model: 'image', active_vision_model: 'vision', models: [
     { id: 'image', name: 'Batch image stub', provider: 'openai', type: 'image', model: 'fixture', baseUrl: stubUrl, apiKey: 'local-test-placeholder', capabilities: ['text_to_image', 'edit_prompt'], defaultParams: { size: '1024x1024' }, outputFormats: ['png'], transparentBackground: true },
-    { id: 'sensenova', name: 'SenseNova image stub', provider: 'sensenova', type: 'image', model: 'sensenova-u1.5-lite', baseUrl: stubUrl, apiKey: 'local-test-placeholder', capabilities: ['text_to_image', 'edit_prompt'], defaultParams: { size: '2048x2048' } },
+    { id: 'sensenova', name: 'SenseNova image stub', provider: 'sensenova', type: 'image', model: 'sensenova-u1.5-lite', baseUrl: stubUrl, apiKey: 'local-test-placeholder', capabilities: ['text_to_image', 'edit_prompt'], defaultParams: { size: '2048x2048' }, outputFormats: ['png', 'jpeg', 'webp'] },
     { id: 'vision', name: 'Vision stub', provider: 'openai', type: 'vision', apiFormat: 'chat_completions', model: 'fixture', baseUrl: stubUrl, apiKey: 'local-test-placeholder' },
   ] }));
-  const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, windowsHide: true, env: { ...process.env, PIXELFLOW_API_PORT: '0', LAYERIVE_DATA_ROOT: dataRoot, LAYERIVE_CONFIG_ROOT: configRoot }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, windowsHide: true, // LAYERIVE_CUTOUT_URL is cleared so the model-based background removal path
+  // stays the one under test; cut-out coverage lives in cutout.test.mjs.
+  env: { ...process.env, PIXELFLOW_API_PORT: '0', LAYERIVE_DATA_ROOT: dataRoot, LAYERIVE_CONFIG_ROOT: configRoot, LAYERIVE_CUTOUT_URL: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let logs = '';
   child.stdout.on('data', (chunk) => { logs += chunk; });
   child.stderr.on('data', (chunk) => { logs += chunk; });
@@ -294,6 +304,10 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
     const body = imageBodiesSince(mark)[0];
     assert.equal(body.size, 'auto');
     assert.equal(body.n, 1);
+    // 水印与提示词扩写必须逐次显式下发，不能依赖平台默认值。
+    assert.equal(body.watermark, false);
+    assert.equal(body.prompt_extend, true);
+    assert.equal(body.output_format, 'png');
     assert.equal(body.images.length, 1);
     const match = body.images[0].image_url.match(/^data:(image\/(?:png|jpeg));base64,(.+)$/);
     assert.ok(match, 'SenseNova edit image must be a prefixed PNG/JPEG data URL');
@@ -325,6 +339,45 @@ test('generate API: automatic multi-image intent, concurrency, retry, ZIP and pr
     const result = bundle.messages.find((message) => message.type === 'result');
     assert.equal(result.content.promptMode, 'same');
     assert.equal(bundle.versions.find((item) => item.operation === 'text_to_image').outputs.length, 2);
+  }
+
+  // 9a) 日日新生成：watermark / prompt_extend 逐次显式下发，输出格式按请求走
+  // （平台允许 png/jpeg/webp），并且多张仍按 count=1 扇出。
+  {
+    const fixture = await fixtureProject();
+    const mark = calls.length;
+    const started = await request(`/projects/${fixture.projectId}/generate`, { prompt: '一只橙色小猫', modelId: 'sensenova', params: { size: '2048x2048', count: 2, outputFormat: 'webp', watermark: true, promptExtend: false } }, 202);
+    const task = await finished(fixture.projectId, started.taskId);
+    assert.equal(task.status, 'success', task.error);
+    const bodies = imageBodiesSince(mark);
+    assert.equal(bodies.length, 2);
+    for (const body of bodies) {
+      assert.equal(body.n, 1);
+      assert.equal(body.watermark, true, 'the request must state watermark explicitly');
+      assert.equal(body.prompt_extend, false, 'prompt extension must follow the request');
+      assert.equal(body.output_format, 'webp');
+      assert.equal(body.size, '2048x2048');
+    }
+    const bundle = await request(`/projects/${fixture.projectId}`);
+    const version = bundle.versions.find((item) => item.operation === 'text_to_image');
+    assert.ok(version.outputs.every((image) => image.mimeType === 'image/webp'));
+  }
+
+  // 9a2) 编辑请求可以带参考图：主图仍是 images[0]，参考图按顺序追加，
+  // 且总数不超过官方上限（5 张参考图）。非多图协议的模型不受影响。
+  {
+    const fixture = await fixtureProject();
+    const extra = await request(`/projects/${fixture.projectId}/images`, { data: (await solid(160, 160, '#7a4fbf')).toString('base64'), mimeType: 'image/png', name: 'reference.png' }, 201);
+    const referenceId = extra.images.at(-1).id;
+    const mark = calls.length;
+    const started = await request(`/projects/${fixture.projectId}/generate`, { prompt: '把参考图里的紫色衣服换上', modelId: 'sensenova', inputImageId: fixture.imageId, referenceImageIds: [referenceId, fixture.imageId, referenceId], params: { size: '2048x2048', count: 1 } }, 202);
+    const task = await finished(fixture.projectId, started.taskId);
+    assert.equal(task.status, 'success', task.error);
+    const body = imageBodiesSince(mark)[0];
+    assert.equal(body.images.length, 2, 'duplicates and the main image must not repeat');
+    const bundle = await request(`/projects/${fixture.projectId}`);
+    const version = bundle.versions.find((item) => item.operation === 'edit_prompt');
+    assert.deepEqual(version.inputs.map((input) => input.id).sort(), [fixture.imageId, referenceId].sort(), 'the version keeps both the main and the reference image');
   }
 
   // 9b) 一键去背景：视觉模型判断主要主体组，图片模型强制透明 PNG，

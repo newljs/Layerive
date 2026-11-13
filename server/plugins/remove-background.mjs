@@ -1,18 +1,42 @@
 // Trusted built-in operation; model requests and persistence belong to the host.
 import catalog from './catalog.json' with { type: 'json' };
 import sharp from 'sharp';
+import { alphaStats, cutoutEnabled, cutoutLocal } from '../cutout.mjs';
+
+const STRATEGIES = new Set(['auto', 'local', 'ai']);
+
+function strategyOf(input) {
+  const requested = String(input.strategy || '').trim().toLowerCase();
+  if (STRATEGIES.has(requested)) return requested;
+  // Auto means "cut it out here if we can, otherwise ask the model".
+  return cutoutEnabled() ? 'auto' : 'ai';
+}
+
 function create(host, input) {
   const { projectId, readModels, visionModelOrThrow, imageOrThrow, imageOptions, httpError } = host;
   const config = readModels();
   const image = imageOrThrow(projectId, input.imageId);
-  const visionModel = visionModelOrThrow(config, input.visionModelId);
+  const strategy = strategyOf(input);
   const requestedModelId = String(input.modelId || '').trim();
   const model = config.models.find((item) => item.id === (requestedModelId || config.active_model));
   if (!model || model.type === 'vision') throw httpError(400, 'model.imageRequired', '请选择有效的图片生成模型');
   const options = imageOptions(model);
-  if (!model.capabilities.includes('edit_prompt')) throw httpError(400, 'model.noEditPrompt', '当前模型不支持提示词改图');
-  if (!options.transparent || !options.formats.includes('png')) {
-    throw httpError(400, 'backgroundRemoval.requiresTransparentModel', '当前图片模型不支持透明 PNG，请切换到已启用透明背景能力的图片模型');
+  // Local matting needs no prompt and no transparent output from the model, so
+  // it works with models that cannot return an alpha channel at all.
+  if (strategy !== 'local') {
+    if (!model.capabilities.includes('edit_prompt')) throw httpError(400, 'model.noEditPrompt', '当前模型不支持提示词改图');
+    if (!options.transparent || !options.formats.includes('png')) {
+      throw httpError(400, 'backgroundRemoval.requiresTransparentModel', '当前图片模型不支持透明 PNG，请切换到已启用透明背景能力的图片模型');
+    }
+  }
+  // The vision model only plans what to keep; a pure local cut-out does not
+  // need it. Auto tries the local matte first, so a missing vision model must
+  // not block the request — it only matters once we fall back to the model.
+  let visionModel = null;
+  try {
+    visionModel = visionModelOrThrow(config, input.visionModelId);
+  } catch (error) {
+    if (strategy === 'ai') throw error;
   }
   return host.generation({
     prompt: '智能去除背景并保留图片中的主要人物或物体',
@@ -21,10 +45,10 @@ function create(host, input) {
     inputImageId: image.id,
     parentVersionId: input.parentVersionId || image.version_id || null,
     params: { ...(input.params || {}), count: 1, outputFormat: 'png', transparent: true },
-  }, { visionModel });
+  }, { visionModel, strategy, rect: input.rect || null, feather: input.feather || null });
 }
 
-async function prepare(host, image, { visionModel }) {
+async function planWithVision(host, image, visionModel) {
   const { projectId, taskId, signal, parseVisionJson, callVision, httpError } = host;
   const instruction = `判断用户一键去除背景时最可能希望保留的主要人物或物体，并为透明背景抠图生成编辑提示词。
 判断原则：
@@ -47,18 +71,46 @@ async function prepare(host, image, { visionModel }) {
     .map((item) => String(item || '').trim()).filter(Boolean);
   const fallback = `只保留${keepSubjects.join('、')}，完整移除${discarded.length ? discarded.join('、') : '其余背景和陪衬元素'}并将这些区域设为完全透明。严格保持主体的身份、外观、姿态、比例、颜色、纹理、细节、位置和画布尺寸不变。精细处理头发、毛发、衣物边缘、孔洞和半透明材质，不得出现白边、黑边、色边、棋盘格、纯色底或残留背景。`;
   const editPrompt = String(planned.edit_prompt || planned.prompt || fallback).trim();
-  const plan = {
+  return {
     keepSubjects,
     discarded,
     reason: String(planned.reason || '').trim(),
     confidence: Number.isFinite(Number(planned.confidence)) ? Math.min(1, Math.max(0, Number(planned.confidence))) : null,
     editPrompt: `${editPrompt}\n硬性要求：最终输出必须是带真实 Alpha 通道的透明背景 PNG；只保留已识别的主要主体组，不保留其他环境或陪衬；不得改变主体本身、主体位置、构图或画布尺寸。`,
   };
-  host.updateTask({ backgroundRemoval: { visionModelId: visionModel.id, keepSubjects: plan.keepSubjects, discarded: plan.discarded, reason: plan.reason, confidence: plan.confidence } });
+}
+
+async function prepare(host, image, state) {
+  const { httpError, updateTask, providerInputBytes, signal } = host;
+  const strategy = state.strategy || 'ai';
+  const visionModel = state.visionModel || null;
+  if (strategy !== 'ai') {
+    try {
+      const source = await providerInputBytes(image);
+      const cut = await cutoutLocal(source, { signal, rect: state.rect || null, feather: state.feather || null });
+      const stats = await alphaStats(cut);
+      if (stats.usable) {
+        updateTask({ backgroundRemoval: { strategy: 'local', mattedBy: 'local', keepSubjects: [], discarded: [], reason: '', confidence: null } });
+        return { image, local: { bytes: cut, mimeType: 'image/png', width: stats.width, height: stats.height } };
+      }
+      // A matte that kept nothing or erased everything is not worth showing.
+      if (strategy === 'local') {
+        throw httpError(422, 'backgroundRemoval.invalidOutput', '本地抠图没有找到可保留的主体，请换一张主体更明确的图片，或改用模型抠图');
+      }
+      updateTask({ backgroundRemoval: { strategy: 'local', mattedBy: 'local', usable: false, reason: '本地抠图结果不可用，已改用模型抠图' } });
+    } catch (error) {
+      if (strategy === 'local') throw error;
+      if (error?.name === 'AbortError') throw error;
+      updateTask({ backgroundRemoval: { strategy: 'local', mattedBy: 'local', usable: false, reason: `本地抠图不可用（${error?.message || error}），已改用模型抠图` } });
+    }
+  }
+  if (!visionModel) throw httpError(400, 'backgroundRemoval.requiresVisionModel', '改用模型抠图需要先配置视觉识别模型');
+  const plan = await planWithVision(host, image, visionModel);
+  updateTask({ backgroundRemoval: { visionModelId: visionModel.id, strategy: 'ai', mattedBy: 'model', keepSubjects: plan.keepSubjects, discarded: plan.discarded, reason: plan.reason, confidence: plan.confidence } });
   return { image, prompt: plan.editPrompt };
 }
 
-async function processOutput(host, _prepared, output) {
+async function processOutput(host, prepared, output) {
   const { httpError } = host;
   host.updateTask({ stage: 'validating' });
   let raw;
@@ -77,7 +129,9 @@ async function processOutput(host, _prepared, output) {
     if (alpha > 5) visiblePixels += 1;
   }
   if (transparentPixels / pixels < 0.005 || visiblePixels / pixels < 0.005) {
-    throw httpError(422, 'backgroundRemoval.invalidOutput', '图片模型没有返回有效的透明主体图，请重试或更换支持透明背景的图片模型');
+    throw httpError(422, 'backgroundRemoval.invalidOutput', prepared?.local
+      ? '本地抠图没有产生有效的透明主体，请换一张主体更明确的图片后重试'
+      : '图片模型没有返回有效的透明主体图，请重试或更换支持透明背景的图片模型');
   }
   const bytes = await sharp(raw.data, { raw: raw.info }).png().toBuffer();
   return { ...output, bytes, mimeType: 'image/png', width: raw.info.width, height: raw.info.height };
@@ -86,6 +140,9 @@ async function processOutput(host, _prepared, output) {
 export default {
   ...catalog.find(plugin => plugin.operation === 'remove_background'),
   create, prepare, processOutput,
-  taskInput: state => ({ stage: 'planning', backgroundRemoval: { visionModelId: state.visionModel.id } }),
+  taskInput: state => ({
+    stage: 'planning',
+    backgroundRemoval: { strategy: state.strategy, ...(state.visionModel ? { visionModelId: state.visionModel.id } : {}) },
+  }),
   generationPhase: '去除背景并生成透明 PNG',
 };

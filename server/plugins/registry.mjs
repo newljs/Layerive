@@ -49,10 +49,15 @@ export async function preparePlugin(plugin, host, source, state) {
   host.signal.throwIfAborted();
   const prepared = await plugin.prepare(host, source, state);
   host.signal.throwIfAborted();
-  if (!prepared?.image || typeof prepared.prompt !== 'string' || !prepared.prompt.trim()) {
+  // A plugin may produce the picture itself instead of prompting a model: it
+  // then hands back finished bytes and there is nothing for a model to draw.
+  const local = prepared?.local;
+  const hasLocal = Boolean(local && Buffer.isBuffer(local.bytes) && local.bytes.length);
+  const hasPrompt = typeof prepared?.prompt === 'string' && Boolean(prepared.prompt.trim());
+  if (!prepared?.image || (!hasLocal && !hasPrompt)) {
     throw new Error(`Invalid preparation result from image plugin: ${plugin.id}`);
   }
-  host.updateTask({ stage: 'generating', effectivePrompt: prepared.prompt });
+  host.updateTask(hasLocal ? { stage: 'cutting' } : { stage: 'generating', effectivePrompt: prepared.prompt });
   return prepared;
 }
 

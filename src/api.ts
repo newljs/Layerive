@@ -1,7 +1,7 @@
 import { imagePluginForOperation } from './plugins/catalog';
 import type { ImagePluginManifest } from './types';
 import { tf } from './i18n';
-import type { BatchEditProgress, BatchEditResult, CleanupMode, ExtractionMode, FusionMode, GenerateResult, GenerationTask, GalleryEntryItem, LocalEditReference, ModelConfig, ModelExecutionLog, ModelsPayload, Project, ProjectBundle, ProjectImage, TextSegment } from './types';
+import type { BatchEditProgress, BatchEditResult, CleanupMode, ExtractionMode, FusionMode, GenerateResult, GenerationTask, GalleryEntryItem, LibraryImage, LocalEditReference, ModelConfig, ModelExecutionLog, ModelsPayload, Project, ProjectBundle, ProjectImage, ProjectRevision, TextSegment, UpstreamModel } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number, public readonly code?: string) {
@@ -50,6 +50,7 @@ export const api = {
   createProject: (input: { name: string; description?: string; defaultModelId?: string }) =>
     request<ProjectBundle>('/api/projects', { method: 'POST', body: JSON.stringify(input) }),
   getProject: (id: string) => request<ProjectBundle>(`/api/projects/${id}`),
+  projectRevision: (id: string) => request<ProjectRevision>(`/api/projects/${id}/revision`),
   updateProject: (id: string, input: Record<string, unknown>) =>
     request<ProjectBundle>(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   deleteProject: (id: string) => request<{ ok: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),
@@ -59,6 +60,22 @@ export const api = {
     const data = await readFileAsBase64(file);
     return request<ProjectBundle>('/api/projects/import', { method: 'POST', body: JSON.stringify({ data }) });
   },
+  // Importing from the home screen files the picture in the library only; it
+  // never touches a project, so the two collections stay separate.
+  importLibraryImage: async (file: File) => {
+    const data = await readFileAsBase64(file);
+    return request<{ image: LibraryImage }>('/api/library/images', {
+      method: 'POST',
+      body: JSON.stringify({ data, mimeType: file.type, name: file.name }),
+    });
+  },
+  listImages: (limit = 200) => request<{ images: LibraryImage[] }>(`/api/library/images?limit=${limit}`),
+  // Opening a library picture seeds a project with a copy of it.
+  openLibraryImage: (id: string) => request<ProjectBundle & { importedImageId: string | null }>('/api/library/images/open', {
+    method: 'POST',
+    body: JSON.stringify({ id }),
+  }),
+  deleteLibraryImage: (id: string) => request<{ ok: boolean }>(`/api/library/images/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   downloadBackup: () => downloadFile('/api/backup'),
   restoreBackup: async (file: File) => {
     const data = await readFileAsBase64(file);
@@ -116,12 +133,14 @@ export const api = {
   models: () => request<ModelsPayload>('/api/models'),
   createModel: (input: Partial<ModelConfig>) => request<{ model: ModelConfig }>('/api/models', { method: 'POST', body: JSON.stringify(input) }),
   updateModel: (id: string, input: Partial<ModelConfig>) => request<{ model: ModelConfig }>(`/api/models/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
-  revealModelApiKey: (id: string) => request<{ apiKey: string }>(`/api/models/${id}/api-key`, { method: 'POST' }),
+  revealModelApiKey: (id: string) => request<{ apiKey: string; apiKeys?: string[]; apiKeyCount?: number }>(`/api/models/${id}/api-key`, { method: 'POST' }),
+  keyPoolStatus: (id: string) => request<{ count: number; keys: Array<{ index: number; label: string; failures: number; successCount: number; failureCount: number; cooling: boolean; cooldownMs: number; lastUsedAt: number | null }> }>(`/api/models/${id}/key-pool`),
   deleteModel: (id: string) => request<{ ok: boolean }>(`/api/models/${id}`, { method: 'DELETE' }),
   activateModel: (id: string) => request<{ ok: boolean }>(`/api/models/${id}/activate`, { method: 'POST' }),
   activateVisionModel: (id: string) => request<{ ok: boolean }>(`/api/models/${id}/activate-vision`, { method: 'POST' }),
   testModel: (id: string) => request<{ ok: boolean; latency: number; message: string; code?: string }>(`/api/models/${id}/test`, { method: 'POST' }),
   testModelConfig: (input: Partial<ModelConfig>) => request<{ ok: boolean; latency: number; message: string; code?: string }>('/api/models/test-config', { method: 'POST', body: JSON.stringify(input) }),
+  upstreamModels: (input: Partial<ModelConfig>, includeAll = false) => request<{ models: UpstreamModel[]; total: number; filtered: boolean }>('/api/models/upstream-models', { method: 'POST', body: JSON.stringify({ ...input, includeAll }) }),
 };
 
 export function readFileAsDataUrl(file: File) {
@@ -133,8 +152,20 @@ export function readFileAsDataUrl(file: File) {
   });
 }
 
-// List/thumbnail contexts load a downscaled copy; the canvas keeps the full
-// image. The server falls back to the original file for non-PNG sources.
+// List/thumbnail contexts load a downscaled copy; the canvas asks for a
+// display-sized WebP copy of the same picture. A generated PNG is several
+// megabytes while the WebP copy at canvas width is a few hundred kilobytes, and
+// the server keeps both cached immutably, so switching pictures stops waiting on
+// a multi-megabyte decode. `fullUrl` is what downloads and editing requests use,
+// because those need the stored bytes.
 export function thumbUrl(image: Pick<ProjectImage, 'url'>, width = 480) {
   return `${image.url}?w=${width}`;
+}
+
+export function canvasUrl(image: Pick<ProjectImage, 'url'>, width = 1600) {
+  return `${image.url}?w=${width}&fmt=webp`;
+}
+
+export function fullUrl(image: Pick<ProjectImage, 'url'>) {
+  return image.url;
 }

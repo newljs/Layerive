@@ -53,7 +53,7 @@ test('the local service answers the local UI only', { timeout: 30000 }, async (t
   // A page on another site is refused everywhere that reads or writes data,
   // including the backup and the on-demand API key readback.
   const crossSite = { Origin: 'http://attacker.example', 'Sec-Fetch-Site': 'cross-site' };
-  for (const [method, route] of [['GET', '/api/projects'], ['GET', '/api/backup'], ['GET', '/api/models'], ['POST', '/api/projects'], ['POST', '/api/models/demo/api-key'], ['GET', '/files/anything.png'], ['GET', '/gallery-files/anything.png']]) {
+  for (const [method, route] of [['GET', '/api/projects'], ['GET', '/api/backup'], ['GET', '/api/models'], ['POST', '/api/projects'], ['POST', '/api/models/demo/api-key'], ['POST', '/api/models/upstream-models'], ['GET', '/files/anything.png'], ['GET', '/gallery-files/anything.png'], ['GET', '/library-files/anything.png'], ['GET', '/api/library/images'], ['POST', '/api/library/images'], ['POST', '/api/library/images/open'], ['DELETE', '/api/library/images/demo']]) {
     const response = await send(base, route, crossSite, method);
     assert.equal(response.status, 403, `${method} ${route} must refuse a cross-site caller`);
     assert.ok(!response.body.includes('local-test-placeholder'), `${method} ${route} leaked an API key`);
